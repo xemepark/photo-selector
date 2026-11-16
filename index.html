@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Photo Selector</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header id="toolbar">
+      <button id="btn-open" class="primary" title="開啟資料夾 (Ctrl+O)">開啟資料夾</button>
+      <button id="btn-up" title="上一層 (Ctrl+↑)">↑</button>
+      <div id="path" class="path"></div>
+      <div class="spacer"></div>
+      <label class="tool">排序
+        <select id="sort">
+          <option value="name">檔名</option>
+          <option value="date">拍攝時間</option>
+          <option value="rating">評等</option>
+          <option value="size">檔案大小</option>
+          <option value="sharp">清晰度</option>
+        </select>
+        <button id="sort-dir" title="升冪 / 降冪">↓</button>
+      </label>
+      <label class="tool">縮圖 <input id="size" type="range" min="100" max="380" step="10" value="180" /></label>
+      <label class="tool check" title="評分後自動跳到下一張"><input id="auto-advance" type="checkbox" checked /> 評分後下一張</label>
+      <button id="btn-sharp" title="分析目前資料夾所有照片的清晰度">分析清晰度</button>
+    </header>
+
+    <main id="layout">
+      <aside id="sidebar">
+        <section>
+          <h3>資料夾</h3>
+          <ul id="folders" class="folders"></ul>
+        </section>
+        <section>
+          <h3>篩選 <button id="btn-clear-filter" class="link">清除</button></h3>
+          <div id="filters"></div>
+        </section>
+      </aside>
+
+      <section id="center">
+        <div id="grid" tabindex="0">
+          <div id="grid-spacer"></div>
+        </div>
+        <div id="empty" class="empty">
+          <div class="empty-inner">
+            <h2>Photo Selector</h2>
+            <p>開啟一個照片資料夾開始選片</p>
+            <button id="btn-open-2" class="primary">開啟資料夾</button>
+            <ul id="recent"></ul>
+          </div>
+        </div>
+      </section>
+
+      <aside id="inspector">
+        <h3>資訊</h3>
+        <div id="info" class="info"><p class="muted">尚未選取照片</p></div>
+        <h3>動作</h3>
+        <div class="actions">
+          <button id="btn-copy">複製選取項目到…</button>
+          <button id="btn-move">移動選取項目到…</button>
+        </div>
+        <h3>快取</h3>
+        <div class="actions">
+          <div id="cache-info" class="muted small"></div>
+          <button id="btn-clear-cache">清除縮圖快取</button>
+        </div>
+      </aside>
+    </main>
+
+    <footer id="status">
+      <span id="count"></span>
+      <span id="progress"></span>
+      <span class="spacer"></span>
+      <span class="keys">
+        <kbd>0</kbd>–<kbd>5</kbd> 評等 <kbd>X</kbd> 拒絕 <kbd>6</kbd>–<kbd>9</kbd> 標籤
+        <kbd>Space</kbd> 全螢幕 <kbd>Z</kbd> 100% <kbd>C</kbd> 比較 <kbd>Ctrl</kbd>+<kbd>A</kbd> 全選
+      </span>
+    </footer>
+
+    <div id="loupe" class="overlay hidden">
+      <div id="loupe-stage" class="stage"><img id="loupe-img" alt="" /></div>
+      <div id="loupe-info" class="overlay-info"></div>
+      <div class="overlay-hint">← → 切換 · 0–5 評等 · X 拒絕 · Z / 點擊 放大 · Esc 關閉</div>
+    </div>
+
+    <div id="compare" class="overlay hidden">
+      <div id="compare-grid"></div>
+      <div class="overlay-hint">點選要評分的照片 · ← → 切換焦點 · 0–5 評等 · X 拒絕 · Esc 關閉</div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

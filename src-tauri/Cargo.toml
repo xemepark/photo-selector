@@ -1,0 +1,38 @@
+[package]
+name = "photo-selector"
+version = "0.1.0"
+edition = "2021"
+description = "Fast photo browser & culling tool"
+
+[lib]
+name = "photo_selector_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+anyhow = "1.0.104"
+filetime = "0.2.29"
+image = { version = "0.25.10", default-features = false, features = ["png", "tiff", "webp", "gif", "bmp", "jpeg"] }
+jpeg-decoder = "0.3.2"
+jpeg-encoder = "0.7.1"
+kamadak-exif = "0.6.2"
+lru = "0.19.0"
+memchr = "2.8.3"
+memmap2 = "0.9.12"
+parking_lot = "0.13.0"
+rayon = "1.12.0"
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tauri = "2"
+tauri-plugin-dialog = "2"
+
+# 影像解碼在 debug build 下非常慢，讓相依套件即使在 dev 也用最佳化編譯
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
