@@ -1,6 +1,8 @@
 # 用 GitHub 的 Mac 主機編譯 macOS 安裝檔（.dmg，Apple Silicon + Intel 通用版）
 #
-# - 每次推送都會編譯，完成後在該次執行的「Artifacts」區下載 .dmg
+# - 每次推送都會編譯，並更新固定的測試版下載連結（不需登入 GitHub）：
+#   https://github.com/xemepark/photo-selector/releases/download/beta/Photo-Selector-mac-universal.dmg
+#   也可在該次執行的「Artifacts」區下載
 # - 推送 v 開頭的標籤（例如 v0.2.0）會另外建立 GitHub Release 並附上 .dmg
 # - 若在 repo 的 Secrets 設定了 Apple 開發者憑證，會自動正式簽署與公證（見 README）；
 #   沒設定時使用 ad-hoc 簽署，第一次開啟需要到「系統設定 → 隱私權與安全性」允許
@@ -17,7 +19,8 @@ permissions:
 
 concurrency:
   group: macos-${{ github.ref }}
-  cancel-in-progress: true
+  # 新的推送排隊等前一次完成，不中斷（保留編譯快取，第二次之後快很多）
+  cancel-in-progress: false
 
 jobs:
   macos:
@@ -90,3 +93,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.path }}" --title "Photo Selector $GITHUB_REF_NAME" --generate-notes
+
+      - name: 更新測試版下載連結（branch 推送時）
+        if: github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "${{ steps.dmg.outputs.path }}" Photo-Selector-mac-universal.dmg
+          gh release delete beta --yes --cleanup-tag -R "$GITHUB_REPOSITORY" 2>/dev/null || true
+          sleep 5
+          gh release create beta Photo-Selector-mac-universal.dmg -R "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Photo Selector 測試版（最新）" \
+            --notes "自動編譯的最新測試版（${GITHUB_SHA::7}，分支 ${GITHUB_REF_NAME}）。Apple Silicon + Intel 通用版，macOS 11 以上。尚未經 Apple 公證，第一次開啟請見 README「在 Mac 上安裝」。"

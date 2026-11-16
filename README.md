@@ -7,7 +7,8 @@
 
 ## 在 Mac 上安裝
 
-1. 到 GitHub 的 **Actions** 分頁 → 點最新一次成功（綠色勾勾）的「Build macOS」→ 頁面最下方 **Artifacts**
+1. 直接下載最新測試版：<https://github.com/xemepark/photo-selector/releases/download/beta/Photo-Selector-mac-universal.dmg>
+   （或到 GitHub 的 **Actions** 分頁 → 最新一次成功的「Build macOS」→ 頁面最下方 **Artifacts**
    下載 `Photo-Selector-macOS`（是 zip，解壓後得到 `.dmg`）。正式版本則到 **Releases** 下載。
 2. 打開 `.dmg`，把 **Photo Selector** 拖進「應用程式」資料夾。
 3. 第一次開啟：因為還沒有 Apple 開發者簽署，macOS 會說「無法驗證開發者」。
