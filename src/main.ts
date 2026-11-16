@@ -886,19 +886,55 @@ document.addEventListener("keydown", (ev) => {
       renderStatus();
       break;
     default:
-      if (mod && k.toLowerCase() === "a") {
-        S.selected = new Set(S.view.map((i) => i.id));
-        grid.refresh();
-        renderStatus();
-      } else if (k.toLowerCase() === "c" && !mod) openCompare();
+      if (mod && k.toLowerCase() === "a") selectAll(); else if (k.toLowerCase() === "c" && !mod) openCompare();
       else return;
   }
   ev.preventDefault();
 });
 
+// ---------------------------------------------------------------- macOS
+
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform) || navigator.userAgent.includes("Mac OS X");
+
+/** Mac 上把介面中的 Ctrl 提示改成 ⌘ */
+function applyMacLabels() {
+  if (!isMac) return;
+  document.querySelectorAll("kbd").forEach((k) => {
+    if (k.textContent === "Ctrl") k.textContent = "⌘";
+  });
+  document.querySelectorAll<HTMLElement>("[title]").forEach((el) => {
+    el.title = el.title.replace(/Ctrl\+/g, "⌘");
+  });
+}
+
+function selectAll() {
+  S.selected = new Set(S.view.map((i) => i.id));
+  grid.refresh();
+  renderStatus();
+}
+
+/** macOS 選單列的指令（Rust 端以 "menu" 事件送來） */
+on<string>("menu", (e) => {
+  switch (e.payload) {
+    case "open":
+      pickFolder();
+      break;
+    case "up":
+      if (S.parent) openFolder(S.parent);
+      break;
+    case "analyze":
+      startAnalysis();
+      break;
+    case "select-all":
+      if (!S.loupe && !S.compare.length) selectAll();
+      break;
+  }
+});
+
 // ---------------------------------------------------------------- boot
 
 (async function boot() {
+  applyMacLabels();
   const recent = storage<string[]>("recent", []);
   $("recent").innerHTML = recent.map((p) => `<li data-path="${escapeHtml(p)}" title="${escapeHtml(p)}">${escapeHtml(p)}</li>`).join("");
   renderFilters();

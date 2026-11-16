@@ -214,9 +214,67 @@ fn initial_folder() -> Option<String> {
     std::env::args().skip(1).find(|a| !a.starts_with('-') && std::path::Path::new(a).is_dir())
 }
 
+/// macOS 選單列（Windows / Linux 不顯示選單列）。
+/// 自訂項目被點選時，以 "menu" 事件把 id 傳給前端處理。
+#[cfg(target_os = "macos")]
+fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem as P, Submenu};
+    let about = AboutMetadata { version: Some(env!("CARGO_PKG_VERSION").into()), ..Default::default() };
+    let app_menu = Submenu::with_items(
+        app,
+        "Photo Selector",
+        true,
+        &[
+            &P::about(app, Some("關於 Photo Selector"), Some(about))?,
+            &P::separator(app)?,
+            &P::hide(app, Some("隱藏 Photo Selector"))?,
+            &P::hide_others(app, Some("隱藏其他"))?,
+            &P::show_all(app, Some("顯示全部"))?,
+            &P::separator(app)?,
+            &P::quit(app, Some("結束 Photo Selector"))?,
+        ],
+    )?;
+    let file = Submenu::with_items(
+        app,
+        "檔案",
+        true,
+        &[
+            &MenuItem::with_id(app, "open", "開啟資料夾…", true, Some("CmdOrCtrl+O"))?,
+            &MenuItem::with_id(app, "up", "上一層資料夾", true, Some("CmdOrCtrl+Up"))?,
+            &P::separator(app)?,
+            &MenuItem::with_id(app, "analyze", "選片分析", true, Some("CmdOrCtrl+R"))?,
+            &P::separator(app)?,
+            &P::close_window(app, Some("關閉視窗"))?,
+        ],
+    )?;
+    let edit = Submenu::with_items(
+        app,
+        "編輯",
+        true,
+        &[
+            &P::copy(app, Some("拷貝"))?,
+            &P::paste(app, Some("貼上"))?,
+            // 不用系統的「全選」：它會去選取網頁文字，而不是選取照片
+            &MenuItem::with_id(app, "select-all", "選取全部照片", true, Some("CmdOrCtrl+A"))?,
+        ],
+    )?;
+    let window = Submenu::with_items(
+        app,
+        "視窗",
+        true,
+        &[&P::minimize(app, Some("縮到最小"))?, &P::fullscreen(app, Some("進入全螢幕"))?],
+    )?;
+    Menu::with_items(app, &[&app_menu, &file, &edit, &window])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(mac_menu).on_menu_event(|app, ev| {
+        let _ = app.emit("menu", ev.id().0.clone());
+    });
+    builder
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_cache_dir()?;

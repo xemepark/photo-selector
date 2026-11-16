@@ -1,0 +1,92 @@
+# 用 GitHub 的 Mac 主機編譯 macOS 安裝檔（.dmg，Apple Silicon + Intel 通用版）
+#
+# - 每次推送都會編譯，完成後在該次執行的「Artifacts」區下載 .dmg
+# - 推送 v 開頭的標籤（例如 v0.2.0）會另外建立 GitHub Release 並附上 .dmg
+# - 若在 repo 的 Secrets 設定了 Apple 開發者憑證，會自動正式簽署與公證（見 README）；
+#   沒設定時使用 ad-hoc 簽署，第一次開啟需要到「系統設定 → 隱私權與安全性」允許
+name: Build macOS
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安裝前端套件
+        run: npm ci
+
+      - name: 後端單元測試（含人臉模型）
+        run: cargo test --release --manifest-path src-tauri/Cargo.toml
+
+      - name: 設定 Apple 簽署憑證（有設定 Secrets 才會啟用）
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "使用正式 Apple 開發者憑證簽署"
+            for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              if [ -n "${!v}" ]; then
+                { echo "$v<<__EOF__"; echo "${!v}"; echo "__EOF__"; } >> "$GITHUB_ENV"
+              fi
+            done
+          else
+            echo "未設定 Apple 憑證，使用 ad-hoc 簽署"
+          fi
+
+      - name: 編譯通用版（Apple Silicon + Intel）
+        run: npx tauri build --target universal-apple-darwin --bundles app,dmg
+
+      - name: 整理安裝檔
+        id: dmg
+        run: |
+          DMG=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -1)
+          OUT="Photo-Selector-${GITHUB_REF_NAME//\//-}-mac-universal.dmg"
+          cp "$DMG" "$OUT"
+          echo "path=$OUT" >> "$GITHUB_OUTPUT"
+          lipo -info "src-tauri/target/universal-apple-darwin/release/bundle/macos/Photo Selector.app/Contents/MacOS/photo-selector"
+          codesign -dv "src-tauri/target/universal-apple-darwin/release/bundle/macos/Photo Selector.app" 2>&1 | head -5
+          ls -lh "$OUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Photo-Selector-macOS
+          path: ${{ steps.dmg.outputs.path }}
+          retention-days: 30
+
+      - name: 建立 Release（僅限 v* 標籤）
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.path }}" --title "Photo Selector $GITHUB_REF_NAME" --generate-notes

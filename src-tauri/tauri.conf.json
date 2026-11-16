@@ -50,6 +50,11 @@
       }
     },
     "category": "Photography",
-    "shortDescription": "離線照片選片工具"
+    "shortDescription": "離線照片選片工具",
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
+    },
+    "copyright": "Photo Selector"
   }
 }

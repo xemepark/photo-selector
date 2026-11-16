@@ -5,6 +5,38 @@
 
 > 本專案是獨立開發的軟體，與 Adobe 無關，介面與名稱皆為自有設計。
 
+## 在 Mac 上安裝
+
+1. 到 GitHub 的 **Actions** 分頁 → 點最新一次成功（綠色勾勾）的「Build macOS」→ 頁面最下方 **Artifacts**
+   下載 `Photo-Selector-macOS`（是 zip，解壓後得到 `.dmg`）。正式版本則到 **Releases** 下載。
+2. 打開 `.dmg`，把 **Photo Selector** 拖進「應用程式」資料夾。
+3. 第一次開啟：因為還沒有 Apple 開發者簽署，macOS 會說「無法驗證開發者」。
+   - 先按「完成」關掉提示，打開 **系統設定 → 隱私權與安全性**，往下捲找到 Photo Selector，按 **「強制打開」**，再輸入密碼確認。
+   - 或在「終端機」執行：`xattr -dr com.apple.quarantine "/Applications/Photo Selector.app"`
+   - 只有第一次需要，之後直接開啟即可。
+4. 開啟照片資料夾時，macOS 可能會詢問是否允許存取「圖片」、「桌面」或外接硬碟，請按「允許」。
+
+- 支援 macOS 11 Big Sur 以上，Apple Silicon（M1–M4）與 Intel Mac 都能用（通用版）。
+- Mac 上的快捷鍵用 ⌘ 取代 Ctrl：⌘O 開啟資料夾、⌘↑ 上一層、⌘A 全選、⌘R 選片分析。
+
+### 自動編譯
+
+`.github/workflows/build-macos.yml` 會在每次推送時，用 GitHub 的 Mac 主機編譯通用版 `.dmg`
+（公開 repo 免費）。推送 `v` 開頭的標籤（例如 `git tag v0.2.0 && git push --tags`）會自動建立 Release。
+
+### 正式簽署（選用，免除第一次開啟的警告）
+
+需要 Apple Developer Program 會員（每年 USD 99）。在 repo 的 **Settings → Secrets and variables → Actions** 加入：
+
+| Secret | 內容 |
+|---|---|
+| `APPLE_CERTIFICATE` | 「Developer ID Application」憑證匯出的 .p12，以 base64 編碼（`base64 -i cert.p12`） |
+| `APPLE_CERTIFICATE_PASSWORD` | .p12 的密碼 |
+| `APPLE_SIGNING_IDENTITY` | 例如 `Developer ID Application: Your Name (TEAMID)` |
+| `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | 公證用：Apple ID、App 專用密碼、Team ID |
+
+設定後下一次編譯就會自動正式簽署並送 Apple 公證，使用者下載後可直接開啟。
+
 ## 完全離線使用
 
 本軟體**安裝與使用都不需要網路**，照片不會上傳到任何地方：
@@ -12,8 +44,9 @@
 - 介面、字型、AI 模型（人臉 / 閉眼偵測）全部打包在執行檔內，所有分析都在本機完成。
 - 沒有自動更新、沒有使用統計、沒有任何網路相關的套件。
 - 介面設定了嚴格的內容安全政策（CSP），從程式層面禁止連到任何外部網址。
+- macOS 使用系統內建的 WebKit，安裝檔只有程式本身，不需要下載任何元件。
 - Windows 安裝檔內含 WebView2 離線安裝程式（`offlineInstaller`），沒有網路的電腦也能安裝
-  （安裝檔因此會多約 130 MB）。macOS 與 Linux 使用系統內建的 WebView，不需額外元件。
+  （安裝檔因此會多約 130 MB）。Linux 使用系統內建的 WebKitGTK。
 
 已驗證：清空快取後，在完全斷網（Linux network namespace）的環境啟動正式版，縮圖、選片分析、
 閉眼偵測、人臉框、100% 放大、評分寫入 XMP 皆正常運作。
