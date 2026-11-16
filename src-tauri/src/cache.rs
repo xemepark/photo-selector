@@ -23,8 +23,10 @@ impl Cache {
              PRAGMA synchronous=NORMAL;
              CREATE TABLE IF NOT EXISTS thumbs (
                path TEXT PRIMARY KEY, mtime INTEGER NOT NULL, size INTEGER NOT NULL, data BLOB NOT NULL);
-             CREATE TABLE IF NOT EXISTS sharpness (
-               path TEXT PRIMARY KEY, mtime INTEGER NOT NULL, size INTEGER NOT NULL, score REAL NOT NULL);",
+             DROP TABLE IF EXISTS sharpness;
+             CREATE TABLE IF NOT EXISTS analysis (
+               path TEXT PRIMARY KEY, mtime INTEGER NOT NULL, size INTEGER NOT NULL,
+               version INTEGER NOT NULL, json TEXT NOT NULL);",
         )?;
         Ok(Self { conn: Mutex::new(conn), path })
     }
@@ -49,24 +51,24 @@ impl Cache {
         );
     }
 
-    pub fn get_sharpness(&self, k: &Key) -> Option<f32> {
+    /// 選片分析結果（JSON）。`version` 不同代表演算法更新過，需要重新分析
+    pub fn get_analysis(&self, k: &Key, version: i64) -> Option<String> {
         self.conn
             .lock()
             .query_row(
-                "SELECT score FROM sharpness WHERE path=?1 AND mtime=?2 AND size=?3",
-                params![k.0, k.1, k.2],
-                |r| r.get::<_, f64>(0),
+                "SELECT json FROM analysis WHERE path=?1 AND mtime=?2 AND size=?3 AND version=?4",
+                params![k.0, k.1, k.2, version],
+                |r| r.get(0),
             )
             .optional()
             .ok()
             .flatten()
-            .map(|v| v as f32)
     }
 
-    pub fn put_sharpness(&self, k: &Key, score: f32) {
+    pub fn put_analysis(&self, k: &Key, version: i64, json: &str) {
         let _ = self.conn.lock().execute(
-            "INSERT OR REPLACE INTO sharpness (path, mtime, size, score) VALUES (?1, ?2, ?3, ?4)",
-            params![k.0, k.1, k.2, score as f64],
+            "INSERT OR REPLACE INTO analysis (path, mtime, size, version, json) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![k.0, k.1, k.2, version, json],
         );
     }
 
@@ -81,7 +83,7 @@ impl Cache {
 
     pub fn clear(&self) -> Result<()> {
         let c = self.conn.lock();
-        c.execute_batch("DELETE FROM thumbs; DELETE FROM sharpness;")?;
+        c.execute_batch("DELETE FROM thumbs; DELETE FROM analysis;")?;
         c.execute_batch("VACUUM;")?;
         Ok(())
     }

@@ -11,20 +11,25 @@
       <button id="btn-open" class="primary" title="開啟資料夾 (Ctrl+O)">開啟資料夾</button>
       <button id="btn-up" title="上一層 (Ctrl+↑)">↑</button>
       <div id="path" class="path"></div>
-      <div class="spacer"></div>
       <label class="tool">排序
         <select id="sort">
           <option value="name">檔名</option>
           <option value="date">拍攝時間</option>
           <option value="rating">評等</option>
           <option value="size">檔案大小</option>
-          <option value="sharp">清晰度</option>
+          <option value="sharp">整體清晰度</option>
         </select>
         <button id="sort-dir" title="升冪 / 降冪">↓</button>
       </label>
-      <label class="tool">縮圖 <input id="size" type="range" min="100" max="380" step="10" value="180" /></label>
-      <label class="tool check" title="評分後自動跳到下一張"><input id="auto-advance" type="checkbox" checked /> 評分後下一張</label>
-      <button id="btn-sharp" title="分析目前資料夾所有照片的清晰度">分析清晰度</button>
+      <label class="tool" title="縮圖大小（+ / −）"><input id="size" type="range" min="100" max="380" step="10" value="180" /></label>
+      <label class="tool check" title="評分後自動跳到下一張"><input id="auto-advance" type="checkbox" checked /> 自動下一張</label>
+      <label class="tool" title="新生兒寫真會忽略閉眼，只檢查模糊與失焦">拍攝類型
+        <select id="mode">
+          <option value="general">一般（檢查閉眼）</option>
+          <option value="newborn">新生兒（忽略閉眼）</option>
+        </select>
+      </label>
+      <button id="btn-analyze" class="primary" title="偵測模糊、主體失焦、閉眼">選片分析</button>
     </header>
 
     <main id="layout">
@@ -56,6 +61,11 @@
       <aside id="inspector">
         <h3>資訊</h3>
         <div id="info" class="info"><p class="muted">尚未選取照片</p></div>
+        <h3>選片</h3>
+        <div class="actions">
+          <label class="tool check"><input id="auto-analyze" type="checkbox" checked /> 開啟資料夾時自動分析</label>
+          <button id="btn-reject-suggested" title="只會標記尚未評分的照片">將「建議淘汰」標為拒絕</button>
+        </div>
         <h3>動作</h3>
         <div class="actions">
           <button id="btn-copy">複製選取項目到…</button>
@@ -81,8 +91,9 @@
 
     <div id="loupe" class="overlay hidden">
       <div id="loupe-stage" class="stage"><img id="loupe-img" alt="" /></div>
+      <div id="loupe-faces"></div>
       <div id="loupe-info" class="overlay-info"></div>
-      <div class="overlay-hint">← → 切換 · 0–5 評等 · X 拒絕 · Z / 點擊 放大 · Esc 關閉</div>
+      <div class="overlay-hint">← → 切換 · 0–5 評等 · X 拒絕 · Z / 點擊 放大 · F 人臉框 · Esc 關閉</div>
     </div>
 
     <div id="compare" class="overlay hidden">

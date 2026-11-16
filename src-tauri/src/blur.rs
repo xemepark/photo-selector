@@ -44,6 +44,31 @@ pub fn sharpness(img: &GrayImage) -> f32 {
     (top.iter().sum::<f64>() / top.len().max(1) as f64) as f32
 }
 
+/// 整張影像的拉普拉斯變異數（用於固定尺寸的人臉區域）
+pub fn laplacian_variance(img: &GrayImage) -> f32 {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    if w < 3 || h < 3 {
+        return 0.0;
+    }
+    let px = img.as_raw();
+    let (mut sum, mut sq, mut n) = (0f64, 0f64, 0f64);
+    for y in 1..h - 1 {
+        let row = y * w;
+        for x in 1..w - 1 {
+            let l = (4 * px[row + x] as i32
+                - px[row + x - 1] as i32
+                - px[row + x + 1] as i32
+                - px[row - w + x] as i32
+                - px[row + w + x] as i32) as f64;
+            sum += l;
+            sq += l * l;
+            n += 1.0;
+        }
+    }
+    let m = sum / n;
+    (sq / n - m * m) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

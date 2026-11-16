@@ -10,7 +10,8 @@ export interface GridHost {
   meta(id: number): Meta | undefined;
   isSelected(id: number): boolean;
   focusId(): number | null;
-  isBlurry(id: number): boolean;
+  /** 選片問題標籤（HTML） */
+  badges(id: number): string;
   onCellClick(index: number, ev: MouseEvent): void;
   onCellOpen(index: number): void;
   onViewport(ids: number[]): void;
@@ -241,7 +242,7 @@ export class Grid {
     let badges = "";
     if (item?.kind === "raw+jpeg") badges += `<span class="badge">RAW+JPG</span>`;
     else if (item?.kind === "raw") badges += `<span class="badge">RAW</span>`;
-    if (this.host.isBlurry(c.id)) badges += `<span class="badge warn">可能模糊</span>`;
+    badges += this.host.badges(c.id);
     if (c.badges.innerHTML !== badges) c.badges.innerHTML = badges;
   }
 }

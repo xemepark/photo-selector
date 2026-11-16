@@ -2,10 +2,13 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
 import { api, url, Item, Meta, OpenResult, LABELS, labelColor, stars, fmtBytes } from "./api";
 import { Grid } from "./grid";
+import { Cull, Analysis, ShootMode, drawFaces } from "./cull";
 
 // ---------------------------------------------------------------- state
 
-type FilterKey = "rating" | "label" | "kind" | "camera" | "lens" | "sharp";
+type FilterKey = "suggest" | "eyes" | "sharp" | "rating" | "label" | "kind" | "camera" | "lens";
+
+const cull = new Cull();
 
 const S = {
   session: 0,
@@ -14,8 +17,6 @@ const S = {
   items: [] as Item[],
   meta: new Map<number, Meta>(),
   overrides: new Map<number, Partial<Meta>>(), // 中繼資料還沒讀到前，使用者就先評分的值
-  sharp: new Map<number, number>(),
-  blurThreshold: 0,
   view: [] as Item[],
   viewIndex: new Map<number, number>(),
   selected: new Set<number>(),
@@ -28,11 +29,12 @@ const S = {
     camera: new Set<string>(),
     lens: new Set<string>(),
     sharp: new Set<string>(),
+    suggest: new Set<string>(),
+    eyes: new Set<string>(),
   } as Record<FilterKey, Set<string>>,
   sort: "name",
   sortDesc: false,
   metaLoaded: 0,
-  sharpPending: false,
   loupe: false,
   zoom: false,
   compare: [] as number[],
@@ -48,7 +50,7 @@ const grid = new Grid(gridEl, $("grid-spacer"), {
   meta: (id) => S.meta.get(id),
   isSelected: (id) => S.selected.has(id),
   focusId: () => S.focus,
-  isBlurry,
+  badges: (id) => cull.badges(id),
   onCellClick,
   onCellOpen: (i) => {
     setFocus(S.view[i].id, false);
@@ -58,6 +60,12 @@ const grid = new Grid(gridEl, $("grid-spacer"), {
 });
 
 // ---------------------------------------------------------------- helpers
+
+/** 事件監聽是非同步註冊的；開啟資料夾前要等全部註冊完，否則小資料夾的事件會在註冊前就送完而漏接 */
+const listeners: Promise<unknown>[] = [];
+function on<T>(event: string, cb: (e: { payload: T }) => void) {
+  listeners.push(listen<T>(event, cb));
+}
 
 function debounce<A extends unknown[]>(fn: (...a: A) => void, ms: number) {
   let t = 0;
@@ -100,10 +108,6 @@ function metaOf(id: number): Meta {
   return m;
 }
 
-function isBlurry(id: number) {
-  const s = S.sharp.get(id);
-  return s !== undefined && S.blurThreshold > 0 && s < S.blurThreshold;
-}
 
 function escapeHtml(s: string) {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
@@ -143,12 +147,14 @@ function facet(key: FilterKey, it: Item): string {
       return m?.camera ?? "未知";
     case "lens":
       return m?.lens ?? "未知";
+    case "suggest":
+    case "eyes":
     case "sharp":
-      return !S.sharp.has(it.id) ? "na" : isBlurry(it.id) ? "blur" : "ok";
+      return cull.facet(key, it.id);
   }
 }
 
-const FILTER_KEYS: FilterKey[] = ["rating", "label", "kind", "sharp", "camera", "lens"];
+const FILTER_KEYS: FilterKey[] = ["suggest", "eyes", "sharp", "rating", "label", "kind", "camera", "lens"];
 
 function passes(it: Item) {
   for (const k of FILTER_KEYS) {
@@ -170,7 +176,7 @@ function sortValue(it: Item): number | string {
     case "size":
       return it.size;
     case "sharp":
-      return S.sharp.get(it.id) ?? -1;
+      return cull.analysis.get(it.id)?.sharp ?? -1;
     default:
       return "";
   }
@@ -215,6 +221,12 @@ function renderFilters() {
   const dyn = (k: FilterKey) =>
     [...counts(k).keys()].sort((a, b) => (a === "未知" ? 1 : b === "未知" ? -1 : collator.compare(a, b))).map((v) => [v, v] as [string, string]);
 
+  if (cull.analysis.size) {
+    groups.push(["suggest", "選片建議", [["cull", "建議淘汰"], ["check", "需要確認（半閉眼）"], ["keep", "沒有問題"], ["na", "尚未分析"]]]);
+    if (cull.checksEyes)
+      groups.push(["eyes", "眼睛", [["closed", "有人閉眼"], ["half", "有人半閉"], ["open", "全部睜眼"], ["noface", "沒有人臉"], ["na", "尚未分析"]]]);
+    groups.push(["sharp", "清晰度", [["blur", "整張模糊"], ["facesoft", "主體失焦"], ["ok", "清晰"], ["na", "尚未分析"]]]);
+  }
   groups.push(["rating", "評等", RATING_ROWS]);
   groups.push([
     "label",
@@ -222,8 +234,6 @@ function renderFilters() {
     [["none", "無標籤"], ...LABELS.map((l) => [l.value, l.name] as [string, string])],
   ]);
   groups.push(["kind", "檔案類型", Object.entries(KIND_NAMES)]);
-  if (S.sharp.size)
-    groups.push(["sharp", "清晰度", [["blur", "可能模糊"], ["ok", "清晰"], ["na", "未分析"]]]);
   groups.push(["camera", "相機", dyn("camera")]);
   groups.push(["lens", "鏡頭", dyn("lens")]);
 
@@ -231,7 +241,8 @@ function renderFilters() {
   for (const [key, title, rows] of groups) {
     const c = counts(key);
     const visible = rows.filter(([v]) => (c.get(v) ?? 0) > 0 || S.filters[key].has(v));
-    if (!visible.length || (key !== "rating" && visible.length < 2 && !S.filters[key].size)) continue;
+    const always = key === "rating" || key === "suggest" || key === "eyes" || key === "sharp";
+    if (!visible.length || (!always && visible.length < 2 && !S.filters[key].size)) continue;
     html += `<div class="filter-group"><h4>${title}</h4>`;
     for (const [v, label] of visible) {
       const on = S.filters[key].has(v);
@@ -294,7 +305,7 @@ function renderStatus() {
     : "";
   let p = "";
   if (total && S.metaLoaded < total) p = `讀取中繼資料 ${S.metaLoaded}/${total}`;
-  if (S.sharpPending) p += `${p ? " · " : ""}分析清晰度 ${S.sharp.size}/${total}`;
+  if (cull.running) p += `${p ? " · " : ""}選片分析 ${cull.analysis.size}/${total}`;
   $("progress").textContent = p;
 }
 
@@ -321,7 +332,7 @@ function renderInfo() {
     ["尺寸", m?.width && m?.height ? `${m.width} × ${m.height}` : null],
     ["評等", m ? stars(m.rating) || "—" : null],
     ["標籤", m?.label ? LABELS.find((l) => l.value === m.label)?.name ?? m.label : null],
-    ["清晰度", S.sharp.has(it.id) ? `${S.sharp.get(it.id)!.toFixed(0)}${isBlurry(it.id) ? "（可能模糊）" : ""}` : null],
+    ...cull.describe(it.id),
   ];
   box.innerHTML =
     "<dl>" +
@@ -350,12 +361,12 @@ async function openFolder(path: string) {
     focus: res.items.length ? 0 : null,
     anchor: res.items.length ? 0 : null,
     metaLoaded: 0,
-    sharpPending: false,
-    blurThreshold: 0,
   });
   S.meta.clear();
   S.overrides.clear();
-  S.sharp.clear();
+  cull.clear();
+  cull.mode = folderMode(res.dir);
+  $<HTMLSelectElement>("mode").value = cull.mode;
   S.selected = new Set(res.items.length ? [0] : []);
   for (const k of FILTER_KEYS) S.filters[k].clear();
 
@@ -374,6 +385,11 @@ async function openFolder(path: string) {
   update({ resetGrid: true });
   gridEl.focus();
   if (!res.items.length) toast("這個資料夾沒有支援的照片");
+  else if (autoAnalyze.checked) {
+    const session = res.session;
+    // 稍等一下讓縮圖先跑，再開始背景分析
+    setTimeout(() => session === S.session && startAnalysis(), 1500);
+  }
 }
 
 async function pickFolder() {
@@ -393,7 +409,7 @@ $("recent").addEventListener("click", (ev) => {
   if (li?.dataset.path) openFolder(li.dataset.path);
 });
 
-listen<{ session: number; metas: [number, Meta][] }>("meta-batch", (e) => {
+on<{ session: number; metas: [number, Meta][] }>("meta-batch", (e) => {
   if (e.payload.session !== S.session) return;
   for (const [id, m] of e.payload.metas) {
     const o = S.overrides.get(id);
@@ -402,46 +418,82 @@ listen<{ session: number; metas: [number, Meta][] }>("meta-batch", (e) => {
   S.metaLoaded += e.payload.metas.length;
   scheduleUpdate();
 });
-listen<number>("meta-done", (e) => {
+on<number>("meta-done", (e) => {
   if (e.payload !== S.session) return;
   S.metaLoaded = S.items.length;
   scheduleUpdate();
 });
 
-// ---------------------------------------------------------------- sharpness
+// ---------------------------------------------------------------- 選片分析
 
-function recomputeBlurThreshold() {
-  const v = [...S.sharp.values()].sort((a, b) => a - b);
-  if (v.length < 3) {
-    S.blurThreshold = 0;
-    return;
-  }
-  const median = v[Math.floor(v.length / 2)];
-  // 明顯低於這一批照片中位數的，才標為可能模糊
-  S.blurThreshold = median * 0.35;
+const autoAnalyze = $<HTMLInputElement>("auto-analyze");
+autoAnalyze.checked = storage("autoAnalyze", true);
+autoAnalyze.addEventListener("change", () => store("autoAnalyze", autoAnalyze.checked));
+
+/** 每個資料夾記住自己的拍攝類型；沒設定過的資料夾沿用上次選的 */
+function folderMode(dir: string): ShootMode {
+  const modes = storage<Record<string, ShootMode>>("modes", {});
+  return modes[dir] ?? storage<ShootMode>("lastMode", "general");
 }
 
-$("btn-sharp").addEventListener("click", async () => {
-  if (!S.items.length || S.sharpPending) return;
-  S.sharpPending = true;
-  renderStatus();
-  // 先分析畫面上的，再分析其他的
-  const ids = [...S.view.map((i) => i.id), ...S.items.filter((i) => !S.viewIndex.has(i.id)).map((i) => i.id)];
-  await api.analyzeSharpness(S.session, ids).catch((e) => toast(String(e)));
-});
-listen<{ session: number; scores: [number, number][] }>("sharp-batch", (e) => {
-  if (e.payload.session !== S.session) return;
-  for (const [id, s] of e.payload.scores) S.sharp.set(id, s);
-  recomputeBlurThreshold();
-  scheduleUpdate();
-});
-listen<number>("sharp-done", (e) => {
-  if (e.payload !== S.session) return;
-  S.sharpPending = false;
-  recomputeBlurThreshold();
-  const n = S.items.filter((i) => isBlurry(i.id)).length;
-  toast(`清晰度分析完成：${n} 張可能模糊（可在左側「清晰度」篩選）`, 4000);
+$<HTMLSelectElement>("mode").addEventListener("change", (e) => {
+  const mode = (e.target as HTMLSelectElement).value as ShootMode;
+  cull.mode = mode;
+  store("lastMode", mode);
+  if (S.dir) {
+    const modes = storage<Record<string, ShootMode>>("modes", {});
+    modes[S.dir] = mode;
+    store("modes", modes);
+  }
+  S.filters.eyes.clear();
+  S.filters.suggest.clear();
+  toast(mode === "newborn" ? "新生兒模式：不再標記閉眼，仍會檢查模糊與主體失焦" : "一般模式：會標記閉眼與半閉眼");
   update({ resetGrid: true });
+  if (S.loupe) renderFaces();
+});
+
+async function startAnalysis() {
+  if (!S.items.length || cull.running) return;
+  cull.running = true;
+  renderStatus();
+  // 先分析畫面上看得到的，再分析其他的
+  const ids = [...S.view.map((i) => i.id), ...S.items.filter((i) => !S.viewIndex.has(i.id)).map((i) => i.id)];
+  await api.analyze(S.session, ids).catch((e) => {
+    cull.running = false;
+    toast(String(e));
+  });
+}
+$("btn-analyze").addEventListener("click", startAnalysis);
+
+on<{ session: number; results: [number, Analysis][] }>("analysis-batch", (e) => {
+  if (e.payload.session !== S.session) return;
+  for (const [id, a] of e.payload.results) cull.add(id, a);
+  cull.recompute();
+  scheduleUpdate();
+  if (S.loupe && e.payload.results.some(([id]) => id === S.focus)) renderFaces();
+});
+on<number>("analysis-done", (e) => {
+  if (e.payload !== S.session) return;
+  cull.running = false;
+  cull.recompute();
+  const n = S.items.filter((i) => cull.issues(i.id)?.cull).length;
+  toast(`選片分析完成：${n} 張建議淘汰（左側「選片建議」可篩選）`, 4000);
+  update({ resetGrid: true });
+});
+
+/** 把「建議淘汰」且尚未評分的照片標為拒絕 */
+$("btn-reject-suggested").addEventListener("click", async () => {
+  const ids = S.items.filter((i) => cull.issues(i.id)?.cull && (S.meta.get(i.id)?.rating ?? 0) === 0).map((i) => i.id);
+  if (!ids.length) return toast(cull.analysis.size ? "沒有需要標記的照片（已評分的不會被更動）" : "請先執行選片分析");
+  if (!(await ask(`把 ${ids.length} 張「建議淘汰」且尚未評分的照片標為拒絕？\n已經評過星等的照片不會被更動。`, { title: "標記拒絕", okLabel: "確定", cancelLabel: "取消" }))) return;
+  ids.forEach((id) => setLocal(id, { rating: -1 }));
+  update();
+  try {
+    await api.setRating(S.session, ids, -1);
+    toast(`已將 ${ids.length} 張標為拒絕`);
+  } catch (e) {
+    toast(`寫入失敗：${e}`);
+  }
 });
 
 // ---------------------------------------------------------------- selection
@@ -555,6 +607,18 @@ const loupe = $("loupe");
 const loupeImg = $<HTMLImageElement>("loupe-img");
 const stage = $("loupe-stage");
 const prefetched: HTMLImageElement[] = [];
+const faceLayer = $("loupe-faces");
+let showFaces = storage("showFaces", true);
+
+function renderFaces() {
+  if (!S.loupe || S.zoom || !showFaces || S.focus === null) {
+    faceLayer.innerHTML = "";
+    return;
+  }
+  drawFaces(faceLayer, loupeImg, cull.analysis.get(S.focus), cull, S.focus);
+}
+loupeImg.addEventListener("load", renderFaces);
+window.addEventListener("resize", () => S.loupe && renderFaces());
 
 function openLoupe() {
   if (S.focus === null) return;
@@ -569,6 +633,7 @@ function closeLoupe() {
   stage.classList.remove("zoom");
   loupe.classList.add("hidden");
   loupeImg.removeAttribute("src");
+  faceLayer.innerHTML = "";
   gridEl.focus();
 }
 
@@ -576,6 +641,7 @@ function showLoupe() {
   if (S.focus === null) return;
   S.zoom = false;
   stage.classList.remove("zoom");
+  faceLayer.innerHTML = "";
   loupeImg.src = url.preview(S.session, S.focus);
   renderLoupeInfo();
   // 預先載入前後兩張，翻頁時幾乎零等待
@@ -601,7 +667,7 @@ function renderLoupeInfo() {
     `<span>${i} / ${S.view.length}</span><b>${escapeHtml(it.name)}</b>` +
     `<span class="stars${(m?.rating ?? 0) < 0 ? " rej" : ""}">${stars(m?.rating ?? 0)}</span>` +
     (lc ? `<span class="dot" style="background:${lc}"></span>` : "") +
-    (isBlurry(it.id) ? `<span class="badge warn">可能模糊</span>` : "") +
+    cull.badges(it.id) +
     `<span class="muted">${[m?.shutter, m?.aperture && `f/${m.aperture}`, m?.iso && `ISO ${m.iso}`, m?.focal && `${m.focal}mm`]
       .filter(Boolean)
       .join(" · ")}</span>`;
@@ -610,6 +676,7 @@ function renderLoupeInfo() {
 function toggleZoom(ev?: MouseEvent) {
   if (S.focus === null) return;
   S.zoom = !S.zoom;
+  faceLayer.innerHTML = "";
   if (!S.zoom) {
     stage.classList.remove("zoom");
     loupeImg.src = url.preview(S.session, S.focus);
@@ -671,7 +738,7 @@ function renderCompare(rebuild: boolean) {
     el.querySelector(".overlay-info")!.innerHTML =
       `<b>${escapeHtml(S.items[id].name)}</b><span class="stars${(m?.rating ?? 0) < 0 ? " rej" : ""}">${stars(m?.rating ?? 0)}</span>` +
       (lc ? `<span class="dot" style="background:${lc}"></span>` : "") +
-      (isBlurry(id) ? `<span class="badge warn">可能模糊</span>` : "");
+      cull.badges(id);
   });
 }
 
@@ -689,7 +756,7 @@ async function transfer(mode: "copy" | "move") {
   if (!ids.length) return toast("沒有選取任何照片");
   const dest = await openDialog({ directory: true, title: mode === "copy" ? "複製到…" : "移動到…" });
   if (typeof dest !== "string") return;
-  if (mode === "move" && !(await ask(`確定要把 ${ids.length} 個項目（含配對的 RAW/JPEG 與 .xmp）移動到\n${dest}？`, { title: "移動檔案" })))
+  if (mode === "move" && !(await ask(`確定要把 ${ids.length} 個項目（含配對的 RAW/JPEG 與 .xmp）移動到\n${dest}？`, { title: "移動檔案", okLabel: "確定", cancelLabel: "取消" })))
     return;
   try {
     const r = await api.transfer(S.session, ids, dest, mode);
@@ -744,7 +811,7 @@ async function refreshCacheInfo() {
   }
 }
 $("btn-clear-cache").addEventListener("click", async () => {
-  if (!(await ask("清除所有縮圖與清晰度快取？下次瀏覽時會重新產生。", { title: "清除快取" }))) return;
+  if (!(await ask("清除所有縮圖與清晰度快取？下次瀏覽時會重新產生。", { title: "清除快取", okLabel: "確定", cancelLabel: "取消" }))) return;
   await api.clearCache();
   refreshCacheInfo();
   toast("快取已清除");
@@ -787,6 +854,12 @@ document.addEventListener("keydown", (ev) => {
     else if (k === "ArrowRight" || k === "ArrowDown") moveFocus(1);
     else if (k === "ArrowLeft" || k === "ArrowUp") moveFocus(-1);
     else if (k.toLowerCase() === "z") toggleZoom();
+    else if (k.toLowerCase() === "f") {
+      showFaces = !showFaces;
+      store("showFaces", showFaces);
+      renderFaces();
+      toast(showFaces ? "顯示人臉框" : "隱藏人臉框", 1200);
+    }
     else return;
     ev.preventDefault();
     return;
@@ -831,6 +904,7 @@ document.addEventListener("keydown", (ev) => {
   renderFilters();
   refreshCacheInfo();
   setInterval(refreshCacheInfo, 15000);
+  await Promise.all(listeners);
   const start = (await api.initialFolder().catch(() => null)) ?? storage<string | null>("last", null);
   if (start) await openFolder(start);
 })();

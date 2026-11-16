@@ -55,8 +55,9 @@ kbd {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
 }
-.path { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; max-width: 40vw; }
-.tool { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.path { flex: 1; min-width: 60px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+.tool { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; flex: none; }
+#toolbar > button { white-space: nowrap; flex: none; }
 .tool.check { cursor: pointer; }
 #size { width: 110px; accent-color: var(--accent); }
 
@@ -168,3 +169,16 @@ h3 {
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #3a3a40; border-radius: 5px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- 選片標記 ---------- */
+.badge.caution { background: #d9822bcc; color: #fff; }
+#loupe-faces { position: fixed; inset: 0; pointer-events: none; z-index: 11; }
+.face-box { position: fixed; border: 2px solid; border-radius: 4px; }
+.face-box span {
+  position: absolute; left: -2px; top: -20px; white-space: nowrap;
+  font-size: 11px; font-weight: 600; padding: 1px 5px; border-radius: 3px; color: #fff;
+}
+.face-box.good { border-color: #30a46c; } .face-box.good span { background: #30a46c; }
+.face-box.warn { border-color: #d9822b; } .face-box.warn span { background: #d9822b; }
+.face-box.bad { border-color: #e5484d; } .face-box.bad span { background: #e5484d; }
+.face-box.neutral { border-color: #8fb2ffaa; } .face-box.neutral span { background: #3d6fd6; }

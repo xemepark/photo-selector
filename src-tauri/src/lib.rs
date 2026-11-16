@@ -1,6 +1,7 @@
 mod blur;
 mod cache;
 mod core;
+mod face;
 mod jpeg;
 mod meta;
 mod ops;
@@ -43,10 +44,29 @@ struct MetaBatch {
     metas: Vec<(u32, meta::Meta)>,
 }
 
+/// 選片分析結果（整張清晰度 + 每張臉的閉眼 / 清晰度）
+#[derive(Serialize, serde::Deserialize, Clone)]
+struct Analysis {
+    sharp: f32,
+    faces: Vec<face::Face>,
+}
+
+/// 演算法版本：改動分析方式時加一，舊快取就會自動失效
+const ANALYSIS_VERSION: i64 = 1;
+const ANALYSIS_EDGE: u32 = 2048;
+
 #[derive(Serialize, Clone)]
-struct SharpBatch {
+struct AnalysisBatch {
     session: u64,
-    scores: Vec<(u32, f32)>,
+    results: Vec<(u32, Analysis)>,
+}
+
+fn analyze_item(it: &scan::Item) -> Option<Analysis> {
+    let img = render::decode_source(it, ANALYSIS_EDGE).ok()?;
+    let img = if img.width().max(img.height()) > ANALYSIS_EDGE { img.thumbnail(ANALYSIS_EDGE, ANALYSIS_EDGE) } else { img };
+    let sharp = blur::sharpness(&img.thumbnail(1024, 1024).to_luma8());
+    let faces = face::analyze(&img.to_rgb8());
+    Some(Analysis { sharp, faces })
 }
 
 #[tauri::command]
@@ -131,32 +151,38 @@ async fn transfer(
     Ok(ops::transfer(&items, &PathBuf::from(dest), mode == "move"))
 }
 
+/// 選片分析：整張清晰度、人臉偵測、閉眼判斷、臉部清晰度。結果分批以事件回傳並寫入快取。
 #[tauri::command]
-fn analyze_sharpness(app: AppHandle, core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<(), String> {
+fn analyze(app: AppHandle, core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<(), String> {
     let sess = core.session(session)?;
     let core2 = core.inner().clone();
     std::thread::spawn(move || {
-        ids.par_chunks(8).for_each(|chunk| {
+        ids.par_chunks(4).for_each(|chunk| {
             if core2.current().id != sess.id {
                 return;
             }
-            let scores: Vec<(u32, f32)> = chunk
+            let results: Vec<(u32, Analysis)> = chunk
                 .iter()
                 .filter_map(|&id| {
                     let it = sess.items.get(id as usize)?;
                     let key = it.display().cache_key();
-                    if let Some(s) = core2.cache.get_sharpness(&key) {
-                        return Some((id, s));
+                    if let Some(a) = core2
+                        .cache
+                        .get_analysis(&key, ANALYSIS_VERSION)
+                        .and_then(|j| serde_json::from_str::<Analysis>(&j).ok())
+                    {
+                        return Some((id, a));
                     }
-                    let img = render::decode_source(it, 1024).ok()?.thumbnail(1024, 1024).to_luma8();
-                    let s = blur::sharpness(&img);
-                    core2.cache.put_sharpness(&key, s);
-                    Some((id, s))
+                    let a = analyze_item(it)?;
+                    if let Ok(j) = serde_json::to_string(&a) {
+                        core2.cache.put_analysis(&key, ANALYSIS_VERSION, &j);
+                    }
+                    Some((id, a))
                 })
                 .collect();
-            let _ = app.emit("sharp-batch", SharpBatch { session: sess.id, scores });
+            let _ = app.emit("analysis-batch", AnalysisBatch { session: sess.id, results });
         });
-        let _ = app.emit("sharp-done", sess.id);
+        let _ = app.emit("analysis-done", sess.id);
     });
     Ok(())
 }
@@ -207,7 +233,7 @@ pub fn run() {
             set_rating,
             set_label,
             transfer,
-            analyze_sharpness,
+            analyze,
             cache_info,
             clear_cache,
             default_folder,
