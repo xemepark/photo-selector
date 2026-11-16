@@ -5,6 +5,22 @@
 
 > 本專案是獨立開發的軟體，與 Adobe 無關，介面與名稱皆為自有設計。
 
+## 完全離線使用
+
+本軟體**安裝與使用都不需要網路**，照片不會上傳到任何地方：
+
+- 介面、字型、AI 模型（人臉 / 閉眼偵測）全部打包在執行檔內，所有分析都在本機完成。
+- 沒有自動更新、沒有使用統計、沒有任何網路相關的套件。
+- 介面設定了嚴格的內容安全政策（CSP），從程式層面禁止連到任何外部網址。
+- Windows 安裝檔內含 WebView2 離線安裝程式（`offlineInstaller`），沒有網路的電腦也能安裝
+  （安裝檔因此會多約 130 MB）。macOS 與 Linux 使用系統內建的 WebView，不需額外元件。
+
+已驗證：清空快取後，在完全斷網（Linux network namespace）的環境啟動正式版，縮圖、選片分析、
+閉眼偵測、人臉框、100% 放大、評分寫入 XMP 皆正常運作。
+
+> 只有「開發 / 編譯」時需要網路下載套件（npm、crates.io）。若要在離線電腦上編譯，
+> 可先在有網路的電腦執行 `cargo vendor` 與 `npm ci` 後連同資料夾一起帶過去。
+
 ## 開發環境
 
 需求：Rust（stable）、Node.js 18+，以及 Tauri 的系統套件
@@ -14,7 +30,7 @@
 npm install
 npm run tauri dev                       # 開發模式
 npm run tauri dev -- -- /path/to/photos # 啟動時直接開某個資料夾
-npm run tauri build                     # 打包安裝檔
+npm run tauri build                     # 打包安裝檔（在哪個系統編譯就產生哪個系統的安裝檔）
 cargo test --manifest-path src-tauri/Cargo.toml   # 後端單元測試
 ```
 
