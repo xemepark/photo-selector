@@ -3,6 +3,7 @@
 // 讓後端取消已經捲出畫面的縮圖工作。
 
 import { Item, Meta, url, stars, labelColor } from "./api";
+import { setImg, clearImg } from "./imgload";
 
 export interface GridHost {
   session(): number;
@@ -183,20 +184,23 @@ export class Grid {
       timer: 0,
     };
     c.img.addEventListener("load", () => c.img.setAttribute("data-loaded", ""));
-    c.img.addEventListener("error", () => {
-      // 後端回 410 = 這張在排隊時被捲出畫面而取消；如果它現在又在畫面上就重試
-      if (c.id < 0) return;
-      const id = c.id;
+    this.spacer.appendChild(root);
+    return c;
+  }
+
+  /** 載入縮圖；後端回 410 = 排隊時被捲出畫面而取消，若現在又在畫面上就稍後重試 */
+  private loadThumb(c: Cell) {
+    const id = c.id;
+    setImg(c.img, url.thumb(this.host.session(), id, c.retry), () => {
+      if (c.id !== id) return;
       clearTimeout(c.timer);
       c.timer = window.setTimeout(() => {
         if (c.id === id && this.cells.get(c.index) === c && c.retry < 30) {
           c.retry++;
-          c.img.src = url.thumb(this.host.session(), id, c.retry);
+          this.loadThumb(c);
         }
       }, Math.min(1200, 80 * (c.retry + 1)));
     });
-    this.spacer.appendChild(root);
-    return c;
   }
 
   private release(c: Cell) {
@@ -204,7 +208,7 @@ export class Grid {
     c.id = -1;
     c.root.style.display = "none";
     c.img.removeAttribute("data-loaded");
-    c.img.removeAttribute("src");
+    clearImg(c.img);
     this.pool.push(c);
   }
 
@@ -221,7 +225,7 @@ export class Grid {
     c.name.textContent = item.name;
     c.root.title = item.files.join("\n");
     c.img.removeAttribute("data-loaded");
-    c.img.src = url.thumb(this.host.session(), item.id);
+    this.loadThumb(c);
   }
 
   private decorate(c: Cell) {

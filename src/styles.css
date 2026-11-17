@@ -246,3 +246,8 @@ h3 {
 .music-list .music-empty { color: var(--muted); background: none; padding: 2px 0; }
 .modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
 .modal-actions span { flex: 1; font-size: 12px; }
+.music-list li small { display: block; color: #ff8a80; white-space: normal; font-size: 11px; margin-top: 2px; }
+.music-list li.bad { outline: 1px solid #e5484d66; }
+.music-list li button[data-play] { color: var(--accent); font-size: 12px; width: 22px; }
+.diag { color: var(--muted); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diag.err { color: #ff8a80; }

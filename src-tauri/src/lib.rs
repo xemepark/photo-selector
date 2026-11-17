@@ -210,19 +210,41 @@ fn default_folder(app: AppHandle) -> Option<String> {
 
 const AUDIO_EXTS: &[&str] = &["mp3", "m4a", "aac", "wav", "aif", "aiff", "flac", "ogg", "oga", "opus"];
 
+#[derive(Serialize)]
+struct AllowAudioResult {
+    allowed: Vec<String>,
+    /// (路徑, 原因)
+    rejected: Vec<(String, String)>,
+}
+
 /// 允許幻燈片播放使用者挑選的背景音樂檔。
-/// 只開放「存在、且副檔名是音樂格式」的檔案給 asset 協定讀取，回傳實際允許的路徑。
+/// 只開放「存在、可讀取、且副檔名是音樂格式」的檔案給 asset 協定讀取。
 #[tauri::command]
-fn allow_audio(app: AppHandle, paths: Vec<String>) -> Vec<String> {
+fn allow_audio(app: AppHandle, paths: Vec<String>) -> AllowAudioResult {
     let scope = app.asset_protocol_scope();
-    paths
-        .into_iter()
-        .filter(|p| {
-            let path = std::path::Path::new(p);
-            let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-            path.is_file() && AUDIO_EXTS.contains(&ext.as_str()) && scope.allow_file(path).is_ok()
-        })
-        .collect()
+    let mut res = AllowAudioResult { allowed: vec![], rejected: vec![] };
+    for p in paths {
+        let path = std::path::Path::new(&p);
+        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let reason = if ext == "m4p" {
+            Some("Apple Music 下載的歌曲有版權保護（.m4p），無法使用".to_string())
+        } else if !AUDIO_EXTS.contains(&ext.as_str()) {
+            Some(format!("不支援 .{ext} 格式"))
+        } else if !path.is_file() {
+            Some("找不到檔案".to_string())
+        } else if let Err(e) = std::fs::File::open(path) {
+            Some(format!("沒有權限讀取（{e}）"))
+        } else if let Err(e) = scope.allow_file(path) {
+            Some(format!("無法加入允許清單（{e}）"))
+        } else {
+            None
+        };
+        match reason {
+            None => res.allowed.push(p),
+            Some(r) => res.rejected.push((p, r)),
+        }
+    }
+    res
 }
 
 /// 命令列指定的資料夾：photo-selector /path/to/photos

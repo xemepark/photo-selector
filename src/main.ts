@@ -2,8 +2,19 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
 import { api, url, Item, Meta, OpenResult, LABELS, labelColor, stars, fmtBytes } from "./api";
 import { Grid } from "./grid";
+import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
 import { Cull, Analysis, ShootMode, drawFaces } from "./cull";
-import { Slideshow, SlideSettings, DEFAULT_SETTINGS, fileName, fmtTime, audioDuration } from "./slideshow";
+import {
+  Slideshow,
+  SlideSettings,
+  DEFAULT_SETTINGS,
+  fileName,
+  fmtTime,
+  audioDuration,
+  audioSrc,
+  audioErrors,
+  mediaErrorText,
+} from "./slideshow";
 
 // ---------------------------------------------------------------- state
 
@@ -612,7 +623,7 @@ function afterEdit(advanceTo: number | null) {
 const loupe = $("loupe");
 const loupeImg = $<HTMLImageElement>("loupe-img");
 const stage = $("loupe-stage");
-const prefetched: HTMLImageElement[] = [];
+const prefetched: unknown[] = [];
 const faceLayer = $("loupe-faces");
 let showFaces = storage("showFaces", true);
 
@@ -638,7 +649,7 @@ function closeLoupe() {
   S.zoom = false;
   stage.classList.remove("zoom");
   loupe.classList.add("hidden");
-  loupeImg.removeAttribute("src");
+  clearImg(loupeImg);
   faceLayer.innerHTML = "";
   gridEl.focus();
 }
@@ -648,7 +659,7 @@ function showLoupe() {
   S.zoom = false;
   stage.classList.remove("zoom");
   faceLayer.innerHTML = "";
-  loupeImg.src = url.preview(S.session, S.focus);
+  setImg(loupeImg, url.preview(S.session, S.focus));
   renderLoupeInfo();
   // 預先載入前後兩張，翻頁時幾乎零等待
   prefetched.length = 0;
@@ -656,9 +667,7 @@ function showLoupe() {
   for (const d of [1, -1, 2, -2]) {
     const n = S.view[i + d];
     if (n) {
-      const im = new Image();
-      im.src = url.preview(S.session, n.id);
-      prefetched.push(im);
+      prefetchImg(url.preview(S.session, n.id), prefetched);
     }
   }
 }
@@ -685,7 +694,7 @@ function toggleZoom(ev?: MouseEvent) {
   faceLayer.innerHTML = "";
   if (!S.zoom) {
     stage.classList.remove("zoom");
-    loupeImg.src = url.preview(S.session, S.focus);
+    setImg(loupeImg, url.preview(S.session, S.focus));
     return;
   }
   // 以點擊位置為中心放大到 100%
@@ -693,7 +702,7 @@ function toggleZoom(ev?: MouseEvent) {
   const fx = ev ? (ev.clientX - r.left) / r.width : 0.5;
   const fy = ev ? (ev.clientY - r.top) / r.height : 0.5;
   stage.classList.add("zoom");
-  loupeImg.src = url.full(S.session, S.focus);
+  setImg(loupeImg, url.full(S.session, S.focus));
   loupeImg.onload = () => {
     loupeImg.onload = null;
     if (!S.zoom) return;
@@ -733,8 +742,11 @@ function renderCompare(rebuild: boolean) {
     g.style.gridTemplateColumns = `repeat(${n <= 3 ? n : 2}, 1fr)`;
     g.style.gridTemplateRows = n === 4 ? "1fr 1fr" : "1fr";
     g.innerHTML = S.compare
-      .map((id, i) => `<div class="cmp" data-i="${i}"><img src="${url.preview(S.session, id)}" alt=""><div class="overlay-info"></div></div>`)
+      .map((id, i) => `<div class="cmp" data-i="${i}"><img data-id="${id}" alt=""><div class="overlay-info"></div></div>`)
       .join("");
+    g.querySelectorAll<HTMLImageElement>("img[data-id]").forEach((im) =>
+      setImg(im, url.preview(S.session, Number(im.dataset.id))),
+    );
   }
   g.querySelectorAll<HTMLElement>(".cmp").forEach((el, i) => {
     const id = S.compare[i];
@@ -954,7 +966,10 @@ function saveSlideSettings() {
 /** 重新允許上次選過的音樂（asset 協定的允許清單每次啟動都會重置），找不到的檔案移除 */
 async function restoreMusic() {
   if (!slideSettings.music.length) return;
-  const ok = await api.allowAudio(slideSettings.music).catch(() => [] as string[]);
+  const ok = await api
+    .allowAudio(slideSettings.music)
+    .then((r) => r.allowed)
+    .catch(() => [] as string[]);
   if (ok.length !== slideSettings.music.length) {
     slideSettings.music = slideSettings.music.filter((p) => ok.includes(p));
     if (!slideSettings.music.length) slideSettings.fitMusic = false;
@@ -1024,9 +1039,15 @@ function renderSlideForm() {
   ss.music.innerHTML = st.music.length
     ? st.music
         .map(
-          (p, i) => `<li title="${escapeHtml(p)}"><span>♪</span><span class="t">${escapeHtml(fileName(p))}</span>
-          <span class="d">${durations.has(p) ? fmtTime(durations.get(p)!) : ""}</span>
-          <button data-up="${i}" title="往前移">↑</button><button data-del="${i}" title="移除">✕</button></li>`,
+          (p, i) => {
+            const err = !durations.has(p) ? audioErrors.get(p) : undefined;
+            const playing = previewing === p;
+            return `<li title="${escapeHtml(p)}"${err ? ' class="bad"' : ""}>
+          <button data-play="${i}" title="${playing ? "停止試聽" : "試聽"}">${playing ? "■" : "▶"}</button>
+          <span class="t">${escapeHtml(fileName(p))}${err ? `<small>⚠ ${escapeHtml(err)}</small>` : ""}</span>
+          <span class="d">${durations.has(p) ? fmtTime(durations.get(p)!) : err ? "" : "讀取中…"}</span>
+          <button data-up="${i}" title="往前移">↑</button><button data-del="${i}" title="移除">✕</button></li>`;
+          },
         )
         .join("")
     : `<li class="music-empty">尚未選擇音樂（不加音樂也可以，會安靜播放）</li>`;
@@ -1069,7 +1090,55 @@ function openSlideDialog() {
   loadDurations();
 }
 
+// 試聽：用和幻燈片相同的方式讀取與播放，確認音樂可以正常出聲
+const previewAudio = new Audio();
+let previewing: string | null = null;
+let previewTimer = 0;
+
+function stopPreview() {
+  clearTimeout(previewTimer);
+  previewAudio.pause();
+  previewAudio.removeAttribute("src");
+  if (previewing !== null) {
+    previewing = null;
+    if (!slideDialog.classList.contains("hidden")) renderSlideForm();
+  }
+}
+
+async function togglePreview(path: string) {
+  if (previewing === path) return stopPreview();
+  stopPreview();
+  previewing = path;
+  renderSlideForm();
+  try {
+    previewAudio.src = await audioSrc(path);
+    if (previewing !== path) return;
+    previewAudio.volume = Number(ss.volume.value);
+    await previewAudio.play();
+    audioErrors.delete(path);
+    previewTimer = window.setTimeout(stopPreview, 15000);
+  } catch (e) {
+    const err = e as { name?: string; message?: string };
+    audioErrors.set(
+      path,
+      previewAudio.error ? mediaErrorText(previewAudio.error) : err?.name === "NotAllowedError" ? "系統不允許播放" : String(err?.message ?? e),
+    );
+    durations.delete(path);
+    previewing = null;
+    renderSlideForm();
+  }
+}
+previewAudio.addEventListener("error", () => {
+  if (!previewing) return;
+  audioErrors.set(previewing, mediaErrorText(previewAudio.error));
+  durations.delete(previewing);
+  previewing = null;
+  renderSlideForm();
+});
+previewAudio.addEventListener("ended", stopPreview);
+
 function closeSlideDialog() {
+  stopPreview();
   slideDialog.classList.add("hidden");
   gridEl.focus();
 }
@@ -1078,21 +1147,28 @@ async function startSlideshow() {
   readSlideForm();
   const ids = slideCandidates(slideSettings.scope, slideSettings.skipRejected);
   if (!ids.length) return;
+  stopPreview();
+  // 在使用者按下「開始播放」的當下就讓音樂開始（避免被系統的自動播放限制擋下）
+  slideshow.primeAudio(slideSettings.music);
   const startIdx = slideSettings.start === "focus" && S.focus !== null ? Math.max(0, ids.indexOf(S.focus)) : 0;
   slideDialog.classList.add("hidden");
   await slideshow.start(ids, slideSettings, startIdx);
 }
 
 slideDialog.addEventListener("input", () => {
+  previewAudio.volume = Number(ss.volume.value);
   readSlideForm();
   updateSlideSummary();
 });
 slideDialog.addEventListener("click", (ev) => {
   const t = ev.target as HTMLElement;
   if (t === slideDialog) return closeSlideDialog(); // 點背景關閉
+  const play = t.getAttribute("data-play");
+  if (play !== null) return void togglePreview(slideSettings.music[Number(play)]);
   const del = t.getAttribute("data-del");
   const up = t.getAttribute("data-up");
   if (del !== null) {
+    if (previewing === slideSettings.music[Number(del)]) stopPreview();
     slideSettings.music.splice(Number(del), 1);
   } else if (up !== null && Number(up) > 0) {
     const i = Number(up);
@@ -1110,8 +1186,9 @@ $("ss-add-music").addEventListener("click", async () => {
   });
   const list = Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
   if (!list.length) return;
-  const ok = await api.allowAudio(list);
-  if (ok.length < list.length) toast(`有 ${list.length - ok.length} 個檔案不是支援的音樂格式，已略過`);
+  const { allowed: ok, rejected } = await api.allowAudio(list);
+  if (rejected.length)
+    toast(`${rejected.length} 個檔案無法加入：` + rejected.map(([p, r]) => `${fileName(p)}（${r}）`).join("、"), 6000);
   slideSettings.music.push(...ok.filter((p) => !slideSettings.music.includes(p)));
   saveSlideSettings();
   renderSlideForm();
@@ -1161,6 +1238,16 @@ on<string>("menu", (e) => {
       if (!S.loupe && !S.compare.length) selectAll();
       break;
   }
+});
+
+// ---------------------------------------------------------------- 圖片診斷
+
+onImageDiag((msg, isError) => {
+  const el = $("diag");
+  el.textContent = msg;
+  el.classList.toggle("err", isError);
+  el.title = msg;
+  if (!isError) toast(msg, 4000);
 });
 
 // ---------------------------------------------------------------- boot

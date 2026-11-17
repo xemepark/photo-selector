@@ -7,6 +7,7 @@
 
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { setImg, clearImg, prefetchImg } from "./imgload";
 
 export type Transition = "fade" | "kenburns" | "none";
 
@@ -67,18 +68,49 @@ export function fmtTime(sec: number) {
 }
 
 const blobUrls = new Map<string, Promise<string>>();
+/** 已經準備好的網址（同步取得，讓「開始播放」能在使用者點擊的當下就出聲） */
+const readyUrls = new Map<string, string>();
+/** 每首音樂最近一次的錯誤原因 */
+export const audioErrors = new Map<string, string>();
 
-/** 取得可播放的 blob: 網址（同一首只讀取一次） */
+export function mediaErrorText(err: MediaError | null | undefined): string {
+  switch (err?.code) {
+    case 1:
+      return "播放被中止";
+    case 2:
+      return "讀取檔案失敗";
+    case 3:
+      return "解碼失敗（檔案可能損毀，或是有版權保護的音樂）";
+    case 4:
+      return "不支援這個音樂格式";
+    default:
+      return "無法播放";
+  }
+}
+
+/**
+ * 取得可播放的網址（同一首只讀取一次）。
+ * 優先讀成 blob:（各平台都能播放）；讀取失敗時改用 asset 協定直接播放（macOS 支援）。
+ */
 export function audioSrc(path: string): Promise<string> {
   let p = blobUrls.get(path);
   if (!p) {
-    p = fetch(convertFileSrc(path))
+    const direct = convertFileSrc(path);
+    p = fetch(direct)
       .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        if (!r.ok) throw new Error(r.status === 403 ? "沒有權限讀取這個檔案" : `讀取失敗（HTTP ${r.status}）`);
         return r.blob();
       })
-      .then((b) => URL.createObjectURL(b));
-    p.catch(() => blobUrls.delete(path));
+      .then((b) => URL.createObjectURL(b))
+      .catch((e) => {
+        console.warn("audio fetch failed, falling back to asset URL", path, e);
+        audioErrors.set(path, String(e?.message ?? e));
+        return direct;
+      })
+      .then((u) => {
+        readyUrls.set(path, u);
+        return u;
+      });
     blobUrls.set(path, p);
   }
   return p;
@@ -101,8 +133,22 @@ export async function audioDuration(path: string, timeoutMs = 8000): Promise<num
       resolve(v);
     };
     const t = setTimeout(() => done(NaN), timeoutMs);
-    a.addEventListener("loadedmetadata", () => done(a.duration), { once: true });
-    a.addEventListener("error", () => done(NaN), { once: true });
+    a.addEventListener(
+      "loadedmetadata",
+      () => {
+        audioErrors.delete(path);
+        done(a.duration);
+      },
+      { once: true },
+    );
+    a.addEventListener(
+      "error",
+      () => {
+        audioErrors.set(path, mediaErrorText(a.error));
+        done(NaN);
+      },
+      { once: true },
+    );
     a.src = src;
   });
 }
@@ -126,13 +172,14 @@ export class Slideshow {
   private volInput: HTMLInputElement;
   private audio = new Audio();
   private track = 0;
+  private trackError = "";
   private trackToken = 0;
   private muted = false;
   private fadeTimer = 0;
   private hideTimer = 0;
   private trackTicker = 0;
   private wentFullscreen = false;
-  private prefetched: HTMLImageElement[] = [];
+  private prefetched: unknown[] = [];
 
   constructor(
     private root: HTMLElement,
@@ -163,9 +210,23 @@ export class Slideshow {
     this.audio.addEventListener("error", () => {
       // 這首解碼失敗（格式不支援）→ 顯示提示並跳下一首；全部失敗就安靜播放
       if (!this.active || !this.audio.getAttribute("src")) return;
+      this.trackError = mediaErrorText(this.audio.error);
+      audioErrors.set(this.settings.music[this.track], this.trackError);
       this.renderTrack(true);
       if (this.settings.music.length > 1) setTimeout(() => this.playTrack(this.track + 1), 300);
     });
+  }
+
+  /**
+   * 必須在使用者點擊「開始播放」的當下（同步）呼叫：
+   * 先讓音訊元件開始播放，之後換歌、淡入淡出都不會被系統的自動播放限制擋下。
+   */
+  primeAudio(music: string[]) {
+    const url = music.length ? readyUrls.get(music[0]) : undefined;
+    if (!url) return;
+    this.audio.src = url;
+    this.audio.volume = 0;
+    this.audio.play().catch(() => {});
   }
 
   currentId(): number | null {
@@ -197,7 +258,7 @@ export class Slideshow {
     this.root.dataset.transition = settings.transition;
     this.layers.forEach((l) => {
       l.classList.remove("on", "kb");
-      l.removeAttribute("src");
+      clearImg(l);
     });
     this.volInput.value = String(settings.volume);
     this.toggleBtn.textContent = "⏸";
@@ -228,11 +289,12 @@ export class Slideshow {
     this.token++;
     this.trackToken++;
     this.fadeAudio(0, 600, () => {
+      if (this.active) return; // 淡出期間又開始了新的播放，不要把新的音樂停掉
       this.audio.pause();
       this.audio.removeAttribute("src");
     });
     this.root.classList.add("hidden");
-    this.layers.forEach((l) => l.removeAttribute("src"));
+    this.layers.forEach((l) => clearImg(l));
     this.prefetched = [];
     if (this.wentFullscreen) {
       this.wentFullscreen = false;
@@ -332,7 +394,7 @@ export class Slideshow {
       // 圖片若已在快取中，complete 與 onload 可能都會觸發；只能切換一次，否則兩層都會被隱藏
       if (revealed || t !== this.token || !this.active) return;
       revealed = true;
-      back.onload = back.onerror = null;
+      back.onload = null;
       const front = this.layers[this.front];
       back.classList.remove("kb");
       if (this.settings.transition === "kenburns") {
@@ -351,12 +413,11 @@ export class Slideshow {
       this.schedule();
       this.prefetch(i);
     };
+    // 設定新來源後一定會觸發 load（包含快取命中），不再檢查 complete，避免誤用上一張圖
     back.onload = reveal;
-    back.onerror = () => {
+    setImg(back, this.host.previewUrl(id), () => {
       if (t === this.token) this.timer = window.setTimeout(() => this.next(), 500);
-    };
-    back.src = this.host.previewUrl(id);
-    if (back.complete && back.naturalWidth) reveal();
+    });
   }
 
   private prefetch(i: number) {
@@ -364,9 +425,7 @@ export class Slideshow {
     for (const d of [1, 2]) {
       const n = this.slides[(i + d) % this.slides.length];
       if (n === undefined) continue;
-      const im = new Image();
-      im.src = this.host.previewUrl(n);
-      this.prefetched.push(im);
+      prefetchImg(this.host.previewUrl(n), this.prefetched);
     }
   }
 
@@ -378,17 +437,22 @@ export class Slideshow {
       return;
     }
     this.track = n % list.length;
+    this.trackError = "";
     const t = ++this.trackToken;
     this.renderTrack();
     audioSrc(list[this.track])
       .then((src) => {
         if (t !== this.trackToken || !this.active) return;
-        this.audio.src = src;
-        this.audio.volume = 0;
+        if (this.audio.src !== src) {
+          this.audio.src = src;
+          this.audio.volume = 0;
+        }
         if (this.paused) return;
         return this.audio.play().then(() => this.fadeAudio(this.targetVolume(), first ? MUSIC_FADE_MS : 300));
       })
-      .catch(() => {
+      .catch((e) => {
+        this.trackError =
+          e?.name === "NotAllowedError" ? "系統不允許自動播放，請按 ⏸ 再按 ▶ 試試" : String(e?.message ?? e);
         this.renderTrack(true);
         if (this.active && list.length > 1) setTimeout(() => this.playTrack(this.track + 1), 300);
       });
@@ -403,7 +467,7 @@ export class Slideshow {
     }
     const name = fileName(list[this.track]);
     this.trackEl.textContent = failed
-      ? `♪ 無法播放：${name}`
+      ? `♪ 無法播放「${name}」：${this.trackError || audioErrors.get(list[this.track]) || "未知原因"}`
       : `♪ ${name}  ${fmtTime(this.audio.currentTime)} / ${fmtTime(this.audio.duration)}`;
   }
 
