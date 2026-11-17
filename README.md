@@ -118,6 +118,24 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 後端單元測試
 > 判斷是輔助性質，不會自動刪除或拒絕任何照片。門檻是依少量樣本調整的，實際拍攝資料若有誤判，
 > 可調整 `src-tauri/src/face.rs` 的 `CLOSED_THRESHOLD` / `HALF_THRESHOLD`。
 
+## 與 Adobe Bridge 一致的評等與色彩標籤
+
+| 檔案 | 寫入位置（與 Bridge 相同） |
+|---|---|
+| RAW（CR3、NEF、ARW…） | 附屬檔 `IMG_0001.xmp` |
+| JPEG | **JPEG 檔案本身**的 XMP 區段（Bridge 對 JPEG 只讀這裡） |
+| RAW + JPEG 配對 | 兩邊都寫 |
+
+- 只會改動 `xmp:Rating` 與 `xmp:Label`，檔案裡其他 XMP（Camera Raw 調整、版權、關鍵字）與影像資料完全不動。
+- 新寫入的 XMP 預留空白，之後修改評等只需原地覆寫幾 KB（22MB 的 JPEG：第一次約 0.09 秒，之後約 0.005 秒）。
+  第一次寫入會先寫完整暫存檔再覆寫原檔，當機也不會毀損；並保留 Finder 標籤、建立日期等檔案屬性。
+  相機 JPEG 內嵌的預覽（MPF）位置會自動修正，不會失效。
+- **色彩標籤是靠「名稱」對應顏色**：Bridge 預設名稱是 Select / Second / Approved / Review / To Do。
+  若你在 Bridge 的「偏好設定 → 標籤」改過名稱，請在左側「標籤名稱（與 Bridge 一致）…」設定相同名稱。
+  讀取時也認得 Lightroom（Red / Yellow…）與中文顏色名稱。
+- 拒絕（X）寫成 `xmp:Rating="-1"`，Bridge 會顯示為「拒絕」。
+- 尚未支援寫入 DNG / TIFF / PSD / PNG 檔案本身的 XMP（這些格式目前寫附屬檔，Bridge 不會讀取）。
+
 ## 幻燈片（v0.3）
 
 工具列「▶ 幻燈片」或按 **P**（Mac 選單：檔案 → 播放幻燈片 ⇧⌘P），設定後全螢幕播放：
@@ -147,7 +165,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 後端單元測試
 | RAW+JPEG | 同名的 RAW 與 JPEG 自動合併成一個項目，評分、複製、移動會一起處理 |
 | 檢視 | 全螢幕預覽（Space）、100% 放大（Z 或點擊，以點擊位置為中心）、2–4 張並排比較（C）、前後張預先載入 |
 | 評分 | 0–5 星、拒絕（X）、色彩標籤（6 紅 / 7 黃 / 8 綠 / 9 藍）、評分後自動跳下一張、多選批次評分 |
-| 後設資料 | EXIF（拍攝時間、相機、鏡頭、快門、光圈、ISO、焦距、尺寸），評等與標籤寫入 XMP 附屬檔（與 Bridge / Lightroom 相容） |
+| 後設資料 | EXIF（拍攝時間、相機、鏡頭、快門、光圈、ISO、焦距、尺寸）；評等與標籤的寫法與 Bridge 相同：RAW 寫附屬檔 .xmp、JPEG 寫進檔案內的 XMP，Bridge / Lightroom 打開都看得到 |
 | 篩選與排序 | 依評等、標籤、檔案類型、清晰度、相機、鏡頭篩選（含數量統計）；依檔名、拍攝時間、評等、大小、清晰度排序 |
 | 檔案操作 | 選取項目複製 / 移動到其他資料夾（連同配對檔與 .xmp，不覆蓋同名檔），跨磁碟移動、保留修改時間 |
 | 快取 | SQLite 縮圖 / 清晰度快取，可查看大小與清除 |
@@ -228,8 +246,6 @@ src-tauri/models/       MediaPipe 人臉模型（ONNX，Apache 2.0）
 
 ## 已知限制
 
-- JPEG 的評等也寫在 `.xmp` 附屬檔。Lightroom / Bridge 讀 RAW 的附屬檔，但 JPEG 只讀檔案內嵌的 XMP，
-  所以在本程式評的 JPEG 星等，Adobe 軟體目前看不到（規劃中：可選擇寫入 JPEG 內嵌 XMP）。
 - RAW 只顯示內嵌預覽，沒有自行做 RAW 顯像；沒有內嵌預覽的 RAW 會顯示格式佔位圖。
 - HEIC / AVIF 需要 libheif，目前只有在檔案內含 JPEG 縮圖時才能顯示。
 - 尚未做色彩管理（ICC），廣色域照片的顏色可能偏淡。

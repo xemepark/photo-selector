@@ -1,8 +1,9 @@
-//! 讀寫 XMP 的評等（xmp:Rating）與色彩標籤（xmp:Label）。
+//! 讀寫 XMP 的評等（xmp:Rating）與色彩標籤（xmp:Label），做法與 Adobe Bridge 相同：
 //!
-//! 寫入一律使用附屬檔（IMG_0001.xmp），不修改原始照片——這是 Adobe Bridge / Lightroom
-//! 對 RAW 檔的相同慣例，所以在這裡評的星等，Bridge / Lightroom 打開也看得到。
-//! 已存在的 .xmp 只會改動這兩個屬性，其他內容（Camera Raw 調整、關鍵字…）原封不動。
+//! - **RAW**：寫在附屬檔（IMG_0001.xmp）
+//! - **JPEG**：寫進 JPEG 檔案本身的 XMP 區段（APP1）——Bridge 對 JPEG 只讀檔案內嵌的 XMP，不讀附屬檔
+//!
+//! 已存在的 XMP 只會改動這兩個屬性，其他內容（Camera Raw 調整、關鍵字、版權…）原封不動。
 
 use std::fs;
 use std::io;
@@ -119,22 +120,249 @@ pub fn read_embedded(path: &Path) -> Option<RatingLabel> {
     Some(parse(&s))
 }
 
-/// `rating` / `label`：None = 不變更；Some(None) = 清除（只適用 label）
-pub fn update(path: &Path, rating: Option<i32>, label: Option<Option<&str>>) -> io::Result<()> {
-    let mut xml = fs::read_to_string(path).unwrap_or_else(|_| template());
+fn apply(xml: &mut String, rating: Option<i32>, label: Option<Option<&str>>) {
     if !xml.contains("<rdf:Description") {
-        xml = template();
+        *xml = template();
     }
     if let Some(r) = rating {
-        set_prop(&mut xml, "xmp:Rating", Some(&r.to_string()));
+        set_prop(xml, "xmp:Rating", Some(&r.to_string()));
     }
     if let Some(l) = label {
-        set_prop(&mut xml, "xmp:Label", l);
+        set_prop(xml, "xmp:Label", l);
     }
+}
+
+/// 更新附屬檔。`rating` / `label`：None = 不變更；Some(None) = 清除（只適用 label）
+pub fn update(path: &Path, rating: Option<i32>, label: Option<Option<&str>>) -> io::Result<()> {
+    let mut xml = fs::read_to_string(path).unwrap_or_else(|_| template());
+    apply(&mut xml, rating, label);
     // 先寫暫存檔再改名，避免寫到一半當機把附屬檔弄壞
     let tmp = path.with_extension("xmp.tmp");
     fs::write(&tmp, xml.as_bytes())?;
     fs::rename(&tmp, path)
+}
+
+// ---------------------------------------------------------------- JPEG 內嵌 XMP
+
+const XMP_SIG: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+/// 新寫入的 XMP 預留的空白，之後修改評等 / 標籤就能原地覆寫，不必重寫整個檔案
+const PADDING: usize = 2048;
+/// APP1 區段內容上限（65535 - 長度欄位 2 bytes）
+const MAX_SEGMENT: usize = 65533;
+
+struct Seg {
+    marker: u8,
+    /// 區段起點（0xFF 的位置）
+    start: usize,
+    /// 內容起點（長度欄位之後）
+    body: usize,
+    end: usize,
+}
+
+/// 列出 JPEG 檔頭的區段（到 SOS 為止）
+fn segments(d: &[u8]) -> Option<Vec<Seg>> {
+    if d.len() < 4 || d[0] != 0xFF || d[1] != 0xD8 {
+        return None;
+    }
+    let mut v = Vec::new();
+    let mut p = 2;
+    while p + 4 <= d.len() && d[p] == 0xFF {
+        let m = d[p + 1];
+        if m == 0xFF {
+            p += 1;
+            continue;
+        }
+        if m == 0xDA || m == 0xD9 {
+            break;
+        }
+        let len = u16::from_be_bytes([d[p + 2], d[p + 3]]) as usize;
+        if len < 2 || p + 2 + len > d.len() {
+            return None;
+        }
+        v.push(Seg { marker: m, start: p, body: p + 4, end: p + 2 + len });
+        p += 2 + len;
+    }
+    Some(v)
+}
+
+fn find_xmp(d: &[u8], segs: &[Seg]) -> Option<usize> {
+    segs.iter().position(|s| s.marker == 0xE1 && d[s.body..s.end].starts_with(XMP_SIG))
+}
+
+/// 讀 JPEG 檔案內嵌的 XMP（只讀檔頭）
+pub fn read_jpeg(path: &Path) -> Option<RatingLabel> {
+    use std::io::Read;
+    let mut buf = vec![0u8; 256 * 1024];
+    let n = fs::File::open(path).ok()?.read(&mut buf).ok()?;
+    buf.truncate(n);
+    let segs = segments(&buf)?;
+    let s = &segs[find_xmp(&buf, &segs)?];
+    Some(parse(&String::from_utf8_lossy(&buf[s.body + XMP_SIG.len()..s.end])))
+}
+
+/// 把 XMP 封包補空白到指定長度（空白加在 `<?xpacket end` 之前，這是 XMP 規範的預留區）
+fn pad_to(xml: &str, len: usize) -> Option<Vec<u8>> {
+    let cur = xml.len();
+    if cur > len {
+        return None;
+    }
+    let fill = len - cur;
+    let mut out = String::with_capacity(len);
+    match xml.rfind("<?xpacket end") {
+        Some(i) => {
+            out.push_str(&xml[..i]);
+            out.extend(std::iter::repeat(' ').take(fill));
+            out.push_str(&xml[i..]);
+        }
+        None => {
+            out.push_str(xml);
+            out.extend(std::iter::repeat(' ').take(fill));
+        }
+    }
+    Some(out.into_bytes())
+}
+
+/// 原地覆寫（不截斷檔案，正在讀取這個檔案的縮圖執行緒不會出錯）
+fn write_at(path: &Path, offset: u64, bytes: &[u8]) -> io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut f = fs::OpenOptions::new().write(true).open(path)?;
+    f.seek(SeekFrom::Start(offset))?;
+    f.write_all(bytes)?;
+    f.sync_data()
+}
+
+/// 整個檔案改寫：先寫完整的暫存檔（當機時資料還在），再覆寫回原檔。
+/// 覆寫原檔而不是改名，才能保留 Finder 標籤、建立日期等檔案屬性。
+fn rewrite(path: &Path, data: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_file_name(format!(
+        ".{}.photo-selector-tmp",
+        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    ));
+    {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+    }
+    {
+        let mut f = fs::OpenOptions::new().write(true).open(path)?;
+        f.write_all(data)?;
+        f.set_len(data.len() as u64)?;
+        f.sync_all()?;
+    }
+    fs::remove_file(&tmp)
+}
+
+/// 更新 JPEG 檔案內嵌 XMP 的評等 / 標籤
+pub fn update_jpeg(path: &Path, rating: Option<i32>, label: Option<Option<&str>>) -> io::Result<()> {
+    let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
+    let data = fs::read(path)?;
+    let segs = segments(&data).ok_or_else(|| bad("不是有效的 JPEG 檔"))?;
+
+    if let Some(i) = find_xmp(&data, &segs) {
+        let s = &segs[i];
+        let payload = s.body + XMP_SIG.len();
+        let old = std::str::from_utf8(&data[payload..s.end]).map_err(|_| bad("XMP 不是有效的 UTF-8"))?;
+        let mut xml = old.trim_end_matches(['\0', ' ', '\n', '\r', '\t']).to_string();
+        apply(&mut xml, rating, label);
+        // 有足夠的預留空白 → 原地覆寫（最快、最安全）
+        if let Some(bytes) = pad_to(&xml, s.end - payload) {
+            return write_at(path, payload as u64, &bytes);
+        }
+        // 空間不夠 → 重建這個區段（附預留空白）
+        let bytes = pad_to(&xml, xml.len() + PADDING).unwrap();
+        if XMP_SIG.len() + bytes.len() > MAX_SEGMENT {
+            return Err(bad("XMP 資料太大"));
+        }
+        let mut out = Vec::with_capacity(data.len() + PADDING + 64);
+        out.extend_from_slice(&data[..s.start]);
+        push_app1(&mut out, &bytes);
+        out.extend_from_slice(&data[s.end..]);
+        // XMP 位在 MPF 標頭之後時，放大 XMP 會讓相機內嵌預覽的位移失準 → 修正 MPF 位移
+        if let Some(mpf) = segs.iter().position(|g| g.marker == 0xE2 && data[g.body..g.end].starts_with(b"MPF\0")) {
+            if mpf < i {
+                let delta = (out.len() as i64) - (data.len() as i64);
+                shift_mpf(&mut out, delta);
+            }
+        }
+        return rewrite(path, &out);
+    }
+
+    // 沒有 XMP → 在 APP0 / EXIF 之後插入新的區段
+    let mut xml = template();
+    apply(&mut xml, rating, label);
+    let bytes = pad_to(&xml, xml.len() + PADDING).unwrap();
+    let at = segs
+        .iter()
+        .take_while(|s| s.marker == 0xE0 || (s.marker == 0xE1 && data[s.body..s.end].starts_with(b"Exif\0")))
+        .last()
+        .map(|s| s.end)
+        .unwrap_or(2);
+    let mut out = Vec::with_capacity(data.len() + bytes.len() + 64);
+    out.extend_from_slice(&data[..at]);
+    push_app1(&mut out, &bytes);
+    out.extend_from_slice(&data[at..]);
+    rewrite(path, &out)
+}
+
+/// 把 MPF（多圖格式）裡第 2 張以後影像的位移加上 delta
+fn shift_mpf(d: &mut [u8], delta: i64) {
+    let Some(segs) = segments(d) else { return };
+    let Some(g) = segs.iter().find(|g| g.marker == 0xE2 && d[g.body..g.end].starts_with(b"MPF\0")) else { return };
+    let base = g.body + 4;
+    let end = g.end;
+    let le = &d[base..base + 2] == b"II";
+    let rd16 = |d: &[u8], p: usize| {
+        let b = [d[p], d[p + 1]];
+        if le { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) }
+    };
+    let rd32 = |d: &[u8], p: usize| {
+        let b = [d[p], d[p + 1], d[p + 2], d[p + 3]];
+        if le { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) }
+    };
+    if base + 8 > end {
+        return;
+    }
+    let ifd = base + rd32(d, base + 4) as usize;
+    if ifd + 2 > end {
+        return;
+    }
+    for i in 0..rd16(d, ifd) as usize {
+        let e = ifd + 2 + i * 12;
+        if e + 12 > end || rd16(d, e) != 0xB002 {
+            continue;
+        }
+        let count = rd32(d, e + 4) as usize / 16;
+        let off = base + rd32(d, e + 8) as usize;
+        for k in 1..count {
+            let p = off + k * 16 + 8;
+            if p + 4 > end {
+                break;
+            }
+            let v = rd32(d, p);
+            if v == 0 {
+                continue;
+            }
+            let nv = (v as i64 + delta).max(0) as u32;
+            let bytes = if le { nv.to_le_bytes() } else { nv.to_be_bytes() };
+            d[p..p + 4].copy_from_slice(&bytes);
+        }
+    }
+}
+
+fn push_app1(out: &mut Vec<u8>, packet: &[u8]) {
+    let len = 2 + XMP_SIG.len() + packet.len();
+    out.extend_from_slice(&[0xFF, 0xE1]);
+    out.extend_from_slice(&(len as u16).to_be_bytes());
+    out.extend_from_slice(XMP_SIG);
+    out.extend_from_slice(packet);
+}
+
+/// 本程式舊版建立、只含評等 / 標籤的附屬檔（JPEG 改寫進檔案內後就用不到了，可安全刪除）
+pub fn is_own_simple_sidecar(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .map(|s| s.contains("x:xmptk=\"Photo Selector\"") && !s.contains("crs:") && !s.contains("dc:") && s.len() < 4096)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -166,5 +394,135 @@ mod tests {
         assert!(s.contains(r#"xmlns:xmp="http://ns.adobe.com/xap/1.0/""#));
         assert_eq!(parse(&s).label.as_deref(), Some("Green"));
         fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod jpeg_tests {
+    use super::*;
+
+    fn tmp_jpeg(name: &str, data: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ps-xmpjpg-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
+        fs::write(&p, data).unwrap();
+        p
+    }
+
+    /// 一張帶 EXIF APP1 的小 JPEG
+    fn jpeg_with_exif() -> Vec<u8> {
+        let base = crate::jpeg::tests::make_jpeg(320, 200);
+        let mut exif = b"Exif\0\0II*\0".to_vec();
+        exif.extend_from_slice(&8u32.to_le_bytes());
+        exif.extend_from_slice(&0u16.to_le_bytes());
+        exif.extend_from_slice(&0u32.to_le_bytes());
+        let mut out = vec![0xFF, 0xD8, 0xFF, 0xE1];
+        out.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(&exif);
+        out.extend_from_slice(&base[2..]);
+        out
+    }
+
+    #[test]
+    fn inserts_then_edits_in_place_keeping_image_intact() {
+        let orig = jpeg_with_exif();
+        let p = tmp_jpeg("a.jpg", &orig);
+        update_jpeg(&p, Some(4), Some(Some("Select"))).unwrap();
+        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(4), label: Some("Select".into()) });
+        let after_insert = fs::read(&p).unwrap();
+        // 原檔開頭是 EXIF(APP1) + JFIF(APP0)：XMP 應插在這兩個之後，EXIF 仍是第一個區段
+        let orig_segs = segments(&orig).unwrap();
+        let segs = segments(&after_insert).unwrap();
+        assert!(after_insert[segs[0].body..].starts_with(b"Exif\0"));
+        assert_eq!(find_xmp(&after_insert, &segs), Some(2));
+        // 其後的影像資料完全沒變，而且仍可解碼
+        assert!(after_insert.ends_with(&orig[orig_segs[1].end..]));
+        assert!(image::load_from_memory(&after_insert).is_ok());
+
+        // 第二次修改：大小不變（原地覆寫）
+        update_jpeg(&p, Some(-1), Some(None)).unwrap();
+        let after_edit = fs::read(&p).unwrap();
+        assert_eq!(after_edit.len(), after_insert.len());
+        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(-1), label: None });
+        assert!(image::load_from_memory(&after_edit).is_ok());
+        // 不留暫存檔
+        let leftovers: Vec<_> = fs::read_dir(p.parent().unwrap()).unwrap().flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains("photo-selector-tmp")).collect();
+        assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn preserves_existing_xmp_content() {
+        let orig = jpeg_with_exif();
+        let xml = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="1"><dc:rights>(c) Studio</dc:rights></rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="w"?>"#;
+        let mut data = orig[..2].to_vec();
+        push_app1(&mut data, xml.as_bytes());
+        data.extend_from_slice(&orig[2..]);
+        let p = tmp_jpeg("b.jpg", &data);
+        update_jpeg(&p, Some(5), Some(Some("Approved"))).unwrap();
+        let s = String::from_utf8_lossy(&fs::read(&p).unwrap()).into_owned();
+        assert!(s.contains("<dc:rights>(c) Studio</dc:rights>"));
+        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(5), label: Some("Approved".into()) });
+    }
+}
+
+#[cfg(test)]
+mod mpo_tests {
+    use super::*;
+
+    /// 實際的 MPO（主影像 + MPF 預覽，類似 Sony JPEG）：
+    /// MPO_TEST=/path/to.jpg cargo test --release mpo_keeps_preview -- --nocapture
+    #[test]
+    fn mpo_keeps_preview() {
+        let Ok(src) = std::env::var("MPO_TEST") else { return };
+        let dir = std::env::temp_dir().join(format!("ps-mpo-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("x.jpg");
+        fs::copy(&src, &p).unwrap();
+        let before = crate::jpeg::jpeg_file_previews(&fs::read(&p).unwrap());
+        let t = std::time::Instant::now();
+        update_jpeg(&p, Some(3), Some(Some("Select"))).unwrap();
+        println!("insert: {:?}", t.elapsed());
+        // 原地修改
+        let t = std::time::Instant::now();
+        update_jpeg(&p, Some(5), Some(Some("Second"))).unwrap();
+        println!("edit in place: {:?}", t.elapsed());
+        // 讓 XMP 變大到超過預留空間（強迫重建區段），檢查 MPF 預覽仍正確
+        let long = "L".repeat(3000);
+        update_jpeg(&p, None, Some(Some(&long))).unwrap();
+        update_jpeg(&p, Some(2), Some(Some("Approved"))).unwrap();
+        let data = fs::read(&p).unwrap();
+        let after = crate::jpeg::jpeg_file_previews(&data);
+        println!("previews before {:?}", before.iter().map(|j| (j.width, j.height)).collect::<Vec<_>>());
+        println!("previews after  {:?}", after.iter().map(|j| (j.width, j.height)).collect::<Vec<_>>());
+        assert_eq!(before.len(), after.len());
+        for (a, b) in before.iter().zip(&after) {
+            assert_eq!((a.width, a.height, a.len), (b.width, b.height, b.len));
+            assert_eq!(a.bytes(&fs::read(&src).unwrap()), b.bytes(&data));
+        }
+        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(2), label: Some("Approved".into()) });
+        assert!(image::load_from_memory(&data).is_ok());
+
+        // 情境二：XMP 位在 MPF 標頭「之後」（某些軟體會這樣寫）→ 放大 XMP 時必須修正 MPF 位移
+        let orig = fs::read(&src).unwrap();
+        let segs = segments(&orig).unwrap();
+        let mpf = segs.iter().find(|g| g.marker == 0xE2 && orig[g.body..g.end].starts_with(b"MPF\0")).unwrap();
+        let mut xml = template();
+        apply(&mut xml, Some(1), None);
+        let mut crafted = orig[..mpf.end].to_vec();
+        push_app1(&mut crafted, xml.as_bytes()); // 沒有預留空白
+        crafted.extend_from_slice(&orig[mpf.end..]);
+        let delta = crafted.len() as i64 - orig.len() as i64;
+        shift_mpf(&mut crafted, delta);
+        let p2 = dir.join("y.jpg");
+        fs::write(&p2, &crafted).unwrap();
+        assert_eq!(crate::jpeg::jpeg_file_previews(&crafted).len(), 1, "crafted file valid");
+        update_jpeg(&p2, Some(4), Some(Some("Review"))).unwrap(); // 沒有預留空間 → 重建並修正位移
+        let d2 = fs::read(&p2).unwrap();
+        let after2 = crate::jpeg::jpeg_file_previews(&d2);
+        assert_eq!(after2.len(), 1);
+        assert_eq!(after2[0].bytes(&d2), before[0].bytes(&orig));
+        assert_eq!(read_jpeg(&p2).unwrap(), RatingLabel { rating: Some(4), label: Some("Review".into()) });
+        println!("XMP after MPF: preview still correct after growth");
     }
 }

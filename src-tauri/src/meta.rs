@@ -195,7 +195,15 @@ pub fn read_meta(item: &Item) -> Meta {
         }
     }
 
-    let rl = xmp::read_sidecar(&item.sidecar_path())
+    // 讀取順序與 Bridge 一致：有 RAW → 附屬檔優先；只有 JPEG → 檔案內嵌 XMP 優先
+    let sidecar = || xmp::read_sidecar(&item.sidecar_path());
+    let jpeg = || {
+        item.files
+            .iter()
+            .filter(|f| f.class == Class::Jpeg)
+            .find_map(|f| xmp::read_jpeg(&f.path))
+    };
+    let rl = if item.raw().is_some() { sidecar().or_else(jpeg) } else { jpeg().or_else(sidecar) }
         .or_else(|| xmp::read_embedded(&item.display().path))
         .unwrap_or_default();
 

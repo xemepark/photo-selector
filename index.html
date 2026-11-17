@@ -41,6 +41,7 @@
             <button id="btn-copy">複製選取項目到…</button>
             <button id="btn-move">移動選取項目到…</button>
             <label class="tool check" title="按 delete 鍵刪除照片前先跳出確認"><input id="confirm-delete" type="checkbox" checked /> 刪除照片前先確認</label>
+            <button id="btn-label-names" title="色彩標籤寫入檔案時使用的名稱，需與 Bridge 偏好設定中的標籤名稱一致">標籤名稱（與 Bridge 一致）…</button>
           </div>
         </section>
         <section>
@@ -159,6 +160,26 @@
           <span id="ss-summary" class="muted"></span>
           <button id="ss-cancel">取消</button>
           <button id="ss-go" class="primary">開始播放</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="label-dialog" class="modal hidden">
+      <div class="modal-box">
+        <h2>色彩標籤名稱</h2>
+        <p class="muted small">
+          Bridge 是用「標籤名稱」辨認顏色的。請打開 Bridge 的 <b>偏好設定 → 標籤</b>，
+          把下面的名稱改成和那裡一模一樣（大小寫也要相同），在這裡加的標籤，Bridge 才會顯示成正確的顏色。
+        </p>
+        <div class="form">
+          <label>套用預設 <select id="label-preset"></select></label>
+          <div id="label-fields" class="label-fields"></div>
+        </div>
+        <p class="muted small">讀取時也認得 Bridge 預設、Lightroom（Red / Yellow…）與中文顏色名稱，舊照片的標籤一樣會顯示正確顏色。</p>
+        <div class="modal-actions">
+          <span></span>
+          <button id="label-cancel">取消</button>
+          <button id="label-save" class="primary">儲存</button>
         </div>
       </div>
     </div>

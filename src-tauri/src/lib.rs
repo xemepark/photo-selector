@@ -119,13 +119,46 @@ fn set_viewport(core: CoreState<'_>, session: u64, ids: Vec<u32>) {
     core.set_viewport(session, ids);
 }
 
+/// 依 Adobe Bridge 的做法寫入評等 / 標籤：
+/// RAW → 附屬檔 .xmp；JPEG → 檔案內嵌 XMP；其他格式 → 附屬檔。RAW+JPEG 配對兩邊都寫。
+fn write_meta(core: &Core, it: &scan::Item, rating: Option<i32>, label: Option<Option<&str>>) -> Result<(), String> {
+    // 同一時間只寫一個檔案：快速連按評分鍵時，兩次寫入不會互相覆蓋或把檔案寫壞
+    static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let err = |e: std::io::Error| format!("{}：{e}", it.name);
+    let mut wrote = false;
+    if it.raw().is_some() {
+        xmp::update(&it.sidecar_path(), rating, label).map_err(err)?;
+        wrote = true;
+    }
+    for f in it.files.iter().filter(|f| f.class == scan::Class::Jpeg) {
+        xmp::update_jpeg(&f.path, rating, label).map_err(err)?;
+        wrote = true;
+        // 快取內容仍有效，只是檔案的修改時間 / 大小變了
+        if let Ok(md) = std::fs::metadata(&f.path) {
+            core.cache.rekey(&f.path.to_string_lossy(), scan::mtime_ms(&md), md.len() as i64);
+        }
+    }
+    if it.raw().is_none() && it.files.iter().any(|f| f.class == scan::Class::Jpeg) {
+        // 舊版本程式替 JPEG 建立的附屬檔，已經寫進 JPEG 內，移除避免資料不一致
+        let sc = it.sidecar_path();
+        if sc.exists() && xmp::is_own_simple_sidecar(&sc) {
+            let _ = std::fs::remove_file(sc);
+        }
+    }
+    if !wrote {
+        xmp::update(&it.sidecar_path(), rating, label).map_err(err)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn set_rating(core: CoreState<'_>, session: u64, ids: Vec<u32>, rating: i32) -> Result<(), String> {
     let sess = core.session(session)?;
     let rating = rating.clamp(-1, 5);
     for id in ids {
         if let Some(it) = sess.items.get(id as usize) {
-            xmp::update(&it.sidecar_path(), Some(rating), None).map_err(|e| format!("{}：{e}", it.name))?;
+            write_meta(&core, it, Some(rating), None)?;
         }
     }
     Ok(())
@@ -136,8 +169,7 @@ async fn set_label(core: CoreState<'_>, session: u64, ids: Vec<u32>, label: Opti
     let sess = core.session(session)?;
     for id in ids {
         if let Some(it) = sess.items.get(id as usize) {
-            xmp::update(&it.sidecar_path(), None, Some(label.as_deref()))
-                .map_err(|e| format!("{}：{e}", it.name))?;
+            write_meta(&core, it, None, Some(label.as_deref()))?;
         }
     }
     Ok(())

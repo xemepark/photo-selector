@@ -1,6 +1,22 @@
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
-import { api, url, Item, Meta, OpenResult, LABELS, labelColor, stars } from "./api";
+import {
+  api,
+  url,
+  Item,
+  Meta,
+  OpenResult,
+  LABELS,
+  LABEL_PRESETS,
+  LabelKey,
+  LabelNames,
+  labelColor,
+  labelKey,
+  labelName,
+  getLabelNames,
+  setLabelNames,
+  stars,
+} from "./api";
 import { Grid } from "./grid";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
 import { Cull, Analysis, ShootMode, drawFaces, contentRect } from "./cull";
@@ -154,7 +170,7 @@ function facet(key: FilterKey, it: Item): string {
       return r < 0 ? "rej" : String(r);
     }
     case "label":
-      return m?.label ? m.label : "none";
+      return m?.label ? (labelKey(m.label) ?? "other") : "none";
     case "kind":
       return it.kind;
     case "camera":
@@ -251,7 +267,11 @@ function renderFilters() {
   groups.push([
     "label",
     "標籤",
-    [["none", "無標籤"], ...LABELS.map((l) => [l.value, l.name] as [string, string])],
+    [
+      ["none", "無標籤"],
+      ...LABELS.map((l) => [l.key, `${l.zh} · ${labelName(l.key)}`] as [string, string]),
+      ["other", "其他標籤名稱"],
+    ],
   ]);
   groups.push(["kind", "檔案類型", Object.entries(KIND_NAMES)]);
   groups.push(["camera", "相機", dyn("camera")]);
@@ -266,7 +286,7 @@ function renderFilters() {
     html += `<div class="filter-group"><h4>${title}</h4>`;
     for (const [v, label] of visible) {
       const on = S.filters[key].has(v);
-      const lc = key === "label" && v !== "none" ? labelColor(v) : null;
+      const lc = key === "label" && v !== "none" && v !== "other" ? LABELS.find((l) => l.key === v)?.color : null;
       const dot = lc ? `<span class="dot" style="background:${lc}"></span>` : "";
       html += `<div class="filter-row${on ? " on" : ""}" data-k="${key}" data-v="${escapeHtml(v)}">
         <input type="checkbox" ${on ? "checked" : ""}>${dot}<span class="label">${escapeHtml(label)}</span>
@@ -614,10 +634,11 @@ async function applyRating(rating: number | "toggle-reject") {
   }
 }
 
-async function applyLabel(label: string) {
+async function applyLabel(key: LabelKey) {
   const ids = targets();
   if (!ids.length) return;
-  const value = ids.every((id) => metaOf(id).label === label) ? null : label;
+  // 與 Bridge 相同：再按一次同色就移除標籤。寫入的文字使用設定的標籤名稱
+  const value = ids.every((id) => labelKey(metaOf(id).label) === key) ? null : labelName(key);
   const prev = ids.map((id) => [id, metaOf(id).label ?? null] as const);
   const advanceTo = advanceTarget(ids);
   ids.forEach((id) => setLocal(id, { label: value }));
@@ -929,8 +950,8 @@ document.addEventListener("keydown", (ev) => {
   // 評等 / 拒絕 / 標籤（格狀、全螢幕、比較模式通用）
   if (!ev.altKey && /^[0-5]$/.test(k) && !mod) return ev.preventDefault(), void applyRating(Number(k));
   if (k.toLowerCase() === "x" && !mod) return ev.preventDefault(), void applyRating("toggle-reject");
-  const lab = LABELS.find((l) => l.key && l.key === k);
-  if (lab) return ev.preventDefault(), void applyLabel(lab.value);
+  const lab = LABELS.find((l) => l.hotkey && l.hotkey === k);
+  if (lab) return ev.preventDefault(), void applyLabel(lab.key);
 
   if (S.compare.length) {
     if (k === "Escape" || k.toLowerCase() === "c") closeCompare();
@@ -1300,6 +1321,54 @@ onImageDiag((msg, isError) => {
   el.classList.toggle("err", isError);
   el.title = msg;
   if (!isError) toast(msg, 4000);
+});
+
+// ---------------------------------------------------------------- 標籤名稱設定（與 Bridge 一致）
+
+const labelDialog = $("label-dialog");
+
+function renderLabelDialog(names: LabelNames) {
+  $("label-fields").innerHTML = LABELS.map(
+    (l) => `<label><span class="dot" style="background:${l.color}"></span><span class="zh">${l.zh}${l.hotkey ? `（${l.hotkey}）` : ""}</span>
+      <input type="text" data-key="${l.key}" value="${escapeHtml(names[l.key])}" spellcheck="false" /></label>`,
+  ).join("");
+  const preset = LABEL_PRESETS.find((p) => LABELS.every((l) => p.names[l.key] === names[l.key]));
+  $<HTMLSelectElement>("label-preset").value = preset ? preset.id : "custom";
+}
+
+function readLabelDialog(): LabelNames {
+  const n = getLabelNames();
+  labelDialog.querySelectorAll<HTMLInputElement>("input[data-key]").forEach((i) => {
+    const v = i.value.trim();
+    if (v) n[i.dataset.key as LabelKey] = v;
+  });
+  return n;
+}
+
+$<HTMLSelectElement>("label-preset").innerHTML =
+  LABEL_PRESETS.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("") +
+  `<option value="custom">自訂</option>`;
+$("label-preset").addEventListener("change", (e) => {
+  const p = LABEL_PRESETS.find((x) => x.id === (e.target as HTMLSelectElement).value);
+  if (p) renderLabelDialog(p.names);
+});
+labelDialog.addEventListener("input", (e) => {
+  if ((e.target as HTMLElement).dataset.key) {
+    const n = readLabelDialog();
+    const preset = LABEL_PRESETS.find((p) => LABELS.every((l) => p.names[l.key] === n[l.key]));
+    $<HTMLSelectElement>("label-preset").value = preset ? preset.id : "custom";
+  }
+});
+$("btn-label-names").addEventListener("click", () => {
+  renderLabelDialog(getLabelNames());
+  labelDialog.classList.remove("hidden");
+});
+$("label-cancel").addEventListener("click", () => labelDialog.classList.add("hidden"));
+$("label-save").addEventListener("click", () => {
+  setLabelNames(readLabelDialog());
+  labelDialog.classList.add("hidden");
+  update();
+  toast("已儲存標籤名稱。之後加上的標籤會使用新名稱");
 });
 
 // ---------------------------------------------------------------- 側欄寬度

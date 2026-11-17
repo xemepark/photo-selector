@@ -78,19 +78,98 @@ export const api = {
     invoke<{ allowed: string[]; rejected: [string, string][] }>("allow_audio", { paths }),
 };
 
-/** 色彩標籤：XMP 存的值 ↔ 顯示 */
-export const LABELS = [
-  { key: "6", value: "Red", name: "紅", color: "var(--red)" },
-  { key: "7", value: "Yellow", name: "黃", color: "var(--yellow)" },
-  { key: "8", value: "Green", name: "綠", color: "var(--green)" },
-  { key: "9", value: "Blue", name: "藍", color: "var(--blue)" },
-  { key: "", value: "Purple", name: "紫", color: "var(--purple)" },
-] as const;
+// ---------------------------------------------------------------- 色彩標籤
+//
+// Bridge / Lightroom 都是把「標籤名稱文字」寫進 XMP（xmp:Label），靠名稱對應顏色。
+// Bridge 預設名稱是 Select / Second / Approved / Review / To Do（可在 Bridge 偏好設定 → 標籤 修改），
+// Lightroom 則是 Red / Yellow / Green / Blue / Purple。名稱不同時 Bridge 只會顯示成白色標籤，
+// 所以寫入時使用使用者設定的名稱（預設與 Bridge 相同），讀取時則認得各種常見名稱。
+
+export type LabelKey = "red" | "yellow" | "green" | "blue" | "purple";
+
+export const LABELS: { key: LabelKey; hotkey: string; zh: string; color: string }[] = [
+  { key: "red", hotkey: "6", zh: "紅", color: "var(--red)" },
+  { key: "yellow", hotkey: "7", zh: "黃", color: "var(--yellow)" },
+  { key: "green", hotkey: "8", zh: "綠", color: "var(--green)" },
+  { key: "blue", hotkey: "9", zh: "藍", color: "var(--blue)" },
+  { key: "purple", hotkey: "", zh: "紫", color: "var(--purple)" },
+];
+
+export type LabelNames = Record<LabelKey, string>;
+
+export const LABEL_PRESETS: { id: string; name: string; names: LabelNames }[] = [
+  {
+    id: "bridge",
+    name: "Adobe Bridge 預設",
+    names: { red: "Select", yellow: "Second", green: "Approved", blue: "Review", purple: "To Do" },
+  },
+  {
+    id: "lightroom",
+    name: "Lightroom",
+    names: { red: "Red", yellow: "Yellow", green: "Green", blue: "Blue", purple: "Purple" },
+  },
+];
+
+const ZH_ALIASES: Record<LabelKey, string[]> = {
+  red: ["紅", "紅色", "红", "红色"],
+  yellow: ["黃", "黃色", "黄", "黄色"],
+  green: ["綠", "綠色", "绿", "绿色"],
+  blue: ["藍", "藍色", "蓝", "蓝色"],
+  purple: ["紫", "紫色"],
+};
+
+function loadNames(): LabelNames {
+  try {
+    const v = JSON.parse(localStorage.getItem("labelNames") ?? "null");
+    if (v && typeof v === "object") return { ...LABEL_PRESETS[0].names, ...v };
+  } catch {
+    /* ignore */
+  }
+  return { ...LABEL_PRESETS[0].names };
+}
+
+let labelNames: LabelNames = loadNames();
+
+export function getLabelNames(): LabelNames {
+  return { ...labelNames };
+}
+
+export function setLabelNames(n: LabelNames) {
+  labelNames = { ...n };
+  try {
+    localStorage.setItem("labelNames", JSON.stringify(labelNames));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 寫入檔案時使用的標籤文字 */
+export function labelName(key: LabelKey): string {
+  return labelNames[key];
+}
+
+/** 檔案中的標籤文字 → 顏色（認得目前設定、Bridge、Lightroom 與中文顏色名稱）；認不得回傳 null */
+export function labelKey(text?: string | null): LabelKey | null {
+  if (!text) return null;
+  const t = text.trim().toLowerCase();
+  const keys = LABELS.map((l) => l.key);
+  for (const k of keys) if (labelNames[k].trim().toLowerCase() === t) return k;
+  for (const p of LABEL_PRESETS) for (const k of keys) if (p.names[k].toLowerCase() === t) return k;
+  for (const k of keys) if (ZH_ALIASES[k].includes(text.trim())) return k;
+  return null;
+}
 
 export function labelColor(label?: string | null): string | null {
   if (!label) return null;
-  const l = LABELS.find((x) => x.value.toLowerCase() === label.toLowerCase());
-  return l ? l.color : "var(--muted)";
+  const k = labelKey(label);
+  return k ? LABELS.find((l) => l.key === k)!.color : "var(--muted)";
+}
+
+/** 顯示用名稱：「紅 · Select」；認不得的名稱原樣顯示 */
+export function labelDisplay(label?: string | null): string {
+  if (!label) return "";
+  const k = labelKey(label);
+  return k ? `${LABELS.find((l) => l.key === k)!.zh} · ${label}` : label;
 }
 
 export function stars(rating: number): string {

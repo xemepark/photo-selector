@@ -259,3 +259,9 @@ h3 {
 body.resizing { cursor: col-resize; user-select: none; }
 #sidebar .actions { margin-bottom: 4px; }
 .face-box.eye { border-width: 2px; border-style: dashed; border-radius: 50%; }
+.label-fields { display: flex; flex-direction: column; gap: 6px; }
+.label-fields label { display: flex; align-items: center; gap: 8px; }
+.label-fields .zh { width: 60px; color: var(--muted); }
+.label-fields input {
+  flex: 1; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; user-select: text;
+}

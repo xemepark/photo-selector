@@ -127,6 +127,15 @@ fn natural_key(s: &str) -> Vec<(u8, u64, String)> {
     out
 }
 
+/// 修改時間（毫秒），與快取鍵值使用同一種算法
+pub fn mtime_ms(md: &fs::Metadata) -> i64 {
+    md.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 pub fn scan_dir(dir: &Path) -> io::Result<(Vec<Item>, Vec<DirInfo>)> {
     let mut groups: HashMap<String, Vec<FileEntry>> = HashMap::new();
     let mut sidecars: HashMap<String, PathBuf> = HashMap::new();
@@ -152,12 +161,7 @@ pub fn scan_dir(dir: &Path) -> io::Result<(Vec<Item>, Vec<DirInfo>)> {
         }
         let Some(class) = classify(&ext) else { continue };
         let Ok(md) = entry.metadata() else { continue };
-        let mtime = md
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let mtime = mtime_ms(&md);
         groups.entry(stem.to_lowercase()).or_default().push(FileEntry {
             path,
             name,

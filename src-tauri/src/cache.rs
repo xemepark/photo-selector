@@ -81,6 +81,13 @@ impl Cache {
         .unwrap_or(0)
     }
 
+    /// 檔案因為本程式寫入評等 / 標籤而改變了修改時間與大小：快取內容仍然有效，只要更新鍵值
+    pub fn rekey(&self, path: &str, mtime: i64, size: i64) {
+        let c = self.conn.lock();
+        let _ = c.execute("UPDATE thumbs SET mtime=?2, size=?3 WHERE path=?1", params![path, mtime, size]);
+        let _ = c.execute("UPDATE analysis SET mtime=?2, size=?3 WHERE path=?1", params![path, mtime, size]);
+    }
+
     pub fn clear(&self) -> Result<()> {
         let c = self.conn.lock();
         c.execute_batch("DELETE FROM thumbs; DELETE FROM analysis;")?;
