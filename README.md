@@ -168,7 +168,8 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 後端單元測試
 | C | 比較選取的 2–4 張 |
 | P | 幻燈片（設定後播放） |
 | + / − | 縮圖大小 |
-| Ctrl+O、Backspace / Ctrl+↑ | 開啟資料夾、上一層 |
+| Ctrl+O、Ctrl+↑ | 開啟資料夾、上一層 |
+| Delete / Backspace（Mac 的 delete 鍵） | 把焦點或選取的照片（含配對 RAW/JPEG 與 .xmp）移到垃圾桶，停留在同一個資料夾 |
 
 ## 為什麼快：架構說明
 

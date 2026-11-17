@@ -44,6 +44,8 @@ const S = {
     suggest: new Set<string>(),
     eyes: new Set<string>(),
   } as Record<FilterKey, Set<string>>,
+  /** 已刪除（移到垃圾桶）的項目：留在陣列裡維持 id = 索引，但不再顯示 */
+  removed: new Set<number>(),
   sort: "name",
   sortDesc: false,
   metaLoaded: 0,
@@ -168,7 +170,13 @@ function facet(key: FilterKey, it: Item): string {
 
 const FILTER_KEYS: FilterKey[] = ["suggest", "eyes", "sharp", "rating", "label", "kind", "camera", "lens"];
 
+/** 尚未刪除的項目 */
+function live(): Item[] {
+  return S.removed.size ? S.items.filter((it) => !S.removed.has(it.id)) : S.items;
+}
+
 function passes(it: Item) {
+  if (S.removed.has(it.id)) return false;
   for (const k of FILTER_KEYS) {
     const f = S.filters[k];
     if (f.size && !f.has(facet(k, it))) return false;
@@ -224,7 +232,7 @@ function renderFilters() {
   const groups: [FilterKey, string, [string, string][]][] = [];
   const counts = (k: FilterKey) => {
     const c = new Map<string, number>();
-    for (const it of S.items) {
+    for (const it of live()) {
       const v = facet(k, it);
       c.set(v, (c.get(v) ?? 0) + 1);
     }
@@ -310,7 +318,7 @@ function scheduleUpdate() {
 }
 
 function renderStatus() {
-  const total = S.items.length;
+  const total = live().length;
   const shown = S.view.length;
   const sel = S.selected.size;
   $("count").textContent = total
@@ -377,6 +385,7 @@ async function openFolder(path: string) {
   });
   S.meta.clear();
   S.overrides.clear();
+  S.removed.clear();
   cull.clear();
   cull.mode = folderMode(res.dir);
   $<HTMLSelectElement>("mode").value = cull.mode;
@@ -470,7 +479,7 @@ async function startAnalysis() {
   cull.running = true;
   renderStatus();
   // 先分析畫面上看得到的，再分析其他的
-  const ids = [...S.view.map((i) => i.id), ...S.items.filter((i) => !S.viewIndex.has(i.id)).map((i) => i.id)];
+  const ids = [...S.view.map((i) => i.id), ...live().filter((i) => !S.viewIndex.has(i.id)).map((i) => i.id)];
   await api.analyze(S.session, ids).catch((e) => {
     cull.running = false;
     toast(String(e));
@@ -489,14 +498,14 @@ on<number>("analysis-done", (e) => {
   if (e.payload !== S.session) return;
   cull.running = false;
   cull.recompute();
-  const n = S.items.filter((i) => cull.issues(i.id)?.cull).length;
+  const n = live().filter((i) => cull.issues(i.id)?.cull).length;
   toast(`選片分析完成：${n} 張建議淘汰（左側「選片建議」可篩選）`, 4000);
   update({ resetGrid: true });
 });
 
 /** 把「建議淘汰」且尚未評分的照片標為拒絕 */
 $("btn-reject-suggested").addEventListener("click", async () => {
-  const ids = S.items.filter((i) => cull.issues(i.id)?.cull && (S.meta.get(i.id)?.rating ?? 0) === 0).map((i) => i.id);
+  const ids = live().filter((i) => cull.issues(i.id)?.cull && (S.meta.get(i.id)?.rating ?? 0) === 0).map((i) => i.id);
   if (!ids.length) return toast(cull.analysis.size ? "沒有需要標記的照片（已評分的不會被更動）" : "請先執行選片分析");
   if (!(await ask(`把 ${ids.length} 張「建議淘汰」且尚未評分的照片標為拒絕？\n已經評過星等的照片不會被更動。`, { title: "標記拒絕", okLabel: "確定", cancelLabel: "取消" }))) return;
   ids.forEach((id) => setLocal(id, { rating: -1 }));
@@ -555,6 +564,47 @@ function moveFocus(delta: number, extend = false) {
 }
 
 /** 評分 / 標籤要套用的對象 */
+// ---------------------------------------------------------------- 刪除（移到垃圾桶）
+
+const confirmDelete = $<HTMLInputElement>("confirm-delete");
+confirmDelete.checked = storage("confirmDelete", true);
+confirmDelete.addEventListener("change", () => store("confirmDelete", confirmDelete.checked));
+let deleting = false;
+
+async function deleteTargets() {
+  const ids = targets();
+  if (!ids.length || deleting) return;
+  const files = ids.reduce((n, id) => n + S.items[id].files.length, 0);
+  const what = ids.length === 1 ? `「${S.items[ids[0]].name}」` : `${ids.length} 張照片`;
+  if (confirmDelete.checked) {
+    const extra = files > ids.length ? `（含配對的 RAW/JPEG，共 ${files} 個檔案）` : "";
+    const ok = await ask(`把${what}${extra}移到垃圾桶？\n需要時可以從垃圾桶復原。`, {
+      title: "刪除照片",
+      kind: "warning",
+      okLabel: "移到垃圾桶",
+      cancelLabel: "取消",
+    });
+    if (!ok) return;
+  }
+  deleting = true;
+  try {
+    const r = await api.deleteItems(S.session, ids);
+    const failedNames = new Set(r.failed.map((f) => f.split("：")[0]));
+    const gone = ids.filter((id) => !failedNames.has(S.items[id].name));
+    gone.forEach((id) => S.removed.add(id));
+    // 停在同一個資料夾，焦點移到原本位置的下一張（recomputeView 會處理）
+    if (S.loupe && !live().length) closeLoupe();
+    update({ resetGrid: true }); // 重新排版（保留捲動位置）
+    if (S.loupe) showLoupe();
+    if (r.failed.length) toast(`有 ${r.failed.length} 個項目無法刪除：${r.failed.join("、")}`, 6000);
+    else toast(`已將${what}移到垃圾桶`, 2000);
+  } catch (e) {
+    toast(`刪除失敗：${e}`);
+  } finally {
+    deleting = false;
+  }
+}
+
 function targets(): number[] {
   if (slideshow.active) {
     const id = slideshow.currentId();
@@ -868,9 +918,15 @@ document.addEventListener("keydown", (ev) => {
   }
 
   if (mod && k.toLowerCase() === "o") return ev.preventDefault(), void pickFolder();
-  if ((mod && k === "ArrowUp") || (k === "Backspace" && !S.loupe && !S.compare.length)) {
+  if (mod && k === "ArrowUp") {
     ev.preventDefault();
     if (S.parent) openFolder(S.parent);
+    return;
+  }
+  // Mac 鍵盤的 delete 鍵送出的是 Backspace；Windows / 外接鍵盤則是 Delete
+  if ((k === "Backspace" || k === "Delete") && !S.compare.length) {
+    ev.preventDefault();
+    void deleteTargets();
     return;
   }
 

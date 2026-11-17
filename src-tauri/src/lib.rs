@@ -152,6 +152,14 @@ async fn transfer(
 }
 
 /// 選片分析：整張清晰度、人臉偵測、閉眼判斷、臉部清晰度。結果分批以事件回傳並寫入快取。
+/// 刪除（移到垃圾桶）
+#[tauri::command]
+async fn delete_items(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<ops::TransferResult, String> {
+    let sess = core.session(session)?;
+    let items: Vec<_> = ids.iter().filter_map(|&i| sess.items.get(i as usize)).collect();
+    Ok(ops::trash_items(&items))
+}
+
 #[tauri::command]
 fn analyze(app: AppHandle, core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<(), String> {
     let sess = core.session(session)?;
@@ -332,6 +340,7 @@ pub fn run() {
             set_label,
             transfer,
             analyze,
+            delete_items,
             cache_info,
             clear_cache,
             default_folder,

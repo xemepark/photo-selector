@@ -59,6 +59,7 @@ export const api = {
   setLabel: (session: number, ids: number[], label: string | null) => invoke<void>("set_label", { session, ids, label }),
   transfer: (session: number, ids: number[], dest: string, mode: "copy" | "move") =>
     invoke<TransferResult>("transfer", { session, ids, dest, mode }),
+  deleteItems: (session: number, ids: number[]) => invoke<TransferResult>("delete_items", { session, ids }),
   analyze: (session: number, ids: number[]) => invoke<void>("analyze", { session, ids }),
   cacheInfo: () => invoke<[string, number]>("cache_info"),
   clearCache: () => invoke<void>("clear_cache"),

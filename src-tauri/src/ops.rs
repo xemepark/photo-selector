@@ -50,6 +50,31 @@ fn move_file(src: &Path, dst: &Path) -> io::Result<()> {
     }
 }
 
+/// 把項目（含配對的 RAW/JPEG 與 .xmp 附屬檔）移到系統垃圾桶，可從垃圾桶復原。
+pub fn trash_items(items: &[&Item]) -> TransferResult {
+    let mut res = TransferResult::default();
+    #[allow(unused_mut)]
+    let mut ctx = trash::TrashContext::default();
+    #[cfg(target_os = "macos")]
+    {
+        // 用系統 API 直接移到垃圾桶，不需要「控制 Finder」的權限詢問
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+    }
+    for it in items {
+        let paths: Vec<PathBuf> = it.all_paths().into_iter().filter(|p| p.exists()).collect();
+        if paths.is_empty() {
+            res.done += 1; // 檔案已經不在了，視同已刪除
+            continue;
+        }
+        match ctx.delete_all(&paths) {
+            Ok(()) => res.done += 1,
+            Err(e) => res.failed.push(format!("{}：{e}", it.name)),
+        }
+    }
+    res
+}
+
 pub fn transfer(items: &[&Item], dest: &Path, mv: bool) -> TransferResult {
     let mut res = TransferResult::default();
     if let Err(e) = fs::create_dir_all(dest) {
