@@ -28,6 +28,8 @@ interface Cell {
   badges: HTMLDivElement;
   id: number; // 綁定的 item id，-1 = 未使用
   index: number;
+  /** 套用位置時的版面版本；版面改變（縮圖大小、視窗寬度）後要重新排位 */
+  geo: number;
   retry: number;
   timer: number;
 }
@@ -46,6 +48,7 @@ export class Grid {
   private frameH = 135;
   private rowH = 180;
   private raf = 0;
+  private geo = 0;
   private lastViewportKey = "";
 
   constructor(
@@ -100,6 +103,7 @@ export class Grid {
     this.cellW = Math.floor((width - PAD * 2 - GAP * (this.cols - 1)) / this.cols);
     this.frameH = Math.round((this.cellW - CELL_CHROME) * 0.75);
     this.rowH = this.frameH + CELL_CHROME + CAPTION + GAP;
+    this.geo++;
     const rows = Math.ceil(this.host.view().length / this.cols);
     this.spacer.style.height = `${PAD * 2 + rows * this.rowH}px`;
   }
@@ -138,6 +142,8 @@ export class Grid {
         c = this.acquire();
         this.bind(c, i, view[i]);
         this.cells.set(i, c);
+      } else if (c.geo !== this.geo) {
+        this.place(c);
       }
       this.decorate(c);
     }
@@ -180,6 +186,7 @@ export class Grid {
       badges: root.querySelector(".badges")!,
       id: -1,
       index: -1,
+      geo: -1,
       retry: 0,
       timer: 0,
     };
@@ -217,15 +224,21 @@ export class Grid {
     c.index = index;
     c.retry = 0;
     c.root.dataset.index = String(index);
-    const col = index % this.cols;
-    const row = Math.floor(index / this.cols);
-    c.root.style.transform = `translate(${PAD + col * (this.cellW + GAP)}px, ${PAD + row * this.rowH}px)`;
-    c.root.style.width = `${this.cellW}px`;
-    c.frame.style.height = `${this.frameH}px`;
+    this.place(c);
     c.name.textContent = item.name;
     c.root.title = item.files.join("\n");
     c.img.removeAttribute("data-loaded");
     this.loadThumb(c);
+  }
+
+  /** 依目前版面設定格子的位置與大小（不重新載入圖片） */
+  private place(c: Cell) {
+    const col = c.index % this.cols;
+    const row = Math.floor(c.index / this.cols);
+    c.root.style.transform = `translate(${PAD + col * (this.cellW + GAP)}px, ${PAD + row * this.rowH}px)`;
+    c.root.style.width = `${this.cellW}px`;
+    c.frame.style.height = `${this.frameH}px`;
+    c.geo = this.geo;
   }
 
   private decorate(c: Cell) {
