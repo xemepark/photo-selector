@@ -15,6 +15,7 @@ export interface GridHost {
   badges(id: number): string;
   onCellClick(index: number, ev: MouseEvent): void;
   onCellOpen(index: number): void;
+  onCellMenu(index: number, ev: MouseEvent): void;
   onViewport(ids: number[]): void;
 }
 
@@ -68,6 +69,11 @@ export class Grid {
     el.addEventListener("mousedown", (ev) => {
       const idx = this.indexFromEvent(ev);
       if (idx !== null) this.host.onCellClick(idx, ev);
+    });
+    el.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const idx = this.indexFromEvent(ev);
+      if (idx !== null) this.host.onCellMenu(idx, ev);
     });
     el.addEventListener("dblclick", (ev) => {
       const idx = this.indexFromEvent(ev);

@@ -18,6 +18,7 @@ import {
   stars,
 } from "./api";
 import { Grid } from "./grid";
+import { BatchRename } from "./rename";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
 import { Cull, Analysis, ShootMode, drawFaces, contentRect } from "./cull";
 import {
@@ -82,6 +83,7 @@ const grid = new Grid(gridEl, $("grid-spacer"), {
   focusId: () => S.focus,
   badges: (id) => cull.badges(id),
   onCellClick,
+  onCellMenu: (i, ev) => showCellMenu(i, ev),
   onCellOpen: (i) => {
     setFocus(S.view[i].id, false);
     openLoupe();
@@ -392,13 +394,14 @@ async function openFolder(path: string) {
   $<HTMLSelectElement>("mode").value = cull.mode;
   S.selected = new Set(res.items.length ? [0] : []);
   for (const k of FILTER_KEYS) S.filters[k].clear();
+  flushEarlyMeta();
 
   const recent = [res.dir, ...storage<string[]>("recent", []).filter((p) => p !== res.dir)].slice(0, 8);
   store("recent", recent);
   store("last", res.dir);
 
-  $("path").textContent = res.dir;
-  $("path").title = res.dir;
+  pathInput.value = res.dir;
+  pathInput.scrollLeft = pathInput.scrollWidth;
   $("empty").classList.toggle("hidden", true);
   const f = $("folders");
   f.innerHTML =
@@ -432,16 +435,38 @@ $("recent").addEventListener("click", (ev) => {
   if (li?.dataset.path) openFolder(li.dataset.path);
 });
 
-on<{ session: number; metas: [number, Meta][] }>("meta-batch", (e) => {
-  if (e.payload.session !== S.session) return;
-  for (const [id, m] of e.payload.metas) {
+// 小資料夾的中繼資料可能在「開啟資料夾」的回應之前就送到（此時還不知道新的 session），
+// 先暫存，等 openFolder 設定好 session 再套用，避免評等、標籤沒有顯示
+const earlyMeta: { session: number; metas?: [number, Meta][]; done?: boolean }[] = [];
+
+function applyMetaBatch(metas: [number, Meta][]) {
+  for (const [id, m] of metas) {
     const o = S.overrides.get(id);
     S.meta.set(id, o ? { ...m, ...o } : m);
   }
-  S.metaLoaded += e.payload.metas.length;
+  S.metaLoaded += metas.length;
   scheduleUpdate();
+}
+
+function flushEarlyMeta() {
+  const mine = earlyMeta.filter((e) => e.session === S.session);
+  earlyMeta.length = 0;
+  for (const e of mine) {
+    if (e.metas) applyMetaBatch(e.metas);
+    if (e.done) {
+      S.metaLoaded = S.items.length;
+      scheduleUpdate();
+    }
+  }
+}
+
+on<{ session: number; metas: [number, Meta][] }>("meta-batch", (e) => {
+  if (e.payload.session > S.session) return void earlyMeta.push({ session: e.payload.session, metas: e.payload.metas });
+  if (e.payload.session !== S.session) return;
+  applyMetaBatch(e.payload.metas);
 });
 on<number>("meta-done", (e) => {
+  if (e.payload > S.session) return void earlyMeta.push({ session: e.payload, done: true });
   if (e.payload !== S.session) return;
   S.metaLoaded = S.items.length;
   scheduleUpdate();
@@ -910,6 +935,21 @@ document.addEventListener("keydown", (ev) => {
   const mod = ev.ctrlKey || ev.metaKey;
   const k = ev.key;
 
+  // 對話框開著時，鍵盤只用來關閉它（不要誤評分背景的照片）
+  if (!ctxMenu.classList.contains("hidden") && k === "Escape") return ev.preventDefault(), hideMenu();
+  if (batchRename.isOpen || !renameDialog.classList.contains("hidden") || !$("label-dialog").classList.contains("hidden")) {
+    if (k === "Escape") {
+      batchRename.close();
+      renameDialog.classList.add("hidden");
+      $("label-dialog").classList.add("hidden");
+      gridEl.focus();
+    }
+    return;
+  }
+  if (k === "F2" && !S.loupe && !S.compare.length && !slideshow.active) return ev.preventDefault(), openRename();
+  if (mod && ev.shiftKey && k.toLowerCase() === "r") return ev.preventDefault(), openBatchRename();
+  if (mod && ev.shiftKey && k.toLowerCase() === "g") return ev.preventDefault(), focusPath();
+
   if (!slideDialog.classList.contains("hidden")) {
     if (k === "Escape") closeSlideDialog();
     else if (k === "Enter") startSlideshow();
@@ -1304,6 +1344,12 @@ on<string>("menu", (e) => {
     case "analyze":
       startAnalysis();
       break;
+    case "batch-rename":
+      openBatchRename();
+      break;
+    case "goto":
+      focusPath();
+      break;
     case "slideshow":
       if (!slideshow.active) openSlideDialog();
       break;
@@ -1322,6 +1368,192 @@ onImageDiag((msg, isError) => {
   el.title = msg;
   if (!isError) toast(msg, 4000);
 });
+
+// ---------------------------------------------------------------- 路徑列（可輸入 / 貼上路徑）
+
+const pathInput = $<HTMLInputElement>("path");
+
+function focusPath() {
+  pathInput.focus();
+  pathInput.select();
+}
+
+async function gotoPath() {
+  const text = pathInput.value;
+  if (!text.trim() || text.trim() === S.dir) return gridEl.focus();
+  try {
+    const r = await api.resolvePath(text);
+    await openFolder(r.dir);
+    if (r.file) {
+      // 貼上的是照片的路徑 → 開啟所在資料夾並選取那張照片
+      const it = S.items.find((i) => i.files.some((f) => f.toLowerCase() === r.file!.toLowerCase()));
+      if (it && S.viewIndex.has(it.id)) setFocus(it.id, false);
+    }
+    gridEl.focus();
+  } catch (e) {
+    toast(String(e), 4000);
+    pathInput.select();
+  }
+}
+
+pathInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    void gotoPath();
+  } else if (ev.key === "Escape") {
+    pathInput.value = S.dir;
+    gridEl.focus();
+  }
+});
+pathInput.addEventListener("focus", () => setTimeout(() => pathInput.select(), 0));
+pathInput.addEventListener("blur", () => {
+  pathInput.value = S.dir;
+  pathInput.scrollLeft = pathInput.scrollWidth;
+});
+
+/** 重新讀取目前資料夾，維持捲動位置，並選取指定名稱的照片 */
+async function reloadFolder(focusName?: string | null) {
+  const top = gridEl.scrollTop;
+  const prevIdx = S.focus !== null ? (S.viewIndex.get(S.focus) ?? 0) : 0;
+  await openFolder(S.dir);
+  gridEl.scrollTop = top;
+  const it = focusName ? S.items.find((i) => i.name === focusName) : S.view[Math.min(prevIdx, S.view.length - 1)];
+  if (it && S.viewIndex.has(it.id)) setFocus(it.id, false);
+}
+
+// ---------------------------------------------------------------- 右鍵選單
+
+const ctxMenu = $("ctx-menu");
+
+function hideMenu() {
+  ctxMenu.classList.add("hidden");
+}
+
+function showCellMenu(index: number, ev: MouseEvent) {
+  const it = S.view[index];
+  if (!it) return;
+  if (!S.selected.has(it.id)) setFocus(it.id, false);
+  else S.focus = it.id;
+  const n = S.selected.size;
+  const isMac = /Mac/.test(navigator.platform) || navigator.userAgent.includes("Mac OS X");
+  const items: [string, string, string?][] = [
+    ["reveal", isMac ? "在 Finder 中顯示" : "在檔案總管中顯示"],
+    ["rename", "重新命名…", "F2"],
+    ["batch", n > 1 ? `批次重新命名 ${n} 張…` : "批次重新命名…", "⇧⌘R"],
+    ["-", ""],
+    ["copy", n > 1 ? `複製 ${n} 張到…` : "複製到…"],
+    ["move", n > 1 ? `移動 ${n} 張到…` : "移動到…"],
+    ["-", ""],
+    ["trash", n > 1 ? `將 ${n} 張移到垃圾桶` : "移到垃圾桶", "⌫"],
+  ];
+  ctxMenu.innerHTML = items
+    .map(([a, label, key]) =>
+      a === "-" ? `<div class="sep"></div>` : `<div class="item${a === "trash" ? " danger" : ""}" data-a="${a}"><span>${label}</span><kbd>${key ?? ""}</kbd></div>`,
+    )
+    .join("");
+  ctxMenu.classList.remove("hidden");
+  const w = ctxMenu.offsetWidth;
+  const h = ctxMenu.offsetHeight;
+  ctxMenu.style.left = `${Math.min(ev.clientX, innerWidth - w - 6)}px`;
+  ctxMenu.style.top = `${Math.min(ev.clientY, innerHeight - h - 6)}px`;
+}
+
+ctxMenu.addEventListener("click", (ev) => {
+  const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
+  hideMenu();
+  if (!a || S.focus === null) return;
+  if (a === "reveal") api.revealItem(S.session, S.focus).catch((e) => toast(`無法開啟：${e}`));
+  else if (a === "rename") openRename();
+  else if (a === "batch") openBatchRename();
+  else if (a === "copy") void transfer("copy");
+  else if (a === "move") void transfer("move");
+  else if (a === "trash") void deleteTargets();
+});
+document.addEventListener("mousedown", (ev) => {
+  if (!ctxMenu.contains(ev.target as Node)) hideMenu();
+});
+gridEl.addEventListener("scroll", hideMenu, { passive: true });
+window.addEventListener("blur", hideMenu);
+
+// ---------------------------------------------------------------- 重新命名（單張）
+
+const renameDialog = $("rename-dialog");
+const renameInput = $<HTMLInputElement>("rename-input");
+let renameId: number | null = null;
+
+function openRename() {
+  if (S.focus === null) return;
+  const it = S.items[S.focus];
+  renameId = it.id;
+  renameInput.value = it.name;
+  $("rename-files").textContent = `會一起改名：${it.files.join("、")}（以及 .xmp 附屬檔，副檔名不變）`;
+  $("rename-error").textContent = "";
+  renameDialog.classList.remove("hidden");
+  renameInput.focus();
+  renameInput.select();
+}
+
+async function doRename() {
+  if (renameId === null) return;
+  const stem = renameInput.value.trim().replace(/[/:]/g, "-");
+  if (!stem) return;
+  if (stem === S.items[renameId].name) {
+    renameDialog.classList.add("hidden");
+    return gridEl.focus();
+  }
+  const r = await api.batchRename(S.session, [{ id: renameId, stem }], "rename", null, false).catch((e) => ({
+    done: 0,
+    failed: [String(e)],
+  }));
+  if (r.failed.length) {
+    $("rename-error").textContent = r.failed.join("；");
+    return;
+  }
+  renameDialog.classList.add("hidden");
+  await reloadFolder(stem);
+  gridEl.focus();
+}
+
+renameInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    void doRename();
+  } else if (ev.key === "Escape") {
+    renameDialog.classList.add("hidden");
+    gridEl.focus();
+  }
+});
+$("rename-ok").addEventListener("click", () => void doRename());
+$("rename-cancel").addEventListener("click", () => {
+  renameDialog.classList.add("hidden");
+  gridEl.focus();
+});
+
+// ---------------------------------------------------------------- 批次重新命名
+
+const batchRename = new BatchRename($("batch-rename"), {
+  session: () => S.session,
+  targets: (scope) => (scope === "selected" ? S.view.filter((i) => S.selected.has(i.id)) : S.view),
+  selectedCount: () => S.selected.size,
+  viewCount: () => S.view.length,
+  meta: (id) => S.meta.get(id),
+  run: (entries, s) => api.batchRename(S.session, entries, s.dest, s.dest === "rename" ? null : s.destDir, s.preserve),
+  done: async (s, firstNewName) => {
+    if (s.dest === "copy") {
+      toast("已拷貝並重新命名");
+      return;
+    }
+    await reloadFolder(s.dest === "rename" ? firstNewName : null);
+    toast(s.dest === "move" ? "已重新命名並移到其他資料夾" : "重新命名完成");
+  },
+});
+
+function openBatchRename() {
+  if (!S.items.length) return toast("請先開啟照片資料夾");
+  if (S.loupe) closeLoupe();
+  batchRename.open();
+}
+$("btn-batch-rename").addEventListener("click", openBatchRename);
 
 // ---------------------------------------------------------------- 標籤名稱設定（與 Bridge 一致）
 

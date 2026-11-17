@@ -55,7 +55,12 @@ kbd {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
 }
-.path { flex: 1; min-width: 60px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+.path {
+  flex: 1; min-width: 60px; color: var(--muted); background: transparent; border: 1px solid transparent;
+  border-radius: 6px; padding: 4px 8px; text-overflow: ellipsis; user-select: text; outline: none;
+}
+.path:hover { border-color: var(--line); }
+.path:focus { color: var(--text); background: #111114; border-color: var(--focus); }
 .tool { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; flex: none; }
 #toolbar > button { white-space: nowrap; flex: none; }
 .tool.check { cursor: pointer; }
@@ -265,3 +270,44 @@ body.resizing { cursor: col-resize; user-select: none; }
 .label-fields input {
   flex: 1; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; user-select: text;
 }
+
+/* ---------- 右鍵選單 ---------- */
+.ctx-menu {
+  position: fixed; z-index: 40; min-width: 220px; padding: 5px;
+  background: #2a2a30f2; border: 1px solid #ffffff1f; border-radius: 8px; box-shadow: 0 10px 30px #000a;
+  backdrop-filter: blur(12px);
+}
+.ctx-menu .item { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 5px 10px; border-radius: 5px; cursor: default; }
+.ctx-menu .item:hover { background: var(--sel); }
+.ctx-menu .item.danger:hover { background: #c9372c; }
+.ctx-menu .item kbd { background: none; border: none; color: var(--muted); }
+.ctx-menu .sep { height: 1px; background: #ffffff1a; margin: 4px 6px; }
+#rename-input { flex: 1; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; user-select: text; }
+
+/* ---------- 批次重新命名 ---------- */
+.modal-box.wide { width: min(780px, calc(100% - 32px)); }
+.br-section { margin-bottom: 10px; }
+.br-section h3 { margin: 8px 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+.br-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; color: var(--muted); flex-wrap: wrap; }
+.br-row select, .br-row input[type="text"] { min-width: 0; }
+.br-row input[type="text"], .rule-row input[type="text"], .rule-row input[type="number"] {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; user-select: text;
+}
+.br-row [data-f="preset"] { flex: 1; }
+.br-radio, .br-check { display: flex; align-items: center; gap: 6px; padding: 2px 0; color: var(--text); cursor: pointer; }
+.br-check.muted { color: var(--muted); }
+.br-dest { word-break: break-all; }
+.br-rules { display: flex; flex-direction: column; gap: 6px; }
+.rule-row { display: grid; grid-template-columns: 120px 1fr 28px 28px; gap: 6px; align-items: center; }
+.rule-row .rule-fields { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.rule-row .rule-fields input[type="text"] { flex: 1; min-width: 120px; }
+.rule-row .rule-fields input[type="number"] { width: 80px; }
+.rule-row button { padding: 2px 0; font-size: 15px; }
+.br-preview { font-size: 12px; line-height: 1.7; }
+.br-table { max-height: 180px; overflow: auto; margin-top: 6px; border: 1px solid var(--line); border-radius: 6px; }
+.br-table table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.br-table td { padding: 2px 8px; white-space: nowrap; color: var(--muted); }
+.br-table td:last-child { color: var(--text); }
+.br-table tr.dup td:last-child { color: #ff8a80; }
+.br-warn { color: #ff8a80; }
+.br-errors ul { margin: 4px 0 0; padding-left: 18px; font-size: 12px; color: #ff8a80; max-height: 120px; overflow: auto; }

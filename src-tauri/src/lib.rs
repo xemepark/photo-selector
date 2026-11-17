@@ -210,6 +210,78 @@ async fn delete_items(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Resul
     Ok(ops::trash_items(&items))
 }
 
+#[derive(serde::Deserialize)]
+struct RenameEntry {
+    id: u32,
+    stem: String,
+}
+
+/// 重新命名（單張或批次）。mode："rename"（相同資料夾）/ "move" / "copy"
+#[tauri::command]
+async fn batch_rename(
+    core: CoreState<'_>,
+    session: u64,
+    entries: Vec<RenameEntry>,
+    mode: String,
+    dest: Option<String>,
+    preserve: bool,
+) -> Result<ops::TransferResult, String> {
+    let sess = core.session(session)?;
+    let list: Vec<(&scan::Item, String)> = entries
+        .iter()
+        .filter_map(|e| sess.items.get(e.id as usize).map(|it| (it, e.stem.trim().to_string())))
+        .filter(|(_, s)| !s.is_empty())
+        .collect();
+    let m = match (mode.as_str(), dest) {
+        ("move", Some(d)) => ops::RenameMode::Move(PathBuf::from(d)),
+        ("copy", Some(d)) => ops::RenameMode::Copy(PathBuf::from(d)),
+        _ => ops::RenameMode::InPlace,
+    };
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(ops::batch_rename(&list, &m, preserve, &core.cache))
+}
+
+/// 在 Finder 中顯示
+#[tauri::command]
+async fn reveal_item(core: CoreState<'_>, session: u64, id: u32) -> Result<(), String> {
+    let sess = core.session(session)?;
+    let it = sess.items.get(id as usize).ok_or("找不到項目")?;
+    ops::reveal(&it.display().path).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+struct ResolvedPath {
+    dir: String,
+    /// 輸入的是檔案時，該檔案的檔名（開啟資料夾後選取它）
+    file: Option<String>,
+}
+
+/// 解析路徑列輸入的文字：去掉引號、展開 ~、檔案則取所在資料夾
+#[tauri::command]
+fn resolve_path(app: AppHandle, input: String) -> Result<ResolvedPath, String> {
+    let mut t = input.trim().trim_matches(|c| c == '"' || c == '\'' ).trim().to_string();
+    if let Some(rest) = t.strip_prefix("file://") {
+        t = rest.replace("%20", " ");
+    }
+    if t == "~" || t.starts_with("~/") {
+        let home = app.path().home_dir().map_err(|e| e.to_string())?;
+        t = format!("{}{}", home.to_string_lossy(), &t[1..]);
+    }
+    let p = PathBuf::from(&t);
+    if p.is_dir() {
+        return Ok(ResolvedPath { dir: p.to_string_lossy().into_owned(), file: None });
+    }
+    if p.is_file() {
+        let dir = p.parent().ok_or("無效的路徑")?;
+        return Ok(ResolvedPath {
+            dir: dir.to_string_lossy().into_owned(),
+            file: p.file_name().map(|n| n.to_string_lossy().into_owned()),
+        });
+    }
+    Err(format!("找不到這個路徑：{t}"))
+}
+
 #[tauri::command]
 fn analyze(app: AppHandle, core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<(), String> {
     let sess = core.session(session)?;
@@ -352,6 +424,8 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
             &P::separator(app)?,
             &MenuItem::with_id(app, "analyze", "選片分析", true, Some("CmdOrCtrl+R"))?,
             &MenuItem::with_id(app, "slideshow", "播放幻燈片…", true, Some("CmdOrCtrl+Shift+P"))?,
+            &MenuItem::with_id(app, "batch-rename", "批次重新命名…", true, Some("CmdOrCtrl+Shift+R"))?,
+            &MenuItem::with_id(app, "goto", "前往資料夾…", true, Some("CmdOrCtrl+Shift+G"))?,
             &P::separator(app)?,
             &P::close_window(app, Some("關閉視窗"))?,
         ],
@@ -403,6 +477,9 @@ pub fn run() {
             analyze,
             delete_items,
             app_version,
+            batch_rename,
+            reveal_item,
+            resolve_path,
             cache_info,
             clear_cache,
             default_folder,

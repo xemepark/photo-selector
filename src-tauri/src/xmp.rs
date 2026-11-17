@@ -10,6 +10,15 @@ use std::io;
 use std::path::Path;
 
 const NS_XMP: &str = "http://ns.adobe.com/xap/1.0/";
+const NS_XMPMM: &str = "http://ns.adobe.com/xap/1.0/mm/";
+
+fn namespace_of(prefix: &str) -> Option<&'static str> {
+    match prefix {
+        "xmp" => Some(NS_XMP),
+        "xmpMM" => Some(NS_XMPMM),
+        _ => None,
+    }
+}
 
 fn template() -> String {
     format!(
@@ -82,8 +91,11 @@ fn set_prop(xml: &mut String, name: &str, value: Option<&str>) {
     if let Some(i) = xml.find("<rdf:Description") {
         let at = i + "<rdf:Description".len();
         let mut ins = String::new();
-        if !xml.contains("xmlns:xmp=") {
-            ins.push_str(&format!("\n    xmlns:xmp=\"{NS_XMP}\""));
+        let prefix = name.split(':').next().unwrap_or("");
+        if let Some(ns) = namespace_of(prefix) {
+            if !xml.contains(&format!("xmlns:{prefix}=")) {
+                ins.push_str(&format!("\n    xmlns:{prefix}=\"{ns}\""));
+            }
         }
         ins.push_str(&format!("\n    {name}=\"{}\"", escape(v)));
         xml.insert_str(at, &ins);
@@ -134,8 +146,31 @@ fn apply(xml: &mut String, rating: Option<i32>, label: Option<Option<&str>>) {
 
 /// 更新附屬檔。`rating` / `label`：None = 不變更；Some(None) = 清除（只適用 label）
 pub fn update(path: &Path, rating: Option<i32>, label: Option<Option<&str>>) -> io::Result<()> {
+    update_with(path, |x| apply(x, rating, label))
+}
+
+/// 在 XMP 記錄原始檔名（xmpMM:PreservedFileName），與 Bridge「在 XMP 中繼資料中保留目前的檔名」相同
+pub fn preserve_name_sidecar(path: &Path, original: &str) -> io::Result<()> {
+    update_with(path, |x| set_named(x, "xmpMM:PreservedFileName", original))
+}
+
+pub fn preserve_name_jpeg(path: &Path, original: &str) -> io::Result<()> {
+    update_jpeg_with(path, |x| set_named(x, "xmpMM:PreservedFileName", original))
+}
+
+fn set_named(xml: &mut String, name: &str, value: &str) {
+    if !xml.contains("<rdf:Description") {
+        *xml = template();
+    }
+    set_prop(xml, name, Some(value));
+}
+
+fn update_with(path: &Path, edit: impl Fn(&mut String)) -> io::Result<()> {
     let mut xml = fs::read_to_string(path).unwrap_or_else(|_| template());
-    apply(&mut xml, rating, label);
+    if !xml.contains("<rdf:Description") {
+        xml = template();
+    }
+    edit(&mut xml);
     // 先寫暫存檔再改名，避免寫到一半當機把附屬檔弄壞
     let tmp = path.with_extension("xmp.tmp");
     fs::write(&tmp, xml.as_bytes())?;
@@ -255,6 +290,10 @@ fn rewrite(path: &Path, data: &[u8]) -> io::Result<()> {
 
 /// 更新 JPEG 檔案內嵌 XMP 的評等 / 標籤
 pub fn update_jpeg(path: &Path, rating: Option<i32>, label: Option<Option<&str>>) -> io::Result<()> {
+    update_jpeg_with(path, |x| apply(x, rating, label))
+}
+
+fn update_jpeg_with(path: &Path, edit: impl Fn(&mut String)) -> io::Result<()> {
     let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
     let data = fs::read(path)?;
     let segs = segments(&data).ok_or_else(|| bad("不是有效的 JPEG 檔"))?;
@@ -264,7 +303,10 @@ pub fn update_jpeg(path: &Path, rating: Option<i32>, label: Option<Option<&str>>
         let payload = s.body + XMP_SIG.len();
         let old = std::str::from_utf8(&data[payload..s.end]).map_err(|_| bad("XMP 不是有效的 UTF-8"))?;
         let mut xml = old.trim_end_matches(['\0', ' ', '\n', '\r', '\t']).to_string();
-        apply(&mut xml, rating, label);
+        if !xml.contains("<rdf:Description") {
+            xml = template();
+        }
+        edit(&mut xml);
         // 有足夠的預留空白 → 原地覆寫（最快、最安全）
         if let Some(bytes) = pad_to(&xml, s.end - payload) {
             return write_at(path, payload as u64, &bytes);
@@ -290,7 +332,7 @@ pub fn update_jpeg(path: &Path, rating: Option<i32>, label: Option<Option<&str>>
 
     // 沒有 XMP → 在 APP0 / EXIF 之後插入新的區段
     let mut xml = template();
-    apply(&mut xml, rating, label);
+    edit(&mut xml);
     let bytes = pad_to(&xml, xml.len() + PADDING).unwrap();
     let at = segs
         .iter()

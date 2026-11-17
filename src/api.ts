@@ -68,6 +68,15 @@ export const api = {
   transfer: (session: number, ids: number[], dest: string, mode: "copy" | "move") =>
     invoke<TransferResult>("transfer", { session, ids, dest, mode }),
   deleteItems: (session: number, ids: number[]) => invoke<TransferResult>("delete_items", { session, ids }),
+  batchRename: (
+    session: number,
+    entries: { id: number; stem: string }[],
+    mode: "rename" | "move" | "copy",
+    dest: string | null,
+    preserve: boolean,
+  ) => invoke<TransferResult>("batch_rename", { session, entries, mode, dest, preserve }),
+  revealItem: (session: number, id: number) => invoke<void>("reveal_item", { session, id }),
+  resolvePath: (input: string) => invoke<{ dir: string; file: string | null }>("resolve_path", { input }),
   analyze: (session: number, ids: number[]) => invoke<void>("analyze", { session, ids }),
   cacheInfo: () => invoke<[string, number]>("cache_info"),
   clearCache: () => invoke<void>("clear_cache"),

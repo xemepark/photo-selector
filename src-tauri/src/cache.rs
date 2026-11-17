@@ -88,6 +88,13 @@ impl Cache {
         let _ = c.execute("UPDATE analysis SET mtime=?2, size=?3 WHERE path=?1", params![path, mtime, size]);
     }
 
+    /// 檔案改名後沿用快取
+    pub fn rename_path(&self, old: &str, new: &str) {
+        let c = self.conn.lock();
+        let _ = c.execute("UPDATE OR REPLACE thumbs SET path=?2 WHERE path=?1", params![old, new]);
+        let _ = c.execute("UPDATE OR REPLACE analysis SET path=?2 WHERE path=?1", params![old, new]);
+    }
+
     pub fn clear(&self) -> Result<()> {
         let c = self.conn.lock();
         c.execute_batch("DELETE FROM thumbs; DELETE FROM analysis;")?;
