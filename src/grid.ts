@@ -36,15 +36,17 @@ interface Cell {
   timer: number;
 }
 
-const PAD = 10;
-const GAP = 8;
-const CAPTION = 21; // 檔名列高度
-const CELL_CHROME = 6 * 2 + 2 * 2; // padding + border
+const PAD = 6;
+const GAP = 4;
+const CAPTION = 16; // 檔名列高度
+const CELL_CHROME = 3 * 2 + 2 * 2; // padding + border
 
 export class Grid {
   private cells = new Map<number, Cell>();
   private pool: Cell[] = [];
   private size = 180;
+  /** 縮圖框的高 / 寬：依資料夾內照片的方向決定（直幅 1.5、橫幅 0.667、混合 1） */
+  private aspect = 1;
   private cols = 1;
   private cellW = 180;
   private frameH = 135;
@@ -91,6 +93,13 @@ export class Grid {
     this.render();
   }
 
+  setAspect(a: number) {
+    if (Math.abs(a - this.aspect) < 0.01) return;
+    this.aspect = a;
+    this.layout();
+    this.render();
+  }
+
   /** 項目清單（排序 / 篩選）改變時呼叫 */
   reset() {
     for (const [, c] of this.cells) this.release(c);
@@ -103,7 +112,7 @@ export class Grid {
     const width = this.el.clientWidth;
     this.cols = Math.max(1, Math.floor((width - PAD * 2 + GAP) / (this.size + GAP)));
     this.cellW = Math.floor((width - PAD * 2 - GAP * (this.cols - 1)) / this.cols);
-    this.frameH = Math.round((this.cellW - CELL_CHROME) * 0.75);
+    this.frameH = Math.round((this.cellW - CELL_CHROME) * this.aspect);
     this.rowH = this.frameH + CELL_CHROME + CAPTION + GAP;
     this.geo++;
     const rows = Math.ceil(this.host.view().length / this.cols);

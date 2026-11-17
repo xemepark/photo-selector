@@ -20,9 +20,12 @@ static DET_ONNX: &[u8] = include_bytes!("../models/face_detector.onnx");
 static LMK_ONNX: &[u8] = include_bytes!("../models/face_landmarks_detector.onnx");
 static BS_ONNX: &[u8] = include_bytes!("../models/face_blendshapes.onnx");
 
-/// 眨眼分數門檻（兩眼平均）。依 MediaPipe 實測：大笑瞇眼 ≈0.48、閉眼 ≥0.55、低頭看東西 ≈0.35
-pub const CLOSED_THRESHOLD: f32 = 0.45;
-pub const HALF_THRESHOLD: f32 = 0.28;
+/// 閉眼判斷（只抓「幾乎完全閉上」）：兩眼的眨眼分數都要夠高，而且眼睛長寬比（EAR）都要很小。
+/// 依實測：笑瞇眼 ≈ 眨眼 0.3–0.6 / EAR 0.05–0.15、低頭看東西 ≈ 0.35 / 0.13、真正閉眼 ≥ 0.6 / ≤ 0.08。
+pub const CLOSED_BLINK: f32 = 0.55;
+pub const CLOSED_EAR: f32 = 0.12;
+/// 判斷眼睛對焦時，把眼睛統一縮放成這個寬度（像素）再計算清晰度，不同大小的臉才能比較
+const EYE_NORM_WIDTH: f32 = 64.0;
 /// 臉太小（像素）時特徵點不可靠，不判斷眼睛
 const MIN_FACE_FOR_EYES: f32 = 40.0;
 
@@ -55,12 +58,11 @@ fn models() -> Option<&'static Models> {
     .as_ref()
 }
 
-/// 眼睛狀態：0 睜眼、1 半閉、2 閉眼、3 無法判斷（臉太小 / 側臉）
+/// 眼睛狀態：睜眼、閉眼（幾乎完全閉上）、無法判斷（臉太小 / 側臉）
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Eyes {
     Open,
-    Half,
     Closed,
     Unknown,
 }
@@ -74,6 +76,12 @@ pub struct Face {
     pub eyes: Eyes,
     /// 臉部清晰度（拉普拉斯變異數，臉部區域縮放到固定尺寸後計算）
     pub sharp: f32,
+    /// 眼睛長寬比 EAR [左眼, 右眼]，越小越閉
+    pub ear: [f32; 2],
+    /// 靠近鏡頭那隻眼睛的清晰度（用高解析度影像計算）；無法判斷時為 -1
+    pub eye_sharp: f32,
+    /// 靠近鏡頭那隻眼睛的範圍（相對於整張照片的比例 x, y, w, h），用來在預覽上標示
+    pub eye: Option<[f32; 4]>,
 }
 
 fn floats(t: &Tensor) -> TractResult<Vec<f32>> {
@@ -262,6 +270,8 @@ const BLINK_RIGHT: usize = 10;
 
 struct Landmarks {
     pts: Vec<[f32; 2]>,
+    /// 相對深度（越小越靠近鏡頭）
+    z: Vec<f32>,
     presence: f32,
 }
 
@@ -287,11 +297,12 @@ fn landmarks(m: &Models, img: &RgbImage, d: &Det) -> TractResult<Landmarks> {
         let (x, y) = to_img(p[0], p[1]);
         [x, y]
     });
+    let z: Vec<f32> = raw.chunks_exact(3).map(|p| p[2]).collect();
     let mut presence = floats(&out[1])?.first().copied().unwrap_or(0.0);
     if !(0.0..=1.0).contains(&presence) {
         presence = 1.0 / (1.0 + (-presence).exp());
     }
-    Ok(Landmarks { pts: pts.collect(), presence })
+    Ok(Landmarks { pts: pts.collect(), z, presence })
 }
 
 fn blink(m: &Models, pts: &[[f32; 2]]) -> TractResult<[f32; 2]> {
@@ -320,19 +331,73 @@ fn face_sharpness(gray: &GrayImage, d: &Det) -> f32 {
     crate::blur::laplacian_variance(&crop)
 }
 
-pub fn eyes_state(b: [f32; 2]) -> Eyes {
-    let avg = (b[0] + b[1]) / 2.0;
-    if avg >= CLOSED_THRESHOLD {
+pub fn eyes_state(b: [f32; 2], ear: [f32; 2]) -> Eyes {
+    if b[0] >= CLOSED_BLINK && b[1] >= CLOSED_BLINK && ear[0] <= CLOSED_EAR && ear[1] <= CLOSED_EAR {
         Eyes::Closed
-    } else if avg >= HALF_THRESHOLD {
-        Eyes::Half
     } else {
         Eyes::Open
     }
 }
 
+/// MediaPipe 臉部網格的眼睛特徵點：[外眼角, 上1, 上2, 內眼角, 下2, 下1]（當事人的左、右眼）
+const EYE_LEFT: [usize; 6] = [362, 385, 387, 263, 373, 380];
+const EYE_RIGHT: [usize; 6] = [33, 160, 158, 133, 153, 144];
+
+fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+}
+
+/// 眼睛長寬比（Eye Aspect Ratio）：上下眼皮距離 / 眼角距離
+fn ear(pts: &[[f32; 2]], idx: &[usize; 6]) -> f32 {
+    let p = |i: usize| pts[idx[i]];
+    let w = dist(p(0), p(3)).max(1e-3);
+    (dist(p(1), p(5)) + dist(p(2), p(4))) / (2.0 * w)
+}
+
+/// 靠近鏡頭的那隻眼睛：比較兩眼特徵點的平均深度（z 越小越近），差不多時取看起來較大的那隻
+fn near_eye(l: &Landmarks) -> &'static [usize; 6] {
+    let zavg = |idx: &[usize; 6]| idx.iter().map(|&i| l.z[i]).sum::<f32>() / 6.0;
+    let width = |idx: &[usize; 6]| dist(l.pts[idx[0]], l.pts[idx[3]]);
+    let (zl, zr) = (zavg(&EYE_LEFT), zavg(&EYE_RIGHT));
+    let (wl, wr) = (width(&EYE_LEFT), width(&EYE_RIGHT));
+    if (zl - zr).abs() > 0.02 * wl.max(wr) {
+        if zl < zr { &EYE_LEFT } else { &EYE_RIGHT }
+    } else if wl >= wr {
+        &EYE_LEFT
+    } else {
+        &EYE_RIGHT
+    }
+}
+
+/// 眼睛的清晰度：在高解析度灰階影像上裁出眼睛（含睫毛），統一縮放到相同大小後計算拉普拉斯變異數。
+/// `scale` = 高解析度影像 / 偵測用影像 的倍率。回傳 (清晰度, 眼睛範圍[偵測影像座標])
+fn eye_sharpness(hires: &GrayImage, scale: f32, pts: &[[f32; 2]], idx: &[usize; 6]) -> Option<(f32, [f32; 4])> {
+    let w = dist(pts[idx[0]], pts[idx[3]]);
+    // 眼睛（在高解析度影像中）至少要 40px 寬才判斷對焦：太小的眼睛放大後本身就會顯得模糊，
+    // 會拉低整批的基準。合照這類小臉改用整張照片的清晰度判斷。
+    if w * scale < 40.0 {
+        return None;
+    }
+    let cx = idx.iter().map(|&i| pts[i][0]).sum::<f32>() / 6.0;
+    let cy = idx.iter().map(|&i| pts[i][1]).sum::<f32>() / 6.0;
+    let side = w * 1.6;
+    let (x0, y0) = (cx - side / 2.0, cy - side / 2.0);
+    let (hx, hy, hs) = ((x0 * scale).max(0.0) as u32, (y0 * scale).max(0.0) as u32, (side * scale) as u32);
+    let hw = hs.min(hires.width().saturating_sub(hx));
+    let hh = hs.min(hires.height().saturating_sub(hy));
+    if hw < 8 || hh < 8 {
+        return None;
+    }
+    let crop = image::imageops::crop_imm(hires, hx, hy, hw, hh).to_image();
+    let k = EYE_NORM_WIDTH * 1.6 / hs as f32;
+    let (nw, nh) = (((hw as f32) * k).round().max(8.0) as u32, ((hh as f32) * k).round().max(8.0) as u32);
+    let norm = image::imageops::resize(&crop, nw, nh, image::imageops::FilterType::Triangle);
+    Some((crate::blur::laplacian_variance(&norm), [x0, y0, side, side]))
+}
+
 /// 分析一張照片中的所有人臉。模型無法載入時回傳空陣列。
-pub fn analyze(img: &RgbImage) -> Vec<Face> {
+/// `hires`：同一張照片的高解析度灰階影像（用來判斷眼睛對焦），沒有就用 `img` 本身。
+pub fn analyze(img: &RgbImage, hires: Option<&GrayImage>) -> Vec<Face> {
     let Some(m) = models() else { return vec![] };
     let gray = image::DynamicImage::ImageRgb8(img.clone()).to_luma8();
     let (w, h) = (img.width() as f32, img.height() as f32);
@@ -343,16 +408,26 @@ pub fn analyze(img: &RgbImage) -> Vec<Face> {
         if fw < 12.0 {
             continue;
         }
-        let (mut eyes, mut bl) = (Eyes::Unknown, [0.0, 0.0]);
+        let (mut eyes, mut bl, mut ears) = (Eyes::Unknown, [0.0, 0.0], [0.0, 0.0]);
+        let (mut eye_sharp, mut eye_box) = (-1.0, None);
         if fw >= MIN_FACE_FOR_EYES {
             match landmarks(m, img, &d) {
                 // 偵測器與特徵點模型兩者都要有信心才算人臉：
                 // 實測真人臉 det ≥ 0.88、presence ≈ 1.0；誤判的物體（例如金屬罐）det ≈ 0.6、presence ≈ 0.95
                 Ok(l) if l.presence < 0.5 || (d.score < 0.75 && l.presence < 0.98) => continue,
                 Ok(l) => {
+                    ears = [ear(&l.pts, &EYE_LEFT), ear(&l.pts, &EYE_RIGHT)];
                     if let Ok(b) = blink(m, &l.pts) {
                         bl = b;
-                        eyes = eyes_state(b);
+                        eyes = eyes_state(b, ears);
+                    }
+                    let (hi, scale) = match hires {
+                        Some(h) => (h, h.width() as f32 / w),
+                        None => (&gray, 1.0),
+                    };
+                    if let Some((sv, bx)) = eye_sharpness(hi, scale, &l.pts, near_eye(&l)) {
+                        eye_sharp = sv;
+                        eye_box = Some([bx[0] / w, bx[1] / h, bx[2] / w, bx[3] / h]);
                     }
                 }
                 Err(_) => {}
@@ -365,6 +440,9 @@ pub fn analyze(img: &RgbImage) -> Vec<Face> {
             blink: bl,
             eyes,
             sharp: face_sharpness(&gray, &d),
+            ear: ears,
+            eye_sharp,
+            eye: eye_box,
         });
     }
     // 由大到小排序：第一張臉通常是主角
@@ -385,7 +463,7 @@ mod tests {
     #[test]
     fn no_faces_in_synthetic_pattern() {
         let img = RgbImage::from_fn(800, 600, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]));
-        assert!(analyze(&img).is_empty());
+        assert!(analyze(&img, None).is_empty());
     }
 
     /// 用真實照片驗證：FACE_TEST_IMAGES=a.jpg,b.png cargo test --release face_report -- --nocapture
@@ -395,17 +473,22 @@ mod tests {
         for p in list.split(',') {
             let img = image::open(p).unwrap().to_rgb8();
             let t = std::time::Instant::now();
-            let faces = analyze(&img);
+            let hi = std::env::var("FACE_HIRES").ok().map(|_| image::DynamicImage::ImageRgb8(img.clone()).to_luma8());
+            let det = image::DynamicImage::ImageRgb8(img.clone()).thumbnail(2048, 2048).to_rgb8();
+            let faces = analyze(&det, hi.as_ref());
+            let img = det;
             println!("{p}: {} faces in {:?}", faces.len(), t.elapsed());
             for f in faces {
                 let (cx, cy) = ((f.b[0] + f.b[2] / 2.0) * img.width() as f32, (f.b[1] + f.b[3] / 2.0) * img.height() as f32);
                 println!(
-                    "  center=({cx:.0},{cy:.0}) size={:.0}px blink=[{:.3},{:.3}] eyes={:?} sharp={:.0}",
+                    "  center=({cx:.0},{cy:.0}) size={:.0}px blink=[{:.3},{:.3}] ear=[{:.3},{:.3}] eyes={:?} eye_sharp={:.0}",
                     f.b[2] * img.width() as f32,
                     f.blink[0],
                     f.blink[1],
+                    f.ear[0],
+                    f.ear[1],
                     f.eyes,
-                    f.sharp
+                    f.eye_sharp
                 );
             }
         }

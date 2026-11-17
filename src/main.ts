@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
-import { api, url, Item, Meta, OpenResult, LABELS, labelColor, stars, fmtBytes } from "./api";
+import { api, url, Item, Meta, OpenResult, LABELS, labelColor, stars } from "./api";
 import { Grid } from "./grid";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
 import { Cull, Analysis, ShootMode, drawFaces } from "./cull";
@@ -242,10 +242,10 @@ function renderFilters() {
     [...counts(k).keys()].sort((a, b) => (a === "未知" ? 1 : b === "未知" ? -1 : collator.compare(a, b))).map((v) => [v, v] as [string, string]);
 
   if (cull.analysis.size) {
-    groups.push(["suggest", "選片建議", [["cull", "建議淘汰"], ["check", "需要確認（半閉眼）"], ["keep", "沒有問題"], ["na", "尚未分析"]]]);
+    groups.push(["suggest", "選片建議", [["cull", "建議淘汰"], ["keep", "沒有問題"], ["na", "尚未分析"]]]);
     if (cull.checksEyes)
-      groups.push(["eyes", "眼睛", [["closed", "有人閉眼"], ["half", "有人半閉"], ["open", "全部睜眼"], ["noface", "沒有人臉"], ["na", "尚未分析"]]]);
-    groups.push(["sharp", "清晰度", [["blur", "整張模糊"], ["facesoft", "主體失焦"], ["ok", "清晰"], ["na", "尚未分析"]]]);
+      groups.push(["eyes", "眼睛", [["closed", "有人閉眼"], ["open", "沒有閉眼"], ["noface", "沒有人臉"], ["na", "尚未分析"]]]);
+    groups.push(["sharp", "對焦", [["blur", "模糊 / 眼睛失焦"], ["ok", "清晰"], ["na", "尚未分析"]]]);
   }
   groups.push(["rating", "評等", RATING_ROWS]);
   groups.push([
@@ -297,10 +297,10 @@ let pendingUpdate = 0;
 function update(opts: { resetGrid?: boolean } = {}) {
   recomputeView();
   renderFilters();
+  updateAspect();
   if (opts.resetGrid) grid.reset();
   else grid.render();
   grid.refresh();
-  renderInfo();
   renderStatus();
   if (S.loupe) renderLoupeInfo();
   if (S.compare.length) renderCompare(false);
@@ -317,6 +317,20 @@ function scheduleUpdate() {
   }, 200);
 }
 
+/** 依資料夾內照片的方向決定縮圖框形狀：幾乎都是直幅 → 直的框，都是橫幅 → 橫的框，混合 → 正方形 */
+function updateAspect() {
+  let portrait = 0;
+  let landscape = 0;
+  for (const it of live()) {
+    const m = S.meta.get(it.id);
+    if (!m?.width || !m?.height) continue;
+    if (m.height > m.width) portrait++;
+    else landscape++;
+  }
+  const n = portrait + landscape;
+  grid.setAspect(!n ? 1 : portrait / n >= 0.8 ? 1.5 : landscape / n >= 0.8 ? 2 / 3 : 1);
+}
+
 function renderStatus() {
   const total = live().length;
   const shown = S.view.length;
@@ -330,39 +344,6 @@ function renderStatus() {
   $("progress").textContent = p;
 }
 
-function renderInfo() {
-  const box = $("info");
-  if (S.focus === null) {
-    box.innerHTML = `<p class="muted">尚未選取照片</p>`;
-    return;
-  }
-  const it = S.items[S.focus];
-  const m = S.meta.get(it.id);
-  const rows: [string, string | undefined | null][] = [
-    ["檔案", it.files.join("\n")],
-    ["大小", fmtBytes(it.size)],
-    ["拍攝", m?.capture],
-    ["相機", m?.camera],
-    ["鏡頭", m?.lens],
-    [
-      "曝光",
-      [m?.shutter && `${m.shutter}`, m?.aperture && `f/${m.aperture}`, m?.iso && `ISO ${m.iso}`, m?.focal && `${m.focal}mm`]
-        .filter(Boolean)
-        .join("  "),
-    ],
-    ["尺寸", m?.width && m?.height ? `${m.width} × ${m.height}` : null],
-    ["評等", m ? stars(m.rating) || "—" : null],
-    ["標籤", m?.label ? LABELS.find((l) => l.value === m.label)?.name ?? m.label : null],
-    ...cull.describe(it.id),
-  ];
-  box.innerHTML =
-    "<dl>" +
-    rows
-      .filter(([, v]) => v)
-      .map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(String(v)).replace(/\n/g, "<br>")}</dd>`)
-      .join("") +
-    "</dl>";
-}
 
 // ---------------------------------------------------------------- folder
 
@@ -448,9 +429,8 @@ on<number>("meta-done", (e) => {
 
 // ---------------------------------------------------------------- 選片分析
 
-const autoAnalyze = $<HTMLInputElement>("auto-analyze");
-autoAnalyze.checked = storage("autoAnalyze", true);
-autoAnalyze.addEventListener("change", () => store("autoAnalyze", autoAnalyze.checked));
+// 自動分析的開關已從介面移除；沿用之前的設定（預設不自動分析，按工具列「選片分析」執行）
+const autoAnalyze = { checked: storage("autoAnalyze", false) };
 
 /** 每個資料夾記住自己的拍攝類型；沒設定過的資料夾沿用上次選的 */
 function folderMode(dir: string): ShootMode {
@@ -503,20 +483,6 @@ on<number>("analysis-done", (e) => {
   update({ resetGrid: true });
 });
 
-/** 把「建議淘汰」且尚未評分的照片標為拒絕 */
-$("btn-reject-suggested").addEventListener("click", async () => {
-  const ids = live().filter((i) => cull.issues(i.id)?.cull && (S.meta.get(i.id)?.rating ?? 0) === 0).map((i) => i.id);
-  if (!ids.length) return toast(cull.analysis.size ? "沒有需要標記的照片（已評分的不會被更動）" : "請先執行選片分析");
-  if (!(await ask(`把 ${ids.length} 張「建議淘汰」且尚未評分的照片標為拒絕？\n已經評過星等的照片不會被更動。`, { title: "標記拒絕", okLabel: "確定", cancelLabel: "取消" }))) return;
-  ids.forEach((id) => setLocal(id, { rating: -1 }));
-  update();
-  try {
-    await api.setRating(S.session, ids, -1);
-    toast(`已將 ${ids.length} 張標為拒絕`);
-  } catch (e) {
-    toast(`寫入失敗：${e}`);
-  }
-});
 
 // ---------------------------------------------------------------- selection
 
@@ -534,7 +500,6 @@ function setFocus(id: number, extend: boolean) {
   if (idx !== undefined) grid.scrollToIndex(idx);
   grid.render();
   grid.refresh();
-  renderInfo();
   renderStatus();
   if (S.loupe) showLoupe();
 }
@@ -549,7 +514,6 @@ function onCellClick(index: number, ev: MouseEvent) {
     S.focus = id;
     S.anchor = id;
     grid.refresh();
-    renderInfo();
     renderStatus();
   } else if (!(S.selected.has(id) && S.selected.size > 1 && ev.button === 2)) {
     setFocus(id, false);
@@ -870,20 +834,6 @@ $("sort-dir").addEventListener("click", () => {
   update({ resetGrid: true });
 });
 
-async function refreshCacheInfo() {
-  try {
-    const [, bytes] = await api.cacheInfo();
-    $("cache-info").textContent = `縮圖快取：${fmtBytes(bytes)}`;
-  } catch {
-    /* ignore */
-  }
-}
-$("btn-clear-cache").addEventListener("click", async () => {
-  if (!(await ask("清除所有縮圖與清晰度快取？下次瀏覽時會重新產生。", { title: "清除快取", okLabel: "確定", cancelLabel: "取消" }))) return;
-  await api.clearCache();
-  refreshCacheInfo();
-  toast("快取已清除");
-});
 
 // ---------------------------------------------------------------- keyboard
 
@@ -1306,6 +1256,36 @@ onImageDiag((msg, isError) => {
   if (!isError) toast(msg, 4000);
 });
 
+// ---------------------------------------------------------------- 側欄寬度
+
+const SIDE_DEFAULT = 240;
+function setSideWidth(px: number) {
+  const w = Math.max(170, Math.min(520, Math.round(px)));
+  document.documentElement.style.setProperty("--side-w", `${w}px`);
+  return w;
+}
+setSideWidth(storage("sideWidth", SIDE_DEFAULT));
+{
+  const handle = $("side-resizer");
+  handle.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    handle.setPointerCapture(ev.pointerId);
+    handle.classList.add("drag");
+    document.body.classList.add("resizing");
+    const move = (e: PointerEvent) => setSideWidth(e.clientX);
+    const up = (e: PointerEvent) => {
+      store("sideWidth", setSideWidth(e.clientX));
+      handle.classList.remove("drag");
+      document.body.classList.remove("resizing");
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+  });
+  handle.addEventListener("dblclick", () => store("sideWidth", setSideWidth(SIDE_DEFAULT)));
+}
+
 // ---------------------------------------------------------------- boot
 
 (async function boot() {
@@ -1317,8 +1297,6 @@ onImageDiag((msg, isError) => {
   const recent = storage<string[]>("recent", []);
   $("recent").innerHTML = recent.map((p) => `<li data-path="${escapeHtml(p)}" title="${escapeHtml(p)}">${escapeHtml(p)}</li>`).join("");
   renderFilters();
-  refreshCacheInfo();
-  setInterval(refreshCacheInfo, 15000);
   await Promise.all(listeners);
   await restoreMusic();
   const start = (await api.initialFolder().catch(() => null)) ?? storage<string | null>("last", null);

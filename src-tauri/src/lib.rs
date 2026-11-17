@@ -52,8 +52,10 @@ struct Analysis {
 }
 
 /// 演算法版本：改動分析方式時加一，舊快取就會自動失效
-const ANALYSIS_VERSION: i64 = 1;
+const ANALYSIS_VERSION: i64 = 3;
 const ANALYSIS_EDGE: u32 = 2048;
+/// 判斷眼睛對焦用的解析度（長邊至少這麼大）
+const EYE_EDGE: u32 = 4096;
 
 #[derive(Serialize, Clone)]
 struct AnalysisBatch {
@@ -62,10 +64,13 @@ struct AnalysisBatch {
 }
 
 fn analyze_item(it: &scan::Item) -> Option<Analysis> {
-    let img = render::decode_source(it, ANALYSIS_EDGE).ok()?;
-    let img = if img.width().max(img.height()) > ANALYSIS_EDGE { img.thumbnail(ANALYSIS_EDGE, ANALYSIS_EDGE) } else { img };
+    // 高解析度（約 4000px）用來判斷眼睛有沒有對到焦；縮到 2048px 做人臉偵測
+    let full = render::decode_source(it, EYE_EDGE).ok()?;
+    let full = if full.width().max(full.height()) > EYE_EDGE * 2 { full.thumbnail(EYE_EDGE * 2, EYE_EDGE * 2) } else { full };
+    let hires = full.to_luma8();
+    let img = if full.width().max(full.height()) > ANALYSIS_EDGE { full.thumbnail(ANALYSIS_EDGE, ANALYSIS_EDGE) } else { full };
     let sharp = blur::sharpness(&img.thumbnail(1024, 1024).to_luma8());
-    let faces = face::analyze(&img.to_rgb8());
+    let faces = face::analyze(&img.to_rgb8(), Some(&hires));
     Some(Analysis { sharp, faces })
 }
 

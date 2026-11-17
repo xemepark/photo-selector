@@ -30,11 +30,19 @@
         </select>
       </label>
       <button id="btn-slideshow" title="播放幻燈片（P）">▶ 幻燈片</button>
-      <button id="btn-analyze" class="primary" title="偵測模糊、主體失焦、閉眼">選片分析</button>
+      <button id="btn-analyze" class="primary" title="偵測主角眼睛是否失焦（沒有人臉時看整張照片）、閉眼">選片分析</button>
     </header>
 
     <main id="layout">
       <aside id="sidebar">
+        <section>
+          <h3>動作</h3>
+          <div class="actions">
+            <button id="btn-copy">複製選取項目到…</button>
+            <button id="btn-move">移動選取項目到…</button>
+            <label class="tool check" title="按 delete 鍵刪除照片前先跳出確認"><input id="confirm-delete" type="checkbox" checked /> 刪除照片前先確認</label>
+          </div>
+        </section>
         <section>
           <h3>資料夾</h3>
           <ul id="folders" class="folders"></ul>
@@ -44,6 +52,7 @@
           <div id="filters"></div>
         </section>
       </aside>
+      <div id="side-resizer" title="拖曳調整欄寬（雙擊恢復預設）"></div>
 
       <section id="center">
         <div id="grid" tabindex="0">
@@ -59,33 +68,13 @@
         </div>
       </section>
 
-      <aside id="inspector">
-        <h3>資訊</h3>
-        <div id="info" class="info"><p class="muted">尚未選取照片</p></div>
-        <h3>選片</h3>
-        <div class="actions">
-          <label class="tool check"><input id="auto-analyze" type="checkbox" checked /> 開啟資料夾時自動分析</label>
-          <button id="btn-reject-suggested" title="只會標記尚未評分的照片">將「建議淘汰」標為拒絕</button>
-          <label class="tool check" title="按 delete 鍵刪除照片前先跳出確認"><input id="confirm-delete" type="checkbox" checked /> 刪除照片前先確認</label>
-        </div>
-        <h3>動作</h3>
-        <div class="actions">
-          <button id="btn-copy">複製選取項目到…</button>
-          <button id="btn-move">移動選取項目到…</button>
-        </div>
-        <h3>快取</h3>
-        <div class="actions">
-          <div id="cache-info" class="muted small"></div>
-          <button id="btn-clear-cache">清除縮圖快取</button>
-        </div>
-        <div id="app-version" class="muted small version"></div>
-      </aside>
     </main>
 
     <footer id="status">
       <span id="count"></span>
       <span id="progress"></span>
       <span id="diag" class="diag"></span>
+      <span id="app-version" class="version"></span>
       <span class="spacer"></span>
       <span class="keys">
         <kbd>0</kbd>–<kbd>5</kbd> 評等 <kbd>X</kbd> 拒絕 <kbd>6</kbd>–<kbd>9</kbd> 標籤
