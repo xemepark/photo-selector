@@ -24,8 +24,8 @@ concurrency:
 
 jobs:
   macos:
-    # 指定 macos-15（Apple Silicon）：macos-latest 的主機池曾發生長時間分配不到機器的情況
-    runs-on: macos-15
+    # 指定 macos-14（Apple Silicon）：macos-latest、macos-15 的主機池曾發生長時間分配不到機器的情況
+    runs-on: macos-14
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
