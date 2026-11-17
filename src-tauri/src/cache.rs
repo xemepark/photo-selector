@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 
 pub type Key = (String, i64, i64);
 
+/// 縮圖格式版本：縮圖的產生方式改變時加一，舊的縮圖快取就會在下次啟動時清除
+const THUMB_VERSION: i64 = 2;
+
 pub struct Cache {
     conn: Mutex<Connection>,
     pub path: PathBuf,
@@ -28,6 +31,12 @@ impl Cache {
                path TEXT PRIMARY KEY, mtime INTEGER NOT NULL, size INTEGER NOT NULL,
                version INTEGER NOT NULL, json TEXT NOT NULL);",
         )?;
+        // 縮圖產生方式改變時（例如修正「手機照片縮圖變黑白」）清掉舊縮圖一次
+        let ver: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+        if ver < THUMB_VERSION {
+            conn.execute_batch("DELETE FROM thumbs;")?;
+            conn.execute_batch(&format!("PRAGMA user_version = {THUMB_VERSION};"))?;
+        }
         Ok(Self { conn: Mutex::new(conn), path })
     }
 

@@ -102,11 +102,13 @@ pub fn decode_source(item: &Item, min_edge: u32) -> Result<DynamicImage> {
 
 /// JPEG 檔案內嵌、長邊 ≥ min_edge 且比例與原圖一致的預覽圖（取最小的一張）
 fn jpeg_embedded_preview(data: &[u8], min_edge: u32) -> Option<jpeg::EmbeddedJpeg> {
-    let (w, h) = jpeg::jpeg_dims(data)?;
+    let (w, h, nc) = jpeg::jpeg_info(data)?;
     let ratio = w.max(h) as f32 / w.min(h).max(1) as f32;
     jpeg::jpeg_file_previews(data)
         .into_iter()
         .filter(|j| j.long_edge() >= min_edge && j.long_edge() < w.max(h))
+        // 原圖是彩色、內嵌圖卻是灰階 → 不是預覽圖（多一道保險）
+        .filter(|j| !(nc >= 3 && j.components < 3))
         .filter(|j| {
             let r = j.long_edge() as f32 / j.width.min(j.height).max(1) as f32;
             (r - ratio).abs() / ratio < 0.02 // 比例不同（例如加了黑邊）就不用
@@ -203,6 +205,9 @@ mod tests {
                 let bytes = render(it, kind).unwrap();
                 let img = image::load_from_memory(&bytes).unwrap();
                 println!("{} {kind:?}: {:?} -> {}x{} ({} KB)", it.name, t.elapsed(), img.width(), img.height(), bytes.len() / 1024);
+                if let Ok(out) = std::env::var("THUMB_BENCH_SAVE") {
+                    std::fs::write(format!("{out}/{}_{kind:?}.jpg", it.name), &bytes).unwrap();
+                }
             }
         }
     }

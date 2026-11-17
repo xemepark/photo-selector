@@ -17,6 +17,8 @@ pub struct EmbeddedJpeg {
     pub len: usize,
     pub width: u32,
     pub height: u32,
+    /// 色彩成分數：1 = 灰階（例如手機 HDR 增益圖、景深圖），3 = 彩色
+    pub components: u8,
 }
 
 impl EmbeddedJpeg {
@@ -36,21 +38,21 @@ fn be16(d: &[u8], p: usize) -> Option<usize> {
 /// 會拒絕無損 JPEG（SOF3，CR2/DNG 用來存 RAW 資料本體）與其他非預覽用途的格式。
 pub fn parse_at(data: &[u8], offset: usize) -> Option<EmbeddedJpeg> {
     let d = data.get(offset..)?;
-    let (len, width, height) = parse_jpeg(d)?;
+    let (len, width, height, components) = parse_jpeg(d)?;
     if width < 32 || height < 32 || len < 512 {
         return None;
     }
-    Some(EmbeddedJpeg { offset, len, width, height })
+    Some(EmbeddedJpeg { offset, len, width, height, components })
 }
 
 /// 回傳 (總長度, 寬, 高)
-fn parse_jpeg(d: &[u8]) -> Option<(usize, u32, u32)> {
+fn parse_jpeg(d: &[u8]) -> Option<(usize, u32, u32, u8)> {
     if d.len() < 4 || d[0] != 0xFF || d[1] != 0xD8 {
         return None;
     }
     let n = d.len();
     let mut p = 2;
-    let mut dims: Option<(u32, u32)> = None;
+    let mut dims: Option<(u32, u32, u8)> = None;
 
     // 1) 走過所有 marker segment 直到 SOS
     loop {
@@ -81,7 +83,8 @@ fn parse_jpeg(d: &[u8]) -> Option<(usize, u32, u32)> {
                         }
                         let h = be16(d, p + 3)? as u32;
                         let w = be16(d, p + 5)? as u32;
-                        dims = Some((w, h));
+                        let nc = *d.get(p + 7)?;
+                        dims = Some((w, h, nc));
                     }
                     // 無損、階層式、算術編碼 —— 不是我們要的預覽圖
                     0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => return None,
@@ -95,7 +98,7 @@ fn parse_jpeg(d: &[u8]) -> Option<(usize, u32, u32)> {
             }
         }
     }
-    let (w, h) = dims?;
+    let (w, h, nc) = dims?;
     if w == 0 || h == 0 {
         return None;
     }
@@ -108,7 +111,7 @@ fn parse_jpeg(d: &[u8]) -> Option<(usize, u32, u32)> {
         match b {
             0x00 | 0xD0..=0xD7 => p += 1,
             0xFF => {}
-            0xD9 => return Some((p + 1, w, h)),
+            0xD9 => return Some((p + 1, w, h, nc)),
             0xD8 => return None,
             _ => {
                 p += 1;
@@ -145,12 +148,17 @@ pub fn scan(data: &[u8], range: Range<usize>) -> Vec<EmbeddedJpeg> {
 
 /// JPEG 檔頭裡的尺寸（SOF），只讀檔頭
 pub fn jpeg_dims(data: &[u8]) -> Option<(u32, u32)> {
+    jpeg_info(data).map(|(w, h, _)| (w, h))
+}
+
+/// JPEG 檔頭裡的 (寬, 高, 色彩成分數)，只讀檔頭
+pub fn jpeg_info(data: &[u8]) -> Option<(u32, u32, u8)> {
     let mut found = None;
     walk_header(data, |m, body| {
-        if matches!(m, 0xC0 | 0xC1 | 0xC2) && body.len() >= 5 {
+        if matches!(m, 0xC0 | 0xC1 | 0xC2) && body.len() >= 6 {
             let h = u16::from_be_bytes([body[1], body[2]]) as u32;
             let w = u16::from_be_bytes([body[3], body[4]]) as u32;
-            found = Some((w, h));
+            found = Some((w, h, body[5]));
             return false;
         }
         true
@@ -214,7 +222,12 @@ pub fn jpeg_file_previews(data: &[u8]) -> Vec<EmbeddedJpeg> {
             }
         } else if m == 0xE2 && body.starts_with(b"MPF\0") {
             let base = base_of(body) + 4;
-            for (off, _size) in mpf_entries(&body[4..]) {
+            // 只採用標示為「預覽縮圖」的 MPF 影像。手機的 Ultra HDR 增益圖、景深圖等輔助影像
+            // 也用 MPF 存放（而且比例相同），若誤用會讓彩色照片的縮圖變成黑白
+            for (off, _size, attr) in mpf_entries(&body[4..]) {
+                if !matches!(attr & 0x00FF_FFFF, MPF_LARGE_THUMB_VGA | MPF_LARGE_THUMB_FULLHD) {
+                    continue;
+                }
                 if let Some(j) = parse_at(data, base + off) {
                     out.push(j);
                 }
@@ -226,7 +239,12 @@ pub fn jpeg_file_previews(data: &[u8]) -> Vec<EmbeddedJpeg> {
 }
 
 /// 解析 MPF（CIPA DC-007）的 MP Entry，回傳第 2 張以後影像的 (相對於 MP 標頭的位移, 大小)
-fn mpf_entries(d: &[u8]) -> Vec<(usize, usize)> {
+/// MPF 的影像類型（MP Type Code）：大尺寸縮圖（VGA / Full HD），相機 JPEG 內嵌預覽就是這兩種
+const MPF_LARGE_THUMB_VGA: u32 = 0x010001;
+const MPF_LARGE_THUMB_FULLHD: u32 = 0x010002;
+
+/// 回傳 (相對於 MP 標頭的位移, 大小, 屬性)
+fn mpf_entries(d: &[u8]) -> Vec<(usize, usize, u32)> {
     let mut out = Vec::new();
     if d.len() < 8 {
         return out;
@@ -254,9 +272,9 @@ fn mpf_entries(d: &[u8]) -> Vec<(usize, usize)> {
         let (Some(count), Some(off)) = (u32_at(e + 4), u32_at(e + 8)) else { break };
         for k in 1..(count / 16).min(16) as usize {
             let ent = off as usize + k * 16;
-            if let (Some(size), Some(ioff)) = (u32_at(ent + 4), u32_at(ent + 8)) {
+            if let (Some(attr), Some(size), Some(ioff)) = (u32_at(ent), u32_at(ent + 4), u32_at(ent + 8)) {
                 if ioff > 0 && size > 0 {
-                    out.push((ioff as usize, size as usize));
+                    out.push((ioff as usize, size as usize, attr));
                 }
             }
         }
@@ -364,6 +382,10 @@ mod mpf_tests {
 
     /// 組出「主影像 + APP2 MPF + 附加預覽圖」的 JPEG（與相機直出結構相同）
     fn make_mpo(main: &[u8], preview: &[u8]) -> Vec<u8> {
+        make_mpo_typed(main, preview, 0x010002)
+    }
+
+    fn make_mpo_typed(main: &[u8], preview: &[u8], attr: u32) -> Vec<u8> {
         let mut tiff = b"II*\0".to_vec();
         tiff.extend_from_slice(&8u32.to_le_bytes());
         tiff.extend_from_slice(&1u16.to_le_bytes());
@@ -379,6 +401,7 @@ mod mpf_tests {
         let preview_start = 2 + 2 + seg_len + (main.len() - 2);
         let off = (preview_start - base) as u32;
         let e1 = entries_at + 16;
+        tiff[e1..e1 + 4].copy_from_slice(&attr.to_le_bytes());
         tiff[e1 + 4..e1 + 8].copy_from_slice(&(preview.len() as u32).to_le_bytes());
         tiff[e1 + 8..e1 + 12].copy_from_slice(&off.to_le_bytes());
         let mut f = vec![0xFF, 0xD8, 0xFF, 0xE2];
@@ -402,5 +425,15 @@ mod mpf_tests {
         assert_eq!(v[0].bytes(&file), &preview[..]);
         // 沒有 MPF 的一般 JPEG
         assert!(jpeg_file_previews(&main).is_empty());
+    }
+
+    #[test]
+    fn ignores_hdr_gain_map_and_other_auxiliary_images() {
+        let main = make_jpeg(1800, 1200);
+        let aux = make_jpeg(600, 400);
+        // 手機 Ultra HDR 增益圖之類的輔助影像：MP Type 不是「大尺寸縮圖」
+        assert!(jpeg_file_previews(&make_mpo_typed(&main, &aux, 0x000000)).is_empty());
+        assert!(jpeg_file_previews(&make_mpo_typed(&main, &aux, 0x020002)).is_empty());
+        assert_eq!(jpeg_file_previews(&make_mpo_typed(&main, &aux, 0x010001)).len(), 1);
     }
 }
