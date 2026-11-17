@@ -3,7 +3,7 @@ import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
 import { api, url, Item, Meta, OpenResult, LABELS, labelColor, stars } from "./api";
 import { Grid } from "./grid";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
-import { Cull, Analysis, ShootMode, drawFaces } from "./cull";
+import { Cull, Analysis, ShootMode, drawFaces, contentRect } from "./cull";
 import {
   Slideshow,
   SlideSettings,
@@ -486,8 +486,18 @@ on<number>("analysis-done", (e) => {
 
 // ---------------------------------------------------------------- selection
 
+// 在縮圖上選到一張照片時，背景先準備它的全螢幕預覽，按空白鍵時多半已經好了
+const gridPrefetched: unknown[] = [];
+const prefetchFocus = debounce((id: number) => {
+  if (S.loupe || S.focus !== id) return;
+  gridPrefetched.length = 0;
+  prefetchImg(url.medium(S.session, id), gridPrefetched);
+  prefetchImg(url.preview(S.session, id), gridPrefetched);
+}, 350);
+
 function setFocus(id: number, extend: boolean) {
   S.focus = id;
+  if (!S.loupe) prefetchFocus(id);
   if (extend && S.anchor !== null && S.viewIndex.has(S.anchor)) {
     const a = S.viewIndex.get(S.anchor)!;
     const b = S.viewIndex.get(id)!;
@@ -663,6 +673,7 @@ function closeLoupe() {
   S.zoom = false;
   stage.classList.remove("zoom");
   loupe.classList.add("hidden");
+  chain = null;
   clearImg(loupeImg);
   faceLayer.innerHTML = "";
   gridEl.focus();
@@ -673,18 +684,52 @@ function showLoupe() {
   S.zoom = false;
   stage.classList.remove("zoom");
   faceLayer.innerHTML = "";
-  setImg(loupeImg, url.preview(S.session, S.focus));
+  startChain(S.focus);
   renderLoupeInfo();
   // 預先載入前後兩張，翻頁時幾乎零等待
   prefetched.length = 0;
   const i = S.viewIndex.get(S.focus) ?? 0;
   for (const d of [1, -1, 2, -2]) {
     const n = S.view[i + d];
-    if (n) {
-      prefetchImg(url.preview(S.session, n.id), prefetched);
-    }
+    if (!n) continue;
+    prefetchImg(url.medium(S.session, n.id), prefetched);
+    if (Math.abs(d) === 1) prefetchImg(url.preview(S.session, n.id), prefetched);
   }
 }
+
+// 全螢幕分段顯示：縮圖（立即，已在快取）→ 中等預覽（相機內嵌，很快）→ 完整預覽（2560px）。
+// 每一段載入完成才換下一段；換圖期間畫面保留上一段，不會出現黑畫面。
+let chain: { id: number; steps: string[]; i: number } | null = null;
+
+function startChain(id: number) {
+  chain = { id, steps: [url.thumb(S.session, id), url.medium(S.session, id), url.preview(S.session, id)], i: 0 };
+  stepChain();
+}
+
+function stepChain() {
+  const c = chain;
+  if (!c || S.zoom || !S.loupe) return;
+  if (c.i >= c.steps.length) {
+    chain = null;
+    return;
+  }
+  const u = c.steps[c.i];
+  setImg(loupeImg, u, () => {
+    // 這一段載入失敗（例如縮圖被取消）→ 直接跳下一段
+    if (chain === c && c.steps[c.i] === u) {
+      c.i++;
+      stepChain();
+    }
+  });
+}
+
+loupeImg.addEventListener("load", () => {
+  const c = chain;
+  if (c && loupeImg.dataset.want === c.steps[c.i]) {
+    c.i++;
+    stepChain();
+  }
+});
 
 function renderLoupeInfo() {
   if (S.focus === null) return;
@@ -705,6 +750,7 @@ function renderLoupeInfo() {
 function toggleZoom(ev?: MouseEvent) {
   if (S.focus === null) return;
   S.zoom = !S.zoom;
+  chain = null;
   faceLayer.innerHTML = "";
   if (!S.zoom) {
     stage.classList.remove("zoom");
@@ -712,7 +758,7 @@ function toggleZoom(ev?: MouseEvent) {
     return;
   }
   // 以點擊位置為中心放大到 100%
-  const r = loupeImg.getBoundingClientRect();
+  const r = contentRect(loupeImg);
   const fx = ev ? (ev.clientX - r.left) / r.width : 0.5;
   const fy = ev ? (ev.clientY - r.top) / r.height : 0.5;
   stage.classList.add("zoom");

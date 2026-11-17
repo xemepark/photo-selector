@@ -10,10 +10,15 @@ use std::io::Cursor;
 
 pub const THUMB_EDGE: u32 = 400;
 pub const PREVIEW_EDGE: u32 = 2560;
+pub const MEDIUM_EDGE: u32 = 2048;
+/// 中等預覽接受的最小來源尺寸：內嵌預覽常見 1616×1080
+const MEDIUM_MIN_SOURCE: u32 = 1600;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Thumb,
+    /// 中等預覽（約 1600–2048px）：相機 JPEG / RAW 內嵌預覽就有這個大小，幾乎不用解碼原圖，全螢幕時先顯示
+    Medium,
     Preview,
     Full,
 }
@@ -79,21 +84,7 @@ pub fn decode_source(item: &Item, min_edge: u32) -> Result<DynamicImage> {
     let img = match f.class {
         Class::Jpeg => {
             // 相機 JPEG 內嵌的預覽圖夠大、比例也一致時，就只解碼它（快數十倍，外接硬碟上差異更大）
-            let preview = (min_edge > 0)
-                .then(|| {
-                    let (w, h) = jpeg::jpeg_dims(&data)?;
-                    let ratio = w.max(h) as f32 / w.min(h).max(1) as f32;
-                    jpeg::jpeg_file_previews(&data)
-                        .into_iter()
-                        .filter(|j| j.long_edge() >= min_edge && j.long_edge() < w.max(h))
-                        .filter(|j| {
-                            let r = j.long_edge() as f32 / j.width.min(j.height).max(1) as f32;
-                            (r - ratio).abs() / ratio < 0.02 // 比例不同（例如加了黑邊）就不用
-                        })
-                        .min_by_key(|j| j.width as u64 * j.height as u64)
-                })
-                .flatten();
-            match preview {
+            match (min_edge > 0).then(|| jpeg_embedded_preview(&data, min_edge)).flatten() {
                 Some(j) => decode_jpeg_scaled(j.bytes(&data), min_edge)?,
                 None => decode_jpeg_scaled(&data, min_edge)?,
             }
@@ -107,6 +98,41 @@ pub fn decode_source(item: &Item, min_edge: u32) -> Result<DynamicImage> {
         }
     };
     Ok(apply_orientation(img, orient))
+}
+
+/// JPEG 檔案內嵌、長邊 ≥ min_edge 且比例與原圖一致的預覽圖（取最小的一張）
+fn jpeg_embedded_preview(data: &[u8], min_edge: u32) -> Option<jpeg::EmbeddedJpeg> {
+    let (w, h) = jpeg::jpeg_dims(data)?;
+    let ratio = w.max(h) as f32 / w.min(h).max(1) as f32;
+    jpeg::jpeg_file_previews(data)
+        .into_iter()
+        .filter(|j| j.long_edge() >= min_edge && j.long_edge() < w.max(h))
+        .filter(|j| {
+            let r = j.long_edge() as f32 / j.width.min(j.height).max(1) as f32;
+            (r - ratio).abs() / ratio < 0.02 // 比例不同（例如加了黑邊）就不用
+        })
+        .min_by_key(|j| j.width as u64 * j.height as u64)
+}
+
+/// 中等預覽。回傳 (影像, 是否其實已經是完整預覽品質)。
+/// 沒有內嵌預覽的 JPEG 反正都要解碼原圖，就直接做成完整預覽（之後要完整預覽時不必再算一次）。
+pub fn render_medium(item: &Item) -> Result<(Vec<u8>, bool)> {
+    let f = item.display();
+    if f.class == Class::Jpeg {
+        let has_embedded = File::open(&f.path)
+            .ok()
+            .and_then(|file| unsafe { memmap2::Mmap::map(&file) }.ok())
+            .map(|data| jpeg_embedded_preview(&data, MEDIUM_MIN_SOURCE).is_some())
+            .unwrap_or(false);
+        if !has_embedded {
+            return Ok((render(item, Kind::Preview)?, true));
+        }
+    }
+    let img = decode_source(item, MEDIUM_MIN_SOURCE)?;
+    if img.width().max(img.height()) >= PREVIEW_EDGE {
+        return Ok((encode_jpeg(&fit(img, PREVIEW_EDGE), 88)?, true));
+    }
+    Ok((encode_jpeg(&fit(img, MEDIUM_EDGE), 85)?, false))
 }
 
 pub fn encode_jpeg(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
@@ -132,6 +158,7 @@ fn fit(img: DynamicImage, edge: u32) -> DynamicImage {
 pub fn render(item: &Item, kind: Kind) -> Result<Vec<u8>> {
     match kind {
         Kind::Thumb => encode_jpeg(&fit(decode_source(item, THUMB_EDGE)?, THUMB_EDGE), 82),
+        Kind::Medium => encode_jpeg(&fit(decode_source(item, MEDIUM_MIN_SOURCE)?, MEDIUM_EDGE), 85),
         Kind::Preview => encode_jpeg(&fit(decode_source(item, PREVIEW_EDGE)?, PREVIEW_EDGE), 88),
         Kind::Full => {
             let f = item.display();
@@ -171,10 +198,12 @@ mod tests {
         let Ok(dir) = std::env::var("THUMB_BENCH_DIR") else { return };
         let (items, _) = crate::scan::scan_dir(std::path::Path::new(&dir)).unwrap();
         for it in &items {
-            let t = std::time::Instant::now();
-            let bytes = render(it, Kind::Thumb).unwrap();
-            let img = image::load_from_memory(&bytes).unwrap();
-            println!("{}: {:?} -> {}x{} ({} KB)", it.name, t.elapsed(), img.width(), img.height(), bytes.len() / 1024);
+            for kind in [Kind::Thumb, Kind::Medium, Kind::Preview] {
+                let t = std::time::Instant::now();
+                let bytes = render(it, kind).unwrap();
+                let img = image::load_from_memory(&bytes).unwrap();
+                println!("{} {kind:?}: {:?} -> {}x{} ({} KB)", it.name, t.elapsed(), img.width(), img.height(), bytes.len() / 1024);
+            }
         }
     }
 }

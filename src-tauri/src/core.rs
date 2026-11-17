@@ -47,6 +47,7 @@ pub struct Core {
     pub cache: Cache,
     mem_thumbs: Mutex<LruCache<(String, i64, i64), Arc<Vec<u8>>>>,
     mem_previews: Mutex<LruCache<(String, i64, i64), Arc<Vec<u8>>>>,
+    mem_medium: Mutex<LruCache<(String, i64, i64), Arc<Vec<u8>>>>,
     queue: Mutex<Queues>,
     cv: Condvar,
 }
@@ -75,6 +76,7 @@ impl Core {
             cache: Cache::open(&cache_dir)?,
             mem_thumbs: Mutex::new(LruCache::new(NonZeroUsize::new(3000).unwrap())),
             mem_previews: Mutex::new(LruCache::new(NonZeroUsize::new(24).unwrap())),
+            mem_medium: Mutex::new(LruCache::new(NonZeroUsize::new(64).unwrap())),
             queue: Mutex::new(Queues::default()),
             cv: Condvar::new(),
         });
@@ -125,6 +127,7 @@ impl Core {
                 let kind = match *k {
                     "t" => Some(Kind::Thumb),
                     "p" => Some(Kind::Preview),
+                    "m" => Some(Kind::Medium),
                     "f" => Some(Kind::Full),
                     _ => None,
                 };
@@ -143,6 +146,7 @@ impl Core {
         let hit = match kind {
             Kind::Thumb => self.mem_thumbs.lock().get(&key).cloned(),
             Kind::Preview => self.mem_previews.lock().get(&key).cloned(),
+            Kind::Medium => self.mem_medium.lock().get(&key).cloned(),
             Kind::Full => None,
         };
         if let Some(bytes) = hit {
@@ -198,12 +202,31 @@ impl Core {
             }
         }
 
+        if job.kind == Kind::Medium {
+            return match render::render_medium(item) {
+                Ok((bytes, is_full)) => {
+                    let arc = Arc::new(bytes.clone());
+                    self.mem_medium.lock().put(key.clone(), arc.clone());
+                    if is_full {
+                        self.mem_previews.lock().put(key, arc);
+                    }
+                    respond(job.responder, StatusCode::OK, "image/jpeg", bytes, true)
+                }
+                Err(e) => {
+                    eprintln!("render failed {}: {e:#}", item.display().path.display());
+                    respond(job.responder, StatusCode::OK, "image/svg+xml", render::placeholder(&item.display().ext), false)
+                }
+            };
+        }
         match render::render(item, job.kind) {
             Ok(bytes) => {
                 match job.kind {
                     Kind::Thumb => {
                         self.cache.put_thumb(&key, &bytes);
                         self.mem_thumbs.lock().put(key, Arc::new(bytes.clone()));
+                    }
+                    Kind::Medium => {
+                        self.mem_medium.lock().put(key, Arc::new(bytes.clone()));
                     }
                     Kind::Preview => {
                         self.mem_previews.lock().put(key, Arc::new(bytes.clone()));
@@ -222,5 +245,6 @@ impl Core {
     pub fn clear_memory(&self) {
         self.mem_thumbs.lock().clear();
         self.mem_previews.lock().clear();
+        self.mem_medium.lock().clear();
     }
 }

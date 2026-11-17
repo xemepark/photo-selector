@@ -120,11 +120,22 @@ export class Cull {
   }
 }
 
+/** 以 object-fit: contain 顯示時，圖片實際內容在畫面上的位置 */
+export function contentRect(img: HTMLImageElement) {
+  const r = img.getBoundingClientRect();
+  const iw = img.naturalWidth || 1;
+  const ih = img.naturalHeight || 1;
+  const s = Math.min(r.width / iw, r.height / ih);
+  const w = iw * s;
+  const h = ih * s;
+  return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h };
+}
+
 /** 在全螢幕預覽的照片上畫出人臉框與「判斷對焦用的那隻眼睛」 */
 export function drawFaces(layer: HTMLElement, img: HTMLImageElement, a: Analysis | undefined, cull: Cull, id: number) {
   layer.innerHTML = "";
   if (!a || !img.complete || !img.naturalWidth) return;
-  const r = img.getBoundingClientRect();
+  const r = contentRect(img);
   const issues = cull.issues(id);
   const box = (b: [number, number, number, number], cls: string, label: string) => {
     const el = document.createElement("div");

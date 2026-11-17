@@ -156,6 +156,19 @@ async fn transfer(
     Ok(ops::transfer(&items, &PathBuf::from(dest), mode == "move"))
 }
 
+/// 選片分析專用的執行緒池：最多用一半的 CPU 核心，留給縮圖與全螢幕預覽，操作才不會卡
+fn analysis_pool() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads((n / 2).max(1))
+            .thread_name(|i| format!("analysis-{i}"))
+            .build()
+            .expect("analysis pool")
+    })
+}
+
 /// 選片分析：整張清晰度、人臉偵測、閉眼判斷、臉部清晰度。結果分批以事件回傳並寫入快取。
 /// 刪除（移到垃圾桶）
 #[tauri::command]
@@ -169,7 +182,7 @@ async fn delete_items(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Resul
 fn analyze(app: AppHandle, core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<(), String> {
     let sess = core.session(session)?;
     let core2 = core.inner().clone();
-    std::thread::spawn(move || {
+    std::thread::spawn(move || analysis_pool().install(|| {
         ids.par_chunks(4).for_each(|chunk| {
             if core2.current().id != sess.id {
                 return;
@@ -196,7 +209,7 @@ fn analyze(app: AppHandle, core: CoreState<'_>, session: u64, ids: Vec<u32>) -> 
             let _ = app.emit("analysis-batch", AnalysisBatch { session: sess.id, results });
         });
         let _ = app.emit("analysis-done", sess.id);
-    });
+    }));
     Ok(())
 }
 

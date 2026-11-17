@@ -55,6 +55,7 @@ const n = () => `?n=${++seq}`;
 
 export const url = {
   thumb: (session: number, id: number) => `${base}t/${session}/${id}${n()}`,
+  medium: (session: number, id: number) => `${base}m/${session}/${id}${n()}`,
   preview: (session: number, id: number) => `${base}p/${session}/${id}${n()}`,
   full: (session: number, id: number) => `${base}f/${session}/${id}${n()}`,
 };

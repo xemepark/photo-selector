@@ -143,9 +143,9 @@ h3 {
 /* ---------- overlays ---------- */
 .overlay { position: fixed; inset: 0; background: #0c0c0e; z-index: 10; display: flex; flex-direction: column; }
 .stage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; min-height: 0; }
-.stage img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
+.stage img { width: 100%; height: 100%; object-fit: contain; cursor: zoom-in; }
 .stage.zoom { overflow: auto; display: block; }
-.stage.zoom img { max-width: none; max-height: none; cursor: zoom-out; display: block; margin: auto; }
+.stage.zoom img { width: auto; height: auto; max-width: none; max-height: none; cursor: zoom-out; display: block; margin: auto; }
 .overlay-info {
   position: absolute; top: 12px; left: 16px; background: #000a; padding: 6px 10px; border-radius: 6px;
   font-size: 12px; display: flex; gap: 12px; align-items: center; pointer-events: none;
