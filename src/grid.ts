@@ -31,6 +31,8 @@ interface Cell {
   /** 套用位置時的版面版本；版面改變（縮圖大小、視窗寬度）後要重新排位 */
   geo: number;
   retry: number;
+  /** 看門狗：在畫面上卻遲遲沒載入完成時重新要求 */
+  watch: number;
   timer: number;
 }
 
@@ -188,6 +190,7 @@ export class Grid {
       index: -1,
       geo: -1,
       retry: 0,
+      watch: 0,
       timer: 0,
     };
     c.img.addEventListener("load", () => c.img.setAttribute("data-loaded", ""));
@@ -198,20 +201,29 @@ export class Grid {
   /** 載入縮圖；後端回 410 = 排隊時被捲出畫面而取消，若現在又在畫面上就稍後重試 */
   private loadThumb(c: Cell) {
     const id = c.id;
-    setImg(c.img, url.thumb(this.host.session(), id, c.retry), () => {
+    clearTimeout(c.watch);
+    c.watch = window.setTimeout(() => {
+      if (c.id === id && this.cells.get(c.index) === c && !c.img.hasAttribute("data-loaded")) {
+        c.retry++;
+        this.loadThumb(c);
+      }
+    }, 6000 + Math.min(c.retry, 5) * 2000);
+    setImg(c.img, url.thumb(this.host.session(), id), () => {
       if (c.id !== id) return;
       clearTimeout(c.timer);
       c.timer = window.setTimeout(() => {
-        if (c.id === id && this.cells.get(c.index) === c && c.retry < 30) {
+        // 只要這格還在畫面上就持續重試（不設上限）：大檔案在外接硬碟上可能要排隊很久
+        if (c.id === id && this.cells.get(c.index) === c) {
           c.retry++;
           this.loadThumb(c);
         }
-      }, Math.min(1200, 80 * (c.retry + 1)));
+      }, Math.min(1500, 100 * (c.retry + 1)));
     });
   }
 
   private release(c: Cell) {
     clearTimeout(c.timer);
+    clearTimeout(c.watch);
     c.id = -1;
     c.root.style.display = "none";
     c.img.removeAttribute("data-loaded");

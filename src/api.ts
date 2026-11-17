@@ -46,10 +46,17 @@ export interface TransferResult {
 // Linux / macOS：img://localhost/   Windows：http://img.localhost/
 const base = convertFileSrc("", "img");
 
+// 每次載入都用不同的網址（?n=序號）。
+// WebKit 會把「相同網址」的圖片共用同一個載入；若先前的載入因為捲出畫面而被取消，
+// 之後同網址的 <img> 會一直卡住，既不顯示也不報錯（大檔案、快速捲動時特別容易發生）。
+// 後端有記憶體快取，同一張圖重複要求仍然很快。
+let seq = 0;
+const n = () => `?n=${++seq}`;
+
 export const url = {
-  thumb: (session: number, id: number, retry = 0) => `${base}t/${session}/${id}${retry ? `?r=${retry}` : ""}`,
-  preview: (session: number, id: number) => `${base}p/${session}/${id}`,
-  full: (session: number, id: number) => `${base}f/${session}/${id}`,
+  thumb: (session: number, id: number) => `${base}t/${session}/${id}${n()}`,
+  preview: (session: number, id: number) => `${base}p/${session}/${id}${n()}`,
+  full: (session: number, id: number) => `${base}f/${session}/${id}${n()}`,
 };
 
 export const api = {

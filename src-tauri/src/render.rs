@@ -77,7 +77,27 @@ pub fn decode_source(item: &Item, min_edge: u32) -> Result<DynamicImage> {
     let data = unsafe { memmap2::Mmap::map(&file)? };
     let orient = meta::orientation(f.class, &data);
     let img = match f.class {
-        Class::Jpeg => decode_jpeg_scaled(&data, min_edge)?,
+        Class::Jpeg => {
+            // 相機 JPEG 內嵌的預覽圖夠大、比例也一致時，就只解碼它（快數十倍，外接硬碟上差異更大）
+            let preview = (min_edge > 0)
+                .then(|| {
+                    let (w, h) = jpeg::jpeg_dims(&data)?;
+                    let ratio = w.max(h) as f32 / w.min(h).max(1) as f32;
+                    jpeg::jpeg_file_previews(&data)
+                        .into_iter()
+                        .filter(|j| j.long_edge() >= min_edge && j.long_edge() < w.max(h))
+                        .filter(|j| {
+                            let r = j.long_edge() as f32 / j.width.min(j.height).max(1) as f32;
+                            (r - ratio).abs() / ratio < 0.02 // 比例不同（例如加了黑邊）就不用
+                        })
+                        .min_by_key(|j| j.width as u64 * j.height as u64)
+                })
+                .flatten();
+            match preview {
+                Some(j) => decode_jpeg_scaled(j.bytes(&data), min_edge)?,
+                None => decode_jpeg_scaled(&data, min_edge)?,
+            }
+        }
         Class::Image => image::load_from_memory(&data)?,
         Class::Raw | Class::Other => {
             let want = if min_edge == 0 { u32::MAX } else { min_edge };
@@ -139,4 +159,22 @@ pub fn placeholder(ext: &str) -> Vec<u8> {
         ext.to_uppercase()
     )
     .into_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 實測縮圖產生時間：THUMB_BENCH_DIR=/path cargo test --release thumb_bench -- --nocapture
+    #[test]
+    fn thumb_bench() {
+        let Ok(dir) = std::env::var("THUMB_BENCH_DIR") else { return };
+        let (items, _) = crate::scan::scan_dir(std::path::Path::new(&dir)).unwrap();
+        for it in &items {
+            let t = std::time::Instant::now();
+            let bytes = render(it, Kind::Thumb).unwrap();
+            let img = image::load_from_memory(&bytes).unwrap();
+            println!("{}: {:?} -> {}x{} ({} KB)", it.name, t.elapsed(), img.width(), img.height(), bytes.len() / 1024);
+        }
+    }
 }

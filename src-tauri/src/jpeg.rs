@@ -143,6 +143,127 @@ pub fn scan(data: &[u8], range: Range<usize>) -> Vec<EmbeddedJpeg> {
     out
 }
 
+/// JPEG 檔頭裡的尺寸（SOF），只讀檔頭
+pub fn jpeg_dims(data: &[u8]) -> Option<(u32, u32)> {
+    let mut found = None;
+    walk_header(data, |m, body| {
+        if matches!(m, 0xC0 | 0xC1 | 0xC2) && body.len() >= 5 {
+            let h = u16::from_be_bytes([body[1], body[2]]) as u32;
+            let w = u16::from_be_bytes([body[3], body[4]]) as u32;
+            found = Some((w, h));
+            return false;
+        }
+        true
+    });
+    found
+}
+
+/// 走過 JPEG 檔頭的 marker segment（直到 SOS 為止）。callback 回傳 false 就停止。
+/// `body` 是 segment 內容（不含 marker 與長度欄位）。
+fn walk_header(data: &[u8], mut f: impl FnMut(u8, &[u8]) -> bool) {
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return;
+    }
+    let mut p = 2;
+    while p + 4 <= data.len() {
+        if data[p] != 0xFF {
+            return;
+        }
+        let m = data[p + 1];
+        match m {
+            0xFF => {
+                p += 1;
+                continue;
+            }
+            0x01 | 0xD0..=0xD7 => {
+                p += 2;
+                continue;
+            }
+            0xD8 | 0xD9 | 0xDA => return,
+            _ => {}
+        }
+        let Some(seg) = be16(data, p + 2) else { return };
+        let end = p + 2 + seg;
+        if seg < 2 || end > data.len() {
+            return;
+        }
+        if !f(m, &data[p + 4..end]) {
+            return;
+        }
+        p = end;
+    }
+}
+
+/// 相機直出 JPEG 本身內嵌的小預覽圖：
+/// - EXIF 縮圖（APP1 / IFD1，約 160×120）
+/// - MPF 多圖格式的預覽（APP2，Sony / Canon / Nikon 等約 1616×1080），位於主影像之後
+///
+/// 只讀檔頭與預覽圖本身（搭配 mmap 只會讀到幾百 KB），不需要讀完 20MB 以上的整張原圖。
+pub fn jpeg_file_previews(data: &[u8]) -> Vec<EmbeddedJpeg> {
+    let mut out = Vec::new();
+    let base_of = |body: &[u8]| body.as_ptr() as usize - data.as_ptr() as usize;
+    walk_header(data, |m, body| {
+        if m == 0xE1 && body.starts_with(b"Exif\0\0") {
+            let tiff_base = base_of(body) + 6;
+            if let Some(t) = crate::tiff::parse(&body[6..]) {
+                for (o, _) in t.previews {
+                    if let Some(j) = parse_at(data, tiff_base + o) {
+                        out.push(j);
+                    }
+                }
+            }
+        } else if m == 0xE2 && body.starts_with(b"MPF\0") {
+            let base = base_of(body) + 4;
+            for (off, _size) in mpf_entries(&body[4..]) {
+                if let Some(j) = parse_at(data, base + off) {
+                    out.push(j);
+                }
+            }
+        }
+        true
+    });
+    out
+}
+
+/// 解析 MPF（CIPA DC-007）的 MP Entry，回傳第 2 張以後影像的 (相對於 MP 標頭的位移, 大小)
+fn mpf_entries(d: &[u8]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    if d.len() < 8 {
+        return out;
+    }
+    let le = match &d[0..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return out,
+    };
+    let u16_at = |p: usize| d.get(p..p + 2).map(|b| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) });
+    let u32_at = |p: usize| {
+        d.get(p..p + 4).map(|b| {
+            let a = [b[0], b[1], b[2], b[3]];
+            if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) }
+        })
+    };
+    let Some(ifd) = u32_at(4) else { return out };
+    let ifd = ifd as usize;
+    let Some(n) = u16_at(ifd) else { return out };
+    for i in 0..n.min(64) as usize {
+        let e = ifd + 2 + i * 12;
+        if u16_at(e) != Some(0xB002) {
+            continue;
+        }
+        let (Some(count), Some(off)) = (u32_at(e + 4), u32_at(e + 8)) else { break };
+        for k in 1..(count / 16).min(16) as usize {
+            let ent = off as usize + k * 16;
+            if let (Some(size), Some(ioff)) = (u32_at(ent + 4), u32_at(ent + 8)) {
+                if ioff > 0 && size > 0 {
+                    out.push((ioff as usize, size as usize));
+                }
+            }
+        }
+    }
+    out
+}
+
 const HEAD_SCAN: usize = 8 * 1024 * 1024;
 
 /// 找出檔案中所有可用的內嵌 JPEG。`min_long` 是期望的最小長邊；
@@ -233,5 +354,53 @@ pub(crate) mod tests {
         assert_eq!(pick(&v, 400).unwrap().offset, o_mid);
         assert_eq!(pick(&v, 1000).unwrap().offset, o_big);
         assert_eq!(pick(&v, 5000).unwrap().offset, o_big);
+    }
+}
+
+#[cfg(test)]
+mod mpf_tests {
+    use super::tests::make_jpeg;
+    use super::*;
+
+    /// 組出「主影像 + APP2 MPF + 附加預覽圖」的 JPEG（與相機直出結構相同）
+    fn make_mpo(main: &[u8], preview: &[u8]) -> Vec<u8> {
+        let mut tiff = b"II*\0".to_vec();
+        tiff.extend_from_slice(&8u32.to_le_bytes());
+        tiff.extend_from_slice(&1u16.to_le_bytes());
+        tiff.extend_from_slice(&0xB002u16.to_le_bytes());
+        tiff.extend_from_slice(&7u16.to_le_bytes());
+        tiff.extend_from_slice(&32u32.to_le_bytes());
+        tiff.extend_from_slice(&26u32.to_le_bytes()); // entries 位於 TIFF 起點 +26
+        tiff.extend_from_slice(&0u32.to_le_bytes()); // next IFD
+        let entries_at = tiff.len();
+        tiff.extend(std::iter::repeat(0u8).take(32));
+        let seg_len = 2 + 4 + tiff.len();
+        let base = 2 + 2 + 2 + 4; // SOI + marker + 長度 + "MPF\0"
+        let preview_start = 2 + 2 + seg_len + (main.len() - 2);
+        let off = (preview_start - base) as u32;
+        let e1 = entries_at + 16;
+        tiff[e1 + 4..e1 + 8].copy_from_slice(&(preview.len() as u32).to_le_bytes());
+        tiff[e1 + 8..e1 + 12].copy_from_slice(&off.to_le_bytes());
+        let mut f = vec![0xFF, 0xD8, 0xFF, 0xE2];
+        f.extend_from_slice(&(seg_len as u16).to_be_bytes());
+        f.extend_from_slice(b"MPF\0");
+        f.extend_from_slice(&tiff);
+        f.extend_from_slice(&main[2..]);
+        f.extend_from_slice(preview);
+        f
+    }
+
+    #[test]
+    fn finds_mpf_preview_in_jpeg_file() {
+        let main = make_jpeg(1800, 1200);
+        let preview = make_jpeg(600, 400);
+        let file = make_mpo(&main, &preview);
+        assert_eq!(jpeg_dims(&file), Some((1800, 1200)));
+        let v = jpeg_file_previews(&file);
+        assert_eq!(v.len(), 1);
+        assert_eq!((v[0].width, v[0].height, v[0].len), (600, 400, preview.len()));
+        assert_eq!(v[0].bytes(&file), &preview[..]);
+        // 沒有 MPF 的一般 JPEG
+        assert!(jpeg_file_previews(&main).is_empty());
     }
 }
