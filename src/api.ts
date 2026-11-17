@@ -76,6 +76,8 @@ export const api = {
     preserve: boolean,
   ) => invoke<TransferResult>("batch_rename", { session, entries, mode, dest, preserve }),
   revealItem: (session: number, id: number) => invoke<void>("reveal_item", { session, id }),
+  openDir: (path: string) => invoke<void>("open_dir", { path }),
+  openWebsite: () => invoke<void>("open_website"),
   resolvePath: (input: string) => invoke<{ dir: string; file: string | null }>("resolve_path", { input }),
   analyze: (session: number, ids: number[]) => invoke<void>("analyze", { session, ids }),
   cacheInfo: () => invoke<[string, number]>("cache_info"),

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Photo Selector",
+  "productName": "小日子寫真館",
   "version": "0.1.0",
   "identifier": "app.photoselector.desktop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Photo Selector",
+        "title": "小日子寫真館",
         "width": 1440,
         "height": 900,
         "minWidth": 960,
@@ -55,11 +55,11 @@
       }
     },
     "category": "Photography",
-    "shortDescription": "離線照片選片工具",
+    "shortDescription": "小日子寫真館 選片工具",
     "macOS": {
       "minimumSystemVersion": "11.0",
       "signingIdentity": "-"
     },
-    "copyright": "Photo Selector"
+    "copyright": "小日子寫真館 https://smallday.tw"
   }
 }

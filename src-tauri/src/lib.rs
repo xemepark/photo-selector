@@ -242,6 +242,20 @@ async fn batch_rename(
     Ok(ops::batch_rename(&list, &m, preserve, &core.cache))
 }
 
+pub const WEBSITE: &str = "https://smallday.tw";
+
+/// 用 Finder 開啟資料夾（複製 / 移動完成後的提示訊息使用）
+#[tauri::command]
+async fn open_dir(path: String) -> Result<(), String> {
+    ops::open_dir(&PathBuf::from(path)).map_err(|e| e.to_string())
+}
+
+/// 開啟 https://smallday.tw
+#[tauri::command]
+fn open_website() -> Result<(), String> {
+    ops::open_website().map_err(|e| e.to_string())
+}
+
 /// 在 Finder 中顯示
 #[tauri::command]
 async fn reveal_item(core: CoreState<'_>, session: u64, id: u32) -> Result<(), String> {
@@ -399,19 +413,25 @@ fn initial_folder() -> Option<String> {
 #[cfg(target_os = "macos")]
 fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem as P, Submenu};
-    let about = AboutMetadata { version: Some(version_string()), ..Default::default() };
+    let about = AboutMetadata {
+        version: Some(version_string()),
+        website: Some(WEBSITE.into()),
+        website_label: Some("smallday.tw".into()),
+        ..Default::default()
+    };
     let app_menu = Submenu::with_items(
         app,
-        "Photo Selector",
+        "小日子寫真館",
         true,
         &[
-            &P::about(app, Some("關於 Photo Selector"), Some(about))?,
+            &P::about(app, Some("關於 小日子寫真館"), Some(about))?,
+            &MenuItem::with_id(app, "website", "前往 smallday.tw", true, None::<&str>)?,
             &P::separator(app)?,
-            &P::hide(app, Some("隱藏 Photo Selector"))?,
+            &P::hide(app, Some("隱藏 小日子寫真館"))?,
             &P::hide_others(app, Some("隱藏其他"))?,
             &P::show_all(app, Some("顯示全部"))?,
             &P::separator(app)?,
-            &P::quit(app, Some("結束 Photo Selector"))?,
+            &P::quit(app, Some("結束 小日子寫真館"))?,
         ],
     )?;
     let file = Submenu::with_items(
@@ -422,7 +442,6 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
             &MenuItem::with_id(app, "open", "開啟資料夾…", true, Some("CmdOrCtrl+O"))?,
             &MenuItem::with_id(app, "up", "上一層資料夾", true, Some("CmdOrCtrl+Up"))?,
             &P::separator(app)?,
-            &MenuItem::with_id(app, "analyze", "選片分析", true, Some("CmdOrCtrl+R"))?,
             &MenuItem::with_id(app, "slideshow", "播放幻燈片…", true, Some("CmdOrCtrl+Shift+P"))?,
             &MenuItem::with_id(app, "batch-rename", "批次重新命名…", true, Some("CmdOrCtrl+Shift+R"))?,
             &MenuItem::with_id(app, "goto", "前往資料夾…", true, Some("CmdOrCtrl+Shift+G"))?,
@@ -477,6 +496,8 @@ pub fn run() {
             analyze,
             delete_items,
             app_version,
+            open_dir,
+            open_website,
             batch_rename,
             reveal_item,
             resolve_path,

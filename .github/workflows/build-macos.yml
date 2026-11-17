@@ -80,8 +80,10 @@ jobs:
           OUT="Photo-Selector-${GITHUB_REF_NAME//\//-}-mac-universal.dmg"
           cp "$DMG" "$OUT"
           echo "path=$OUT" >> "$GITHUB_OUTPUT"
-          lipo -info "src-tauri/target/universal-apple-darwin/release/bundle/macos/Photo Selector.app/Contents/MacOS/photo-selector"
-          codesign -dv "src-tauri/target/universal-apple-darwin/release/bundle/macos/Photo Selector.app" 2>&1 | head -5
+          APP=$(ls -d src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app | head -1)
+          echo "App: $APP"
+          lipo -info "$APP/Contents/MacOS/"*
+          codesign -dv "$APP" 2>&1 | head -5
           ls -lh "$OUT"
 
       - uses: actions/upload-artifact@v4
@@ -94,7 +96,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.path }}" --title "Photo Selector $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.path }}" --title "小日子寫真館 $GITHUB_REF_NAME" --generate-notes
 
       - name: 更新測試版下載連結（branch 推送時）
         if: github.ref_type == 'branch'
@@ -106,5 +108,5 @@ jobs:
           sleep 5
           gh release create beta Photo-Selector-mac-universal.dmg -R "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" --prerelease \
-            --title "Photo Selector 測試版（最新）" \
+            --title "小日子寫真館 測試版（最新）" \
             --notes "自動編譯的最新測試版（${GITHUB_SHA::7}，分支 ${GITHUB_REF_NAME}）。Apple Silicon + Intel 通用版，macOS 11 以上。尚未經 Apple 公證，第一次開啟請見 README「在 Mac 上安裝」。"

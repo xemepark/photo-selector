@@ -1,19 +1,19 @@
-# Photo Selector
+# 小日子寫真館（選片工具）
 
 專為攝影師「選片」設計的照片瀏覽工具（Rust + Tauri 2）：打開上萬張的資料夾不卡、純鍵盤評分，
 並自動抓出**閉眼、模糊、主體失焦**的照片。新生兒寫真可切換成「忽略閉眼」模式。
 
-> 本專案是獨立開發的軟體，與 Adobe 無關，介面與名稱皆為自有設計。
+> 小日子寫真館 <https://smallday.tw> 的選片工具。獨立開發，與 Adobe 無關。
 
 ## 在 Mac 上安裝
 
 1. 直接下載最新測試版：<https://github.com/xemepark/photo-selector/releases/download/beta/Photo-Selector-mac-universal.dmg>
    （或到 GitHub 的 **Actions** 分頁 → 最新一次成功的「Build macOS」→ 頁面最下方 **Artifacts**
    下載 `Photo-Selector-macOS`（是 zip，解壓後得到 `.dmg`）。正式版本則到 **Releases** 下載。
-2. 打開 `.dmg`，把 **Photo Selector** 拖進「應用程式」資料夾。
+2. 打開 `.dmg`，把 **小日子寫真館** 拖進「應用程式」資料夾。
 3. 第一次開啟：因為還沒有 Apple 開發者簽署，macOS 會說「無法驗證開發者」。
-   - 先按「完成」關掉提示，打開 **系統設定 → 隱私權與安全性**，往下捲找到 Photo Selector，按 **「強制打開」**，再輸入密碼確認。
-   - 或在「終端機」執行：`xattr -dr com.apple.quarantine "/Applications/Photo Selector.app"`
+   - 先按「完成」關掉提示，打開 **系統設定 → 隱私權與安全性**，往下捲找到 小日子寫真館，按 **「強制打開」**，再輸入密碼確認。
+   - 或在「終端機」執行：`xattr -dr com.apple.quarantine "/Applications/小日子寫真館.app"`
    - 只有第一次需要，之後直接開啟即可。
 4. 開啟照片資料夾時，macOS 可能會詢問是否允許存取「圖片」、「桌面」或外接硬碟，請按「允許」。
 
@@ -68,7 +68,9 @@ npm run tauri build                     # 打包安裝檔（在哪個系統編�
 cargo test --manifest-path src-tauri/Cargo.toml   # 後端單元測試
 ```
 
-## 選片分析（v0.2）
+## 選片分析（v0.2，目前已停用）
+
+> 依需求暫時從介面移除（按鈕、拍攝類型、排序與選單項目）。後端程式仍保留，日後需要時可再開啟。
 
 開啟資料夾後會在背景自動分析（也可以按工具列的「選片分析」），每張照片檢查：
 
@@ -138,6 +140,9 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 後端單元測試
 
 ## 檔案管理
 
+- 左側欄最上方的「小日子寫真館 / https://smallday.tw」點一下會用瀏覽器開啟網站（Mac 選單也有「前往 smallday.tw」）。
+- **複製 / 移動完成的提示訊息**會停留數秒（預設 4 秒，可在左側「提示訊息停留」設定），
+  訊息上有「在 Finder 中開啟」按鈕，點了直接開啟目的地資料夾；滑鼠停在訊息上時會暫停倒數。
 - **路徑列可以直接編輯**：點一下（或 ⇧⌘G）貼上 / 輸入路徑後按 Enter 前往；可用 `~`、可貼上帶引號的路徑。
   貼上的是照片路徑時，會開啟所在資料夾並選取那張照片。
 - **右鍵選單**：在 Finder 中顯示、重新命名（F2）、批次重新命名、複製 / 移動到…、移到垃圾桶。

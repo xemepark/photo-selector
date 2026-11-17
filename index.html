@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Photo Selector</title>
+    <title>小日子寫真館</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
@@ -18,31 +18,29 @@
           <option value="date">拍攝時間</option>
           <option value="rating">評等</option>
           <option value="size">檔案大小</option>
-          <option value="sharp">整體清晰度</option>
         </select>
         <button id="sort-dir" title="升冪 / 降冪">↓</button>
       </label>
       <label class="tool" title="縮圖大小（+ / −）"><input id="size" type="range" min="100" max="380" step="10" value="180" /></label>
       <label class="tool check" title="評分後自動跳到下一張"><input id="auto-advance" type="checkbox" checked /> 自動下一張</label>
-      <label class="tool" title="新生兒寫真會忽略閉眼，只檢查模糊與失焦">拍攝類型
-        <select id="mode">
-          <option value="general">一般（檢查閉眼）</option>
-          <option value="newborn">新生兒（忽略閉眼）</option>
-        </select>
-      </label>
       <button id="btn-batch-rename" title="批次重新命名（⇧⌘R）">批次重新命名</button>
       <button id="btn-slideshow" title="播放幻燈片（P）">▶ 幻燈片</button>
-      <button id="btn-analyze" class="primary" title="偵測主角眼睛是否失焦（沒有人臉時看整張照片）、閉眼">選片分析</button>
     </header>
 
     <main id="layout">
       <aside id="sidebar">
+        <button id="brand" class="brand" title="開啟 https://smallday.tw">
+          <span class="brand-name">小日子寫真館</span>
+          <span class="brand-link">https://smallday.tw</span>
+        </button>
         <section>
           <h3>動作</h3>
           <div class="actions">
             <button id="btn-copy">複製選取項目到…</button>
             <button id="btn-move">移動選取項目到…</button>
             <label class="tool check" title="按 delete 鍵刪除照片前先跳出確認"><input id="confirm-delete" type="checkbox" checked /> 刪除照片前先確認</label>
+            <label class="tool" title="複製 / 移動完成後，提示訊息停留在畫面上的秒數">提示訊息停留
+              <input id="toast-seconds" type="number" min="1" max="60" step="1" /> 秒</label>
             <button id="btn-label-names" title="色彩標籤寫入檔案時使用的名稱，需與 Bridge 偏好設定中的標籤名稱一致">標籤名稱（與 Bridge 一致）…</button>
           </div>
         </section>
@@ -63,7 +61,7 @@
         </div>
         <div id="empty" class="empty">
           <div class="empty-inner">
-            <h2>Photo Selector</h2>
+            <h2>小日子寫真館</h2>
             <p>開啟一個照片資料夾開始選片</p>
             <button id="btn-open-2" class="primary">開啟資料夾</button>
             <ul id="recent"></ul>
@@ -89,7 +87,7 @@
       <div id="loupe-stage" class="stage"><img id="loupe-img" alt="" /></div>
       <div id="loupe-faces"></div>
       <div id="loupe-info" class="overlay-info"></div>
-      <div class="overlay-hint">← → 切換 · 0–5 評等 · X 拒絕 · Z / 點擊 放大 · F 人臉框 · Esc 關閉</div>
+      <div class="overlay-hint">← → 切換 · 0–5 評等 · X 拒絕 · Z / 點擊 放大 · Esc 關閉</div>
     </div>
 
     <div id="compare" class="overlay hidden">

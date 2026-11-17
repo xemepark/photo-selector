@@ -293,3 +293,31 @@ mod rename_tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+/// 用系統的檔案管理員開啟資料夾（macOS：Finder）
+pub fn open_dir(dir: &Path) -> io::Result<()> {
+    if !dir.is_dir() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "找不到這個資料夾"));
+    }
+    open_with_system(dir.as_os_str())
+}
+
+/// 用預設瀏覽器開啟小日子寫真館網站（固定網址，不接受其他網址）
+pub fn open_website() -> io::Result<()> {
+    open_with_system(std::ffi::OsStr::new(crate::WEBSITE))
+}
+
+fn open_with_system(target: &std::ffi::OsStr) -> io::Result<()> {
+    use std::process::Command;
+    #[cfg(target_os = "macos")]
+    let mut cmd = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = Command::new("xdg-open");
+    cmd.arg(target).spawn().map(|_| ())
+}

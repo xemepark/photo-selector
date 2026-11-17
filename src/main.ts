@@ -20,7 +20,7 @@ import {
 import { Grid } from "./grid";
 import { BatchRename } from "./rename";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
-import { Cull, Analysis, ShootMode, drawFaces, contentRect } from "./cull";
+import { Cull, Analysis, drawFaces, contentRect } from "./cull";
 import {
   Slideshow,
   SlideSettings,
@@ -107,12 +107,73 @@ function debounce<A extends unknown[]>(fn: (...a: A) => void, ms: number) {
   };
 }
 
+let toastTimer = 0;
+let toastRemaining = 0;
+let toastStarted = 0;
+
+function hideToastLater(ms: number) {
+  clearTimeout(toastTimer);
+  toastRemaining = ms;
+  toastStarted = Date.now();
+  toastTimer = window.setTimeout(() => $("toast").classList.add("hidden"), ms);
+}
+
 function toast(msg: string, ms = 2600) {
   const t = $("toast");
   t.textContent = msg;
+  t.classList.remove("hidden", "has-action");
+  hideToastLater(ms);
+}
+
+/** 可點選的提示訊息（例如「在 Finder 中開啟」）。滑鼠停在訊息上時暫停倒數 */
+function notify(msg: string, action?: { label: string; run: () => void }, ms = toastSeconds() * 1000) {
+  const t = $("toast");
+  t.innerHTML = "";
+  const span = document.createElement("span");
+  span.textContent = msg;
+  t.appendChild(span);
+  if (action) {
+    const b = document.createElement("button");
+    b.className = "toast-action";
+    b.textContent = action.label;
+    b.addEventListener("click", () => {
+      action.run();
+      t.classList.add("hidden");
+    });
+    t.appendChild(b);
+  }
+  t.classList.toggle("has-action", !!action);
   t.classList.remove("hidden");
-  clearTimeout((toast as any).t);
-  (toast as any).t = setTimeout(() => t.classList.add("hidden"), ms);
+  hideToastLater(ms);
+}
+
+function toastSeconds(): number {
+  const v = Number(storage("toastSeconds", 4));
+  return Number.isFinite(v) && v >= 1 ? Math.min(60, v) : 4;
+}
+
+{
+  const t = document.getElementById("toast")!;
+  t.addEventListener("mouseenter", () => {
+    clearTimeout(toastTimer);
+    toastRemaining = Math.max(800, toastRemaining - (Date.now() - toastStarted));
+  });
+  t.addEventListener("mouseleave", () => {
+    if (!t.classList.contains("hidden")) hideToastLater(toastRemaining);
+  });
+}
+
+/** 「在 Finder 中開啟」這個資料夾 */
+function openDirAction(dir: string) {
+  const isMac = /Mac/.test(navigator.platform) || navigator.userAgent.includes("Mac OS X");
+  return {
+    label: isMac ? "在 Finder 中開啟" : "開啟資料夾",
+    run: () => api.openDir(dir).catch((e) => toast(`無法開啟資料夾：${e}`)),
+  };
+}
+
+function folderName(p: string) {
+  return p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
 }
 
 function storage<T>(key: string, fallback: T): T {
@@ -390,8 +451,6 @@ async function openFolder(path: string) {
   S.overrides.clear();
   S.removed.clear();
   cull.clear();
-  cull.mode = folderMode(res.dir);
-  $<HTMLSelectElement>("mode").value = cull.mode;
   S.selected = new Set(res.items.length ? [0] : []);
   for (const k of FILTER_KEYS) S.filters[k].clear();
   flushEarlyMeta();
@@ -411,11 +470,6 @@ async function openFolder(path: string) {
   update({ resetGrid: true });
   gridEl.focus();
   if (!res.items.length) toast("這個資料夾沒有支援的照片");
-  else if (autoAnalyze.checked) {
-    const session = res.session;
-    // 稍等一下讓縮圖先跑，再開始背景分析
-    setTimeout(() => session === S.session && startAnalysis(), 1500);
-  }
 }
 
 async function pickFolder() {
@@ -474,43 +528,7 @@ on<number>("meta-done", (e) => {
 
 // ---------------------------------------------------------------- 選片分析
 
-// 自動分析的開關已從介面移除；沿用之前的設定（預設不自動分析，按工具列「選片分析」執行）
-const autoAnalyze = { checked: storage("autoAnalyze", false) };
-
-/** 每個資料夾記住自己的拍攝類型；沒設定過的資料夾沿用上次選的 */
-function folderMode(dir: string): ShootMode {
-  const modes = storage<Record<string, ShootMode>>("modes", {});
-  return modes[dir] ?? storage<ShootMode>("lastMode", "general");
-}
-
-$<HTMLSelectElement>("mode").addEventListener("change", (e) => {
-  const mode = (e.target as HTMLSelectElement).value as ShootMode;
-  cull.mode = mode;
-  store("lastMode", mode);
-  if (S.dir) {
-    const modes = storage<Record<string, ShootMode>>("modes", {});
-    modes[S.dir] = mode;
-    store("modes", modes);
-  }
-  S.filters.eyes.clear();
-  S.filters.suggest.clear();
-  toast(mode === "newborn" ? "新生兒模式：不再標記閉眼，仍會檢查模糊與主體失焦" : "一般模式：會標記閉眼與半閉眼");
-  update({ resetGrid: true });
-  if (S.loupe) renderFaces();
-});
-
-async function startAnalysis() {
-  if (!S.items.length || cull.running) return;
-  cull.running = true;
-  renderStatus();
-  // 先分析畫面上看得到的，再分析其他的
-  const ids = [...S.view.map((i) => i.id), ...live().filter((i) => !S.viewIndex.has(i.id)).map((i) => i.id)];
-  await api.analyze(S.session, ids).catch((e) => {
-    cull.running = false;
-    toast(String(e));
-  });
-}
-$("btn-analyze").addEventListener("click", startAnalysis);
+// 「選片分析」功能已從介面移除（後端程式保留，未來需要時可再開啟）
 
 on<{ session: number; results: [number, Analysis][] }>("analysis-batch", (e) => {
   if (e.payload.session !== S.session) return;
@@ -884,7 +902,10 @@ async function transfer(mode: "copy" | "move") {
     return;
   try {
     const r = await api.transfer(S.session, ids, dest, mode);
-    toast(`${mode === "copy" ? "已複製" : "已移動"} ${r.done} 個項目${r.failed.length ? `，${r.failed.length} 個檔案失敗` : ""}`, 4000);
+    notify(
+      `${mode === "copy" ? "已複製" : "已移動"} ${r.done} 個項目到「${folderName(dest)}」${r.failed.length ? `，${r.failed.length} 個檔案失敗` : ""}`,
+      r.done ? openDirAction(dest) : undefined,
+    );
     if (r.failed.length) console.warn(r.failed);
     if (mode === "move") {
       const top = gridEl.scrollTop;
@@ -1341,8 +1362,8 @@ on<string>("menu", (e) => {
     case "up":
       if (S.parent) openFolder(S.parent);
       break;
-    case "analyze":
-      startAnalysis();
+    case "website":
+      api.openWebsite().catch((e) => toast(`無法開啟網站：${e}`));
       break;
     case "batch-rename":
       openBatchRename();
@@ -1540,11 +1561,12 @@ const batchRename = new BatchRename($("batch-rename"), {
   run: (entries, s) => api.batchRename(S.session, entries, s.dest, s.dest === "rename" ? null : s.destDir, s.preserve),
   done: async (s, firstNewName) => {
     if (s.dest === "copy") {
-      toast("已拷貝並重新命名");
+      notify(`已重新命名並拷貝到「${folderName(s.destDir)}」`, openDirAction(s.destDir));
       return;
     }
     await reloadFolder(s.dest === "rename" ? firstNewName : null);
-    toast(s.dest === "move" ? "已重新命名並移到其他資料夾" : "重新命名完成");
+    if (s.dest === "move") notify(`已重新命名並移到「${folderName(s.destDir)}」`, openDirAction(s.destDir));
+    else toast("重新命名完成");
   },
 });
 
@@ -1602,6 +1624,20 @@ $("label-save").addEventListener("click", () => {
   update();
   toast("已儲存標籤名稱。之後加上的標籤會使用新名稱");
 });
+
+// ---------------------------------------------------------------- 品牌連結、提示秒數設定
+
+$("brand").addEventListener("click", () => api.openWebsite().catch((e) => toast(`無法開啟網站：${e}`)));
+{
+  const inp = $<HTMLInputElement>("toast-seconds");
+  inp.value = String(toastSeconds());
+  inp.addEventListener("change", () => {
+    const v = Math.round(Number(inp.value));
+    const sec = Number.isFinite(v) && v >= 1 ? Math.min(60, v) : 4;
+    inp.value = String(sec);
+    store("toastSeconds", sec);
+  });
+}
 
 // ---------------------------------------------------------------- 側欄寬度
 
