@@ -208,6 +208,23 @@ fn default_folder(app: AppHandle) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+const AUDIO_EXTS: &[&str] = &["mp3", "m4a", "aac", "wav", "aif", "aiff", "flac", "ogg", "oga", "opus"];
+
+/// 允許幻燈片播放使用者挑選的背景音樂檔。
+/// 只開放「存在、且副檔名是音樂格式」的檔案給 asset 協定讀取，回傳實際允許的路徑。
+#[tauri::command]
+fn allow_audio(app: AppHandle, paths: Vec<String>) -> Vec<String> {
+    let scope = app.asset_protocol_scope();
+    paths
+        .into_iter()
+        .filter(|p| {
+            let path = std::path::Path::new(p);
+            let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            path.is_file() && AUDIO_EXTS.contains(&ext.as_str()) && scope.allow_file(path).is_ok()
+        })
+        .collect()
+}
+
 /// 命令列指定的資料夾：photo-selector /path/to/photos
 #[tauri::command]
 fn initial_folder() -> Option<String> {
@@ -243,6 +260,7 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
             &MenuItem::with_id(app, "up", "上一層資料夾", true, Some("CmdOrCtrl+Up"))?,
             &P::separator(app)?,
             &MenuItem::with_id(app, "analyze", "選片分析", true, Some("CmdOrCtrl+R"))?,
+            &MenuItem::with_id(app, "slideshow", "播放幻燈片…", true, Some("CmdOrCtrl+Shift+P"))?,
             &P::separator(app)?,
             &P::close_window(app, Some("關閉視窗"))?,
         ],
@@ -295,7 +313,8 @@ pub fn run() {
             cache_info,
             clear_cache,
             default_folder,
-            initial_folder
+            initial_folder,
+            allow_audio
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

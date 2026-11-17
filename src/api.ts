@@ -64,6 +64,7 @@ export const api = {
   clearCache: () => invoke<void>("clear_cache"),
   defaultFolder: () => invoke<string | null>("default_folder"),
   initialFolder: () => invoke<string | null>("initial_folder"),
+  allowAudio: (paths: string[]) => invoke<string[]>("allow_audio", { paths }),
 };
 
 /** 色彩標籤：XMP 存的值 ↔ 顯示 */

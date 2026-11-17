@@ -26,10 +26,15 @@
         "style-src": "'self' 'unsafe-inline'",
         "script-src": "'self'",
         "font-src": "'self'",
-        "connect-src": "ipc: http://ipc.localhost",
+        "connect-src": "ipc: http://ipc.localhost asset: http://asset.localhost",
         "object-src": "'none'",
         "base-uri": "'none'",
-        "form-action": "'none'"
+        "form-action": "'none'",
+        "media-src": "'self' blob:"
+      },
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
       }
     }
   },

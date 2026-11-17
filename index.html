@@ -29,6 +29,7 @@
           <option value="newborn">新生兒（忽略閉眼）</option>
         </select>
       </label>
+      <button id="btn-slideshow" title="播放幻燈片（P）">▶ 幻燈片</button>
       <button id="btn-analyze" class="primary" title="偵測模糊、主體失焦、閉眼">選片分析</button>
     </header>
 
@@ -85,7 +86,7 @@
       <span class="spacer"></span>
       <span class="keys">
         <kbd>0</kbd>–<kbd>5</kbd> 評等 <kbd>X</kbd> 拒絕 <kbd>6</kbd>–<kbd>9</kbd> 標籤
-        <kbd>Space</kbd> 全螢幕 <kbd>Z</kbd> 100% <kbd>C</kbd> 比較 <kbd>Ctrl</kbd>+<kbd>A</kbd> 全選
+        <kbd>Space</kbd> 全螢幕 <kbd>Z</kbd> 100% <kbd>C</kbd> 比較 <kbd>P</kbd> 幻燈片 <kbd>Ctrl</kbd>+<kbd>A</kbd> 全選
       </span>
     </footer>
 
@@ -99,6 +100,75 @@
     <div id="compare" class="overlay hidden">
       <div id="compare-grid"></div>
       <div class="overlay-hint">點選要評分的照片 · ← → 切換焦點 · 0–5 評等 · X 拒絕 · Esc 關閉</div>
+    </div>
+
+    <div id="slideshow" class="overlay slideshow hidden" tabindex="-1">
+      <img class="slide-layer" alt="" /><img class="slide-layer" alt="" />
+      <div class="slide-caption"></div>
+      <div class="slide-bar">
+        <button data-act="prev" title="上一張（←）">⏮</button>
+        <button data-act="toggle" title="暫停 / 繼續（Space）">⏸</button>
+        <button data-act="next" title="下一張（→）">⏭</button>
+        <span class="slide-count"></span>
+        <span class="slide-track"></span>
+        <span class="spacer"></span>
+        <button data-act="mute" title="靜音（M）">🔊</button>
+        <input class="slide-vol" type="range" min="0" max="1" step="0.05" title="音量" />
+        <button data-act="close" title="結束（Esc）">結束</button>
+      </div>
+      <div class="slide-paused">已暫停</div>
+    </div>
+
+    <div id="slide-dialog" class="modal hidden">
+      <div class="modal-box">
+        <h2>播放幻燈片</h2>
+        <div class="form">
+          <label>播放範圍
+            <select id="ss-scope">
+              <option value="view">目前顯示的照片（依篩選結果）</option>
+              <option value="selected">只播放已選取的照片</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="ss-skip-rejected" /> 略過拒絕的照片</label>
+          <label>順序
+            <select id="ss-order">
+              <option value="sorted">依目前排序</option>
+              <option value="shuffle">隨機</option>
+            </select>
+          </label>
+          <label>開始位置
+            <select id="ss-start">
+              <option value="first">從第一張</option>
+              <option value="focus">從目前選取的照片</option>
+            </select>
+          </label>
+          <label>每張秒數 <input type="range" id="ss-interval" min="2" max="15" step="0.5" /> <b id="ss-interval-v"></b></label>
+          <label>轉場效果
+            <select id="ss-transition">
+              <option value="fade">淡入淡出</option>
+              <option value="kenburns">緩慢推近（Ken Burns）</option>
+              <option value="none">無</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="ss-loop" /> 循環播放</label>
+          <label class="check"><input type="checkbox" id="ss-fullscreen" /> 全螢幕播放</label>
+          <label class="check"><input type="checkbox" id="ss-info" /> 顯示檔名與評等</label>
+
+          <h3>背景音樂</h3>
+          <ul id="ss-music" class="music-list"></ul>
+          <div class="row">
+            <button id="ss-add-music">＋ 加入音樂…</button>
+            <label class="vol">音量 <input type="range" id="ss-volume" min="0" max="1" step="0.05" /></label>
+          </div>
+          <label class="check"><input type="checkbox" id="ss-fit" /> 依音樂長度調整每張秒數（照片與音樂一起結束）</label>
+          <p class="muted small">支援 MP3、M4A / AAC、WAV、AIFF、FLAC。多首會依序播放，音樂檔只在本機讀取。</p>
+        </div>
+        <div class="modal-actions">
+          <span id="ss-summary" class="muted"></span>
+          <button id="ss-cancel">取消</button>
+          <button id="ss-go" class="primary">開始播放</button>
+        </div>
+      </div>
     </div>
 
     <div id="toast" class="toast hidden"></div>

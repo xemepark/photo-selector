@@ -3,6 +3,7 @@ import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
 import { api, url, Item, Meta, OpenResult, LABELS, labelColor, stars, fmtBytes } from "./api";
 import { Grid } from "./grid";
 import { Cull, Analysis, ShootMode, drawFaces } from "./cull";
+import { Slideshow, SlideSettings, DEFAULT_SETTINGS, fileName, fmtTime, audioDuration } from "./slideshow";
 
 // ---------------------------------------------------------------- state
 
@@ -284,6 +285,7 @@ function update(opts: { resetGrid?: boolean } = {}) {
   renderStatus();
   if (S.loupe) renderLoupeInfo();
   if (S.compare.length) renderCompare(false);
+  if (slideshow.active) slideshow.refreshCaption();
 }
 /** 大量中繼資料湧入時節流更新 */
 function scheduleUpdate() {
@@ -543,6 +545,10 @@ function moveFocus(delta: number, extend = false) {
 
 /** 評分 / 標籤要套用的對象 */
 function targets(): number[] {
+  if (slideshow.active) {
+    const id = slideshow.currentId();
+    return id === null ? [] : [id];
+  }
   if (S.compare.length) return [S.compare[S.compareActive]];
   if (S.loupe) return S.focus !== null ? [S.focus] : [];
   if (S.focus !== null && S.selected.has(S.focus) && S.selected.size > 1) return [...S.selected];
@@ -591,7 +597,7 @@ async function applyLabel(label: string) {
 }
 
 function advanceTarget(ids: number[]): number | null {
-  if (!($("auto-advance") as HTMLInputElement).checked || ids.length !== 1 || S.compare.length) return null;
+  if (!($("auto-advance") as HTMLInputElement).checked || ids.length !== 1 || S.compare.length || slideshow.active) return null;
   const i = S.viewIndex.get(ids[0]);
   return i !== undefined && i + 1 < S.view.length ? S.view[i + 1].id : null;
 }
@@ -825,6 +831,30 @@ document.addEventListener("keydown", (ev) => {
   const mod = ev.ctrlKey || ev.metaKey;
   const k = ev.key;
 
+  if (!slideDialog.classList.contains("hidden")) {
+    if (k === "Escape") closeSlideDialog();
+    else if (k === "Enter") startSlideshow();
+    else return;
+    ev.preventDefault();
+    return;
+  }
+  if (slideshow.active) {
+    const lk = k.toLowerCase();
+    const isRateKey = !mod && (/^[0-9]$/.test(k) || lk === "x");
+    if (!isRateKey) {
+      // 播放中：評分 / 標籤鍵交給下方共用處理，其他按鍵控制播放
+      if (k === "Escape") slideshow.stop();
+      else if (k === " ") slideshow.togglePause();
+      else if (k === "ArrowRight" || k === "ArrowDown") slideshow.next();
+      else if (k === "ArrowLeft" || k === "ArrowUp") slideshow.prev();
+      else if (lk === "m") slideshow.toggleMute();
+      else if (lk === "i") slideshow.toggleInfo();
+      else if (lk === "f") slideshow.toggleFullscreen();
+      ev.preventDefault();
+      return;
+    }
+  }
+
   if (mod && k.toLowerCase() === "o") return ev.preventDefault(), void pickFolder();
   if ((mod && k === "ArrowUp") || (k === "Backspace" && !S.loupe && !S.compare.length)) {
     ev.preventDefault();
@@ -886,11 +916,210 @@ document.addEventListener("keydown", (ev) => {
       renderStatus();
       break;
     default:
-      if (mod && k.toLowerCase() === "a") selectAll(); else if (k.toLowerCase() === "c" && !mod) openCompare();
+      if (mod && k.toLowerCase() === "a") selectAll();
+      else if (k.toLowerCase() === "c" && !mod) openCompare();
+      else if (k.toLowerCase() === "p" && !mod) openSlideDialog();
       else return;
   }
   ev.preventDefault();
 });
+
+// ---------------------------------------------------------------- 幻燈片
+
+const slideshow = new Slideshow($("slideshow"), {
+  previewUrl: (id) => url.preview(S.session, id),
+  caption: (id) => {
+    const m = S.meta.get(id);
+    const lc = labelColor(m?.label);
+    return (
+      `<b>${escapeHtml(S.items[id].name)}</b>` +
+      `<span class="stars${(m?.rating ?? 0) < 0 ? " rej" : ""}">${stars(m?.rating ?? 0)}</span>` +
+      (lc ? `<span class="dot" style="background:${lc}"></span>` : "")
+    );
+  },
+  onExit: (lastId) => {
+    if (lastId !== null && S.viewIndex.has(lastId)) setFocus(lastId, false);
+    gridEl.focus();
+  },
+});
+
+const slideDialog = $("slide-dialog");
+const slideSettings: SlideSettings = { ...DEFAULT_SETTINGS, ...storage<Partial<SlideSettings>>("slideshow", {}) };
+const durations = new Map<string, number>();
+
+function saveSlideSettings() {
+  store("slideshow", slideSettings);
+}
+
+/** 重新允許上次選過的音樂（asset 協定的允許清單每次啟動都會重置），找不到的檔案移除 */
+async function restoreMusic() {
+  if (!slideSettings.music.length) return;
+  const ok = await api.allowAudio(slideSettings.music).catch(() => [] as string[]);
+  if (ok.length !== slideSettings.music.length) {
+    slideSettings.music = slideSettings.music.filter((p) => ok.includes(p));
+    if (!slideSettings.music.length) slideSettings.fitMusic = false;
+    saveSlideSettings();
+  }
+}
+
+function slideCandidates(scope: "view" | "selected", skipRejected: boolean): number[] {
+  let ids = S.view.map((i) => i.id);
+  if (scope === "selected") ids = ids.filter((id) => S.selected.has(id));
+  if (skipRejected) ids = ids.filter((id) => (S.meta.get(id)?.rating ?? 0) >= 0);
+  return ids;
+}
+
+const ss = {
+  scope: $<HTMLSelectElement>("ss-scope"),
+  skip: $<HTMLInputElement>("ss-skip-rejected"),
+  order: $<HTMLSelectElement>("ss-order"),
+  start: $<HTMLSelectElement>("ss-start"),
+  interval: $<HTMLInputElement>("ss-interval"),
+  intervalV: $("ss-interval-v"),
+  transition: $<HTMLSelectElement>("ss-transition"),
+  loop: $<HTMLInputElement>("ss-loop"),
+  fullscreen: $<HTMLInputElement>("ss-fullscreen"),
+  info: $<HTMLInputElement>("ss-info"),
+  music: $("ss-music"),
+  volume: $<HTMLInputElement>("ss-volume"),
+  fit: $<HTMLInputElement>("ss-fit"),
+  summary: $("ss-summary"),
+  go: $<HTMLButtonElement>("ss-go"),
+};
+
+function readSlideForm() {
+  Object.assign(slideSettings, {
+    scope: ss.scope.value as SlideSettings["scope"],
+    skipRejected: ss.skip.checked,
+    order: ss.order.value as SlideSettings["order"],
+    start: ss.start.value as SlideSettings["start"],
+    interval: Number(ss.interval.value),
+    transition: ss.transition.value as SlideSettings["transition"],
+    loop: ss.loop.checked,
+    fullscreen: ss.fullscreen.checked,
+    showInfo: ss.info.checked,
+    volume: Number(ss.volume.value),
+    fitMusic: ss.fit.checked && slideSettings.music.length > 0,
+  });
+  saveSlideSettings();
+}
+
+function renderSlideForm() {
+  const st = slideSettings;
+  const canSelected = S.selected.size >= 2;
+  if (st.scope === "selected" && !canSelected) st.scope = "view";
+  ss.scope.value = st.scope;
+  ss.scope.querySelector<HTMLOptionElement>('[value="selected"]')!.disabled = !canSelected;
+  ss.skip.checked = st.skipRejected;
+  ss.order.value = st.order;
+  ss.start.value = st.start;
+  ss.interval.value = String(st.interval);
+  ss.transition.value = st.transition;
+  ss.loop.checked = st.loop;
+  ss.fullscreen.checked = st.fullscreen;
+  ss.info.checked = st.showInfo;
+  ss.volume.value = String(st.volume);
+  ss.fit.checked = st.fitMusic;
+  ss.fit.disabled = !st.music.length;
+  ss.music.innerHTML = st.music.length
+    ? st.music
+        .map(
+          (p, i) => `<li title="${escapeHtml(p)}"><span>♪</span><span class="t">${escapeHtml(fileName(p))}</span>
+          <span class="d">${durations.has(p) ? fmtTime(durations.get(p)!) : ""}</span>
+          <button data-up="${i}" title="往前移">↑</button><button data-del="${i}" title="移除">✕</button></li>`,
+        )
+        .join("")
+    : `<li class="music-empty">尚未選擇音樂（不加音樂也可以，會安靜播放）</li>`;
+  updateSlideSummary();
+}
+
+function updateSlideSummary() {
+  const n = slideCandidates(ss.scope.value as SlideSettings["scope"], ss.skip.checked).length;
+  const total = slideSettings.music.reduce((a, p) => a + (durations.get(p) ?? 0), 0);
+  const fit = ss.fit.checked && total > 0 && n > 0;
+  const per = fit ? Math.min(30, Math.max(2, total / n)) : Number(ss.interval.value);
+  ss.interval.disabled = fit;
+  ss.intervalV.textContent = `${per.toFixed(1)} 秒${fit ? "（依音樂）" : ""}`;
+  let note = "";
+  if (fit && total / n < 2) note = "（音樂較短，會重複播放）";
+  else if (fit && total / n > 30) note = "（音樂較長，照片播完會淡出）";
+  ss.summary.textContent = n
+    ? `共 ${n} 張，約 ${fmtTime(n * per)}${total ? `；音樂 ${fmtTime(total)}` : ""}${note}`
+    : "沒有可播放的照片";
+  ss.go.disabled = !n;
+}
+
+async function loadDurations() {
+  for (const p of slideSettings.music) {
+    if (!durations.has(p)) {
+      const d = await audioDuration(p);
+      if (isFinite(d)) durations.set(p, d);
+    }
+  }
+  if (!slideDialog.classList.contains("hidden")) renderSlideForm();
+}
+
+function openSlideDialog() {
+  if (!S.items.length) return toast("請先開啟照片資料夾");
+  if (S.loupe) closeLoupe();
+  if (S.compare.length) closeCompare();
+  renderSlideForm();
+  slideDialog.classList.remove("hidden");
+  ss.go.focus();
+  loadDurations();
+}
+
+function closeSlideDialog() {
+  slideDialog.classList.add("hidden");
+  gridEl.focus();
+}
+
+async function startSlideshow() {
+  readSlideForm();
+  const ids = slideCandidates(slideSettings.scope, slideSettings.skipRejected);
+  if (!ids.length) return;
+  const startIdx = slideSettings.start === "focus" && S.focus !== null ? Math.max(0, ids.indexOf(S.focus)) : 0;
+  slideDialog.classList.add("hidden");
+  await slideshow.start(ids, slideSettings, startIdx);
+}
+
+slideDialog.addEventListener("input", () => {
+  readSlideForm();
+  updateSlideSummary();
+});
+slideDialog.addEventListener("click", (ev) => {
+  const t = ev.target as HTMLElement;
+  if (t === slideDialog) return closeSlideDialog(); // 點背景關閉
+  const del = t.getAttribute("data-del");
+  const up = t.getAttribute("data-up");
+  if (del !== null) {
+    slideSettings.music.splice(Number(del), 1);
+  } else if (up !== null && Number(up) > 0) {
+    const i = Number(up);
+    [slideSettings.music[i - 1], slideSettings.music[i]] = [slideSettings.music[i], slideSettings.music[i - 1]];
+  } else return;
+  if (!slideSettings.music.length) slideSettings.fitMusic = false;
+  saveSlideSettings();
+  renderSlideForm();
+});
+$("ss-add-music").addEventListener("click", async () => {
+  const picked = await openDialog({
+    multiple: true,
+    title: "選擇背景音樂",
+    filters: [{ name: "音樂", extensions: ["mp3", "m4a", "aac", "wav", "aif", "aiff", "flac", "ogg", "opus"] }],
+  });
+  const list = Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
+  if (!list.length) return;
+  const ok = await api.allowAudio(list);
+  if (ok.length < list.length) toast(`有 ${list.length - ok.length} 個檔案不是支援的音樂格式，已略過`);
+  slideSettings.music.push(...ok.filter((p) => !slideSettings.music.includes(p)));
+  saveSlideSettings();
+  renderSlideForm();
+  loadDurations();
+});
+$("ss-cancel").addEventListener("click", closeSlideDialog);
+$("ss-go").addEventListener("click", startSlideshow);
+$("btn-slideshow").addEventListener("click", openSlideDialog);
 
 // ---------------------------------------------------------------- macOS
 
@@ -925,6 +1154,9 @@ on<string>("menu", (e) => {
     case "analyze":
       startAnalysis();
       break;
+    case "slideshow":
+      if (!slideshow.active) openSlideDialog();
+      break;
     case "select-all":
       if (!S.loupe && !S.compare.length) selectAll();
       break;
@@ -941,6 +1173,7 @@ on<string>("menu", (e) => {
   refreshCacheInfo();
   setInterval(refreshCacheInfo, 15000);
   await Promise.all(listeners);
+  await restoreMusic();
   const start = (await api.initialFolder().catch(() => null)) ?? storage<string | null>("last", null);
   if (start) await openFolder(start);
 })();
