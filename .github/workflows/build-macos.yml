@@ -69,6 +69,8 @@ jobs:
           fi
 
       - name: 編譯通用版（Apple Silicon + Intel）
+        env:
+          BUILD_SHA: ${{ github.sha }}
         run: npx tauri build --target universal-apple-darwin --bundles app,dmg
 
       - name: 整理安裝檔

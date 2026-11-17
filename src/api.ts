@@ -65,6 +65,7 @@ export const api = {
   clearCache: () => invoke<void>("clear_cache"),
   defaultFolder: () => invoke<string | null>("default_folder"),
   initialFolder: () => invoke<string | null>("initial_folder"),
+  appVersion: () => invoke<string>("app_version"),
   allowAudio: (paths: string[]) =>
     invoke<{ allowed: string[]; rejected: [string, string][] }>("allow_audio", { paths }),
 };

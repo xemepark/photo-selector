@@ -251,3 +251,4 @@ h3 {
 .music-list li button[data-play] { color: var(--accent); font-size: 12px; width: 22px; }
 .diag { color: var(--muted); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diag.err { color: #ff8a80; }
+.version { margin-top: 18px; font-variant-numeric: tabular-nums; user-select: text; }

@@ -1310,6 +1310,10 @@ onImageDiag((msg, isError) => {
 
 (async function boot() {
   applyMacLabels();
+  api
+    .appVersion()
+    .then((v) => ($("app-version").textContent = `版本 ${v}`))
+    .catch(() => {});
   const recent = storage<string[]>("recent", []);
   $("recent").innerHTML = recent.map((p) => `<li data-path="${escapeHtml(p)}" title="${escapeHtml(p)}">${escapeHtml(p)}</li>`).join("");
   renderFilters();

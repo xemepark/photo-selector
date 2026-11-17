@@ -255,6 +255,17 @@ fn allow_audio(app: AppHandle, paths: Vec<String>) -> AllowAudioResult {
     res
 }
 
+/// 版本字串，例如「0.1.0 (b57cba3)」；CI 編譯時帶入 commit 編號，方便確認裝的是哪一版
+fn version_string() -> String {
+    let sha = option_env!("BUILD_SHA").map(|s| &s[..s.len().min(7)]).unwrap_or("dev");
+    format!("{} ({sha})", env!("CARGO_PKG_VERSION"))
+}
+
+#[tauri::command]
+fn app_version() -> String {
+    version_string()
+}
+
 /// 命令列指定的資料夾：photo-selector /path/to/photos
 #[tauri::command]
 fn initial_folder() -> Option<String> {
@@ -266,7 +277,7 @@ fn initial_folder() -> Option<String> {
 #[cfg(target_os = "macos")]
 fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem as P, Submenu};
-    let about = AboutMetadata { version: Some(env!("CARGO_PKG_VERSION").into()), ..Default::default() };
+    let about = AboutMetadata { version: Some(version_string()), ..Default::default() };
     let app_menu = Submenu::with_items(
         app,
         "Photo Selector",
@@ -341,6 +352,7 @@ pub fn run() {
             transfer,
             analyze,
             delete_items,
+            app_version,
             cache_info,
             clear_cache,
             default_folder,
