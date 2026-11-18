@@ -15,6 +15,7 @@ mod render;
 mod scan;
 mod tiff;
 mod xmp;
+mod zipout;
 
 use crate::core::Core;
 use rayon::prelude::*;
@@ -429,6 +430,40 @@ async fn drag_prepare(
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Serialize, Clone)]
+struct ZipProgress {
+    done: usize,
+    total: usize,
+}
+
+/// 壓縮打包選取的照片成 ZIP（進度以 zip-progress 事件回報）
+#[tauri::command]
+async fn make_zip(
+    app: AppHandle,
+    core: CoreState<'_>,
+    session: u64,
+    ids: Vec<u32>,
+    dest: String,
+    include_raw: bool,
+    apply_edits: bool,
+) -> Result<ops::TransferResult, String> {
+    let sess = core.session(session)?;
+    let items: Vec<scan::Item> = ids.iter().filter_map(|&i| sess.items.get(i as usize).cloned()).collect();
+    if items.is_empty() {
+        return Err("沒有選取照片".into());
+    }
+    let tmp = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let r = zipout::make_zip(&items, &PathBuf::from(dest), include_raw, apply_edits, &tmp, |done, total| {
+            let _ = app.emit("zip-progress", ZipProgress { done, total });
+        })
+        .map_err(|e| format!("{e:#}"))?;
+        Ok(ops::TransferResult { done: r.done, failed: r.failed })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 選取有調整的照片時，先在背景準備好「套用調整後」的拖曳用檔案，拖曳時就不必等
 #[tauri::command]
 async fn prepare_drag(app: AppHandle, core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<(), String> {
@@ -830,6 +865,7 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
             &MenuItem::with_id(app, "batch-rename", "批次重新命名…", true, Some("CmdOrCtrl+Shift+R"))?,
             &MenuItem::with_id(app, "edit", "調整照片…", true, None::<&str>)?,
             &MenuItem::with_id(app, "export", "影像轉存…", true, Some("CmdOrCtrl+Shift+E"))?,
+            &MenuItem::with_id(app, "zip", "壓縮打包選取的照片…", true, Some("CmdOrCtrl+Shift+K"))?,
             &MenuItem::with_id(app, "goto", "前往資料夾…", true, Some("CmdOrCtrl+Shift+G"))?,
             &MenuItem::with_id(app, "refresh", "重新整理", true, Some("CmdOrCtrl+R"))?,
             &MenuItem::with_id(app, "rethumb", "重新產生選取照片的縮圖", true, None::<&str>)?,
@@ -888,6 +924,7 @@ pub fn run() {
             delete_items,
             drag_prepare,
             prepare_drag,
+            make_zip,
             export_images,
             file_info,
             get_edit,

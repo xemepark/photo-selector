@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog, ask } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, ask, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
   url,
@@ -778,6 +778,8 @@ function settingBox(id: string, key: string, def: boolean) {
 const transferBake = settingBox("transfer-bake", "transferBake", true);
 const renameBake = settingBox("rename-bake", "renameBake", true);
 const dragBake = settingBox("drag-bake", "dragBake", true);
+const zipBake = settingBox("zip-bake", "zipBake", true);
+const zipRaw = settingBox("zip-raw", "zipRaw", false);
 
 const confirmDelete = $<HTMLInputElement>("confirm-delete");
 confirmDelete.checked = storage("confirmDelete", true);
@@ -1178,6 +1180,7 @@ document.addEventListener("keydown", (ev) => {
   if (k === "F2" && !S.loupe && !S.compare.length && !slideshow.active) return ev.preventDefault(), openRename();
   if (mod && ev.shiftKey && k.toLowerCase() === "r") return ev.preventDefault(), openBatchRename();
   if (mod && ev.shiftKey && k.toLowerCase() === "e") return ev.preventDefault(), openExport();
+  if (mod && ev.shiftKey && k.toLowerCase() === "k") return ev.preventDefault(), void makeZip();
   if ((mod && !ev.shiftKey && k.toLowerCase() === "r") || k === "F5") return ev.preventDefault(), void refreshFolder();
   if (mod && ev.shiftKey && k.toLowerCase() === "g") return ev.preventDefault(), focusPath();
 
@@ -1586,6 +1589,9 @@ on<string>("menu", (e) => {
     case "export":
       openExport();
       break;
+    case "zip":
+      void makeZip();
+      break;
     case "edit":
       openEditor();
       break;
@@ -1689,6 +1695,7 @@ function showCellMenu(index: number, ev: MouseEvent) {
     ["rename", "重新命名…", "F2"],
     ["batch", n > 1 ? `批次重新命名 ${n} 張…` : "批次重新命名…", "⇧⌘R"],
     ["edit", n > 1 ? `調整 ${n} 張照片…` : "調整照片…", "E"],
+    ["zip", n > 1 ? `壓縮打包 ${n} 張…` : "壓縮打包…", "⇧⌘K"],
     ["rethumb", n > 1 ? `重新產生 ${n} 張縮圖` : "重新產生縮圖"],
     ["export", n > 1 ? `影像轉存 ${n} 張…` : "影像轉存…", "⇧⌘E"],
     ["-", ""],
@@ -1719,6 +1726,7 @@ ctxMenu.addEventListener("click", (ev) => {
   else if (a === "export") openExport();
   else if (a === "rethumb") void regenerateThumbs();
   else if (a === "edit") openEditor();
+  else if (a === "zip") void makeZip();
   else if (a === "copy") void transfer("copy");
   else if (a === "move") void transfer("move");
   else if (a === "trash") void deleteTargets();
@@ -1851,6 +1859,43 @@ function openEditor() {
   void editor.open(list, start);
 }
 $("btn-edit").addEventListener("click", openEditor);
+
+// ---------------------------------------------------------------- 壓縮打包
+
+let zipping = false;
+on<{ done: number; total: number }>("zip-progress", (e) => {
+  if (zipping) toast(`正在準備照片 ${e.payload.done} / ${e.payload.total}…`, 60000);
+});
+
+async function makeZip() {
+  if (zipping) return toast("正在壓縮打包中，請稍候");
+  const ids = S.view.filter((it) => S.selected.has(it.id)).map((it) => it.id);
+  if (!ids.length) return toast("請先選取要打包的照片");
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const base = `${folderName(S.dir) || "照片"}_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.zip`;
+  const sep = S.dir.includes("\\") ? "\\" : "/";
+  let dest = await saveDialog({ title: `壓縮打包 ${ids.length} 張照片`, defaultPath: S.dir ? `${S.dir}${sep}${base}` : base, filters: [{ name: "ZIP 壓縮檔", extensions: ["zip"] }] });
+  if (!dest) return;
+  if (!/\.zip$/i.test(dest)) dest += ".zip";
+  zipping = true;
+  toast(`正在壓縮打包 ${ids.length} 張照片…`, 60000);
+  try {
+    const r = await api.makeZip(S.session, ids, dest, zipRaw.checked, zipBake.checked);
+    const parent = dest.replace(/[\\/][^\\/]*$/, "");
+    notify(
+      `已打包 ${r.done} 張到「${fileName(dest)}」${r.failed.length ? `，${r.failed.length} 張失敗` : ""}`,
+      openDirAction(parent),
+      r.failed.length ? 10000 : undefined,
+    );
+    if (r.failed.length) console.warn(r.failed);
+  } catch (e) {
+    toast(`壓縮打包失敗：${e}`, 10000);
+  } finally {
+    zipping = false;
+  }
+}
+$("btn-zip").addEventListener("click", () => void makeZip());
 
 // ---------------------------------------------------------------- 影像轉存
 

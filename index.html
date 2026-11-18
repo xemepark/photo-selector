@@ -28,6 +28,7 @@
       <button id="btn-crop" title="用瀏覽器開啟「照片裁切輸出」 https://xemepark.github.io/crop/">✂ 照片裁切輸出</button>
       <button id="btn-edit" title="調整選取的照片：白平衡、曝光、對比、亮部、陰影等（E）">◐ 調整</button>
       <button id="btn-export" title="把選取的照片縮到指定尺寸，另存為 JPEG / TIFF / PNG（仿 Photoshop 影像處理器，⇧⌘E）">影像轉存</button>
+      <button id="btn-zip" title="把選取的照片壓縮打包成一個 ZIP 檔（⇧⌘K）">壓縮打包</button>
       <button id="btn-batch-rename" title="批次重新命名（⇧⌘R）">批次重新命名</button>
       <button id="btn-slideshow" title="播放幻燈片（P）">▶ 幻燈片</button>
     </header>
@@ -172,6 +173,8 @@
           <label class="check indent"><input id="transfer-bake" type="checkbox" checked /> 複製 / 移動到其他資料夾</label>
           <label class="check indent"><input id="rename-bake" type="checkbox" checked /> 批次重新命名（改名後移到 / 拷貝到其他資料夾）</label>
           <label class="check indent"><input id="drag-bake" type="checkbox" checked /> 拖曳到其他程式</label>
+          <label class="check indent"><input id="zip-bake" type="checkbox" checked /> 壓縮打包（ZIP）</label>
+          <label class="check" title="RAW+JPEG 的照片預設只打包 JPEG；只有 RAW 的照片一律打包 RAW"><input id="zip-raw" type="checkbox" /> 壓縮打包時包含 RAW</label>
           <label class="check" title="RAW+JPEG 的照片預設只拖出 JPEG，勾選後連 RAW 一起拖出"><input id="drag-raw" type="checkbox" /> 拖曳到其他程式時包含 RAW</label>
           <label title="複製 / 移動 / 轉存完成後，提示訊息停留在畫面上的秒數">提示訊息停留
             <input id="toast-seconds" type="number" min="1" max="60" step="1" /> 秒</label>
