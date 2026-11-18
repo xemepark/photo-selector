@@ -1,6 +1,7 @@
 mod blur;
 mod cache;
 mod core;
+mod dragout;
 mod face;
 mod jpeg;
 mod meta;
@@ -208,6 +209,36 @@ async fn delete_items(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Resul
     let sess = core.session(session)?;
     let items: Vec<_> = ids.iter().filter_map(|&i| sess.items.get(i as usize)).collect();
     Ok(ops::trash_items(&items))
+}
+
+#[derive(Serialize)]
+struct DragPayload {
+    files: Vec<PathBuf>,
+    icon: PathBuf,
+}
+
+/// 準備拖曳到其他程式：回傳檔案路徑與拖曳圖示（暫存 PNG）
+#[tauri::command]
+async fn drag_prepare(
+    app: AppHandle,
+    core: CoreState<'_>,
+    session: u64,
+    ids: Vec<u32>,
+    include_raw: bool,
+) -> Result<DragPayload, String> {
+    let sess = core.session(session)?;
+    let items: Vec<_> = ids.iter().filter_map(|&i| sess.items.get(i as usize)).collect();
+    if items.is_empty() {
+        return Err("沒有選取照片".into());
+    }
+    let files = dragout::files_for(&items, include_raw);
+    let thumbs: Vec<Vec<u8>> =
+        items.iter().take(3).filter_map(|it| core.thumb_bytes(it).ok()).map(|b| b.as_ref().clone()).collect();
+    let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let icon = dir.join("drag-icon.png");
+    dragout::make_icon(&thumbs, &icon).map_err(|e| e.to_string())?;
+    Ok(DragPayload { files, icon })
 }
 
 #[derive(serde::Deserialize)]
@@ -616,6 +647,7 @@ pub fn run() {
     });
     builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_drag::init())
         .setup(|app| {
             let dir = app.path().app_cache_dir()?;
             app.manage(Core::new(dir)?);
@@ -633,6 +665,7 @@ pub fn run() {
             transfer,
             analyze,
             delete_items,
+            drag_prepare,
             app_version,
             open_dir,
             open_website,

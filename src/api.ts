@@ -75,6 +75,9 @@ export const api = {
     dest: string | null,
     preserve: boolean,
   ) => invoke<TransferResult>("batch_rename", { session, entries, mode, dest, preserve }),
+  /** 拖曳到其他程式前：取得要拖的檔案路徑與拖曳圖示 */
+  dragPrepare: (session: number, ids: number[], includeRaw: boolean) =>
+    invoke<{ files: string[]; icon: string }>("drag_prepare", { session, ids, includeRaw }),
   revealItem: (session: number, id: number) => invoke<void>("reveal_item", { session, id }),
   openDir: (path: string) => invoke<void>("open_dir", { path }),
   openWebsite: () => invoke<void>("open_website"),

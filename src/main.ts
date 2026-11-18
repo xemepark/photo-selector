@@ -18,6 +18,7 @@ import {
   stars,
 } from "./api";
 import { Grid } from "./grid";
+import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { BatchRename } from "./rename";
 import { FolderTree } from "./foldertree";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
@@ -85,6 +86,8 @@ const grid = new Grid(gridEl, $("grid-spacer"), {
   badges: (id) => cull.badges(id),
   onCellClick,
   onCellMenu: (i, ev) => showCellMenu(i, ev),
+  onCellDrag,
+  onCellUp,
   onCellOpen: (i) => {
     setFocus(S.view[i].id, false);
     openLoupe();
@@ -586,8 +589,47 @@ function onCellClick(index: number, ev: MouseEvent) {
     S.anchor = id;
     grid.refresh();
     renderStatus();
-  } else if (!(S.selected.has(id) && S.selected.size > 1 && ev.button === 2)) {
+  } else if (S.selected.has(id) && S.selected.size > 1) {
+    // 在多選中的某張上按下：先保留整組選取（可能要拖曳到其他程式），
+    // 放開時若沒有拖曳才改成只選這一張（與 Finder / Bridge 相同）
+    if (ev.button === 0) pendingCollapse = id;
+  } else {
     setFocus(id, false);
+  }
+}
+
+let pendingCollapse: number | null = null;
+
+function onCellUp(index: number) {
+  const id = S.view[index]?.id;
+  if (pendingCollapse !== null && pendingCollapse === id) setFocus(id, false);
+  pendingCollapse = null;
+}
+
+// ---------------------------------------------------------------- 拖曳到其他程式
+
+const dragRaw = $<HTMLInputElement>("drag-raw");
+dragRaw.checked = storage("dragRaw", false);
+dragRaw.addEventListener("change", () => store("dragRaw", dragRaw.checked));
+
+let dragging = false;
+
+/** 把目前選取的照片（依畫面順序）拖到 Finder、LINE、瀏覽器、Photoshop… */
+async function onCellDrag(index: number) {
+  pendingCollapse = null;
+  const id = S.view[index]?.id;
+  if (id === undefined || dragging) return;
+  if (!S.selected.has(id)) setFocus(id, false);
+  const ids = S.view.filter((it) => S.selected.has(it.id)).map((it) => it.id);
+  if (!ids.length) return;
+  dragging = true;
+  try {
+    const { files, icon } = await api.dragPrepare(S.session, ids, dragRaw.checked);
+    await startDrag({ item: files, icon, mode: "copy" });
+  } catch (e) {
+    console.warn("drag failed", e);
+  } finally {
+    dragging = false;
   }
 }
 

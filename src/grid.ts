@@ -16,6 +16,10 @@ export interface GridHost {
   onCellClick(index: number, ev: MouseEvent): void;
   onCellOpen(index: number): void;
   onCellMenu(index: number, ev: MouseEvent): void;
+  /** 在格子上按住滑鼠並拖動超過一小段距離：開始拖曳到其他程式 */
+  onCellDrag(index: number): void;
+  /** 在格子上按下又放開、中間沒有變成拖曳 */
+  onCellUp(index: number): void;
   onViewport(ids: number[]): void;
 }
 
@@ -68,7 +72,9 @@ export class Grid {
     }).observe(el);
     el.addEventListener("mousedown", (ev) => {
       const idx = this.indexFromEvent(ev);
-      if (idx !== null) this.host.onCellClick(idx, ev);
+      if (idx === null) return;
+      this.host.onCellClick(idx, ev);
+      if (ev.button === 0 && !ev.shiftKey && !ev.ctrlKey && !ev.metaKey) this.trackPress(idx, ev);
     });
     el.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
@@ -79,6 +85,28 @@ export class Grid {
       const idx = this.indexFromEvent(ev);
       if (idx !== null) this.host.onCellOpen(idx);
     });
+  }
+
+  /** 按下後追蹤滑鼠：移動超過 6px 就交給 host 開始系統拖曳；放開時通知 host */
+  private trackPress(idx: number, down: MouseEvent) {
+    let moved = false;
+    const move = (ev: MouseEvent) => {
+      if (moved) return;
+      if ((ev.buttons & 1) === 0) return up();
+      if (Math.hypot(ev.clientX - down.clientX, ev.clientY - down.clientY) < 6) return;
+      moved = true;
+      // 系統拖曳開始後，放開滑鼠的事件不一定會回到這個視窗，所以這裡就先收掉監聽
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      this.host.onCellDrag(idx);
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      if (!moved) this.host.onCellUp(idx);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
   }
 
   get columns() {

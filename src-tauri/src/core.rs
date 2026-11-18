@@ -242,6 +242,24 @@ impl Core {
         }
     }
 
+    /// 取得某項目的縮圖 JPEG（記憶體 → 磁碟快取 → 現算），給拖曳圖示等用途
+    pub fn thumb_bytes(&self, item: &Item) -> anyhow::Result<Arc<Vec<u8>>> {
+        let key = item.display().cache_key();
+        if let Some(b) = self.mem_thumbs.lock().get(&key).cloned() {
+            return Ok(b);
+        }
+        if let Some(b) = self.cache.get_thumb(&key) {
+            let b = Arc::new(b);
+            self.mem_thumbs.lock().put(key, b.clone());
+            return Ok(b);
+        }
+        let bytes = render::render(item, Kind::Thumb)?;
+        self.cache.put_thumb(&key, &bytes);
+        let b = Arc::new(bytes);
+        self.mem_thumbs.lock().put(key, b.clone());
+        Ok(b)
+    }
+
     pub fn clear_memory(&self) {
         self.mem_thumbs.lock().clear();
         self.mem_previews.lock().clear();
