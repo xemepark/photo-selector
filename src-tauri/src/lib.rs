@@ -13,7 +13,7 @@ mod xmp;
 use crate::core::Core;
 use rayon::prelude::*;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -272,6 +272,130 @@ struct ResolvedPath {
 }
 
 /// 解析路徑列輸入的文字：去掉引號、展開 ~、檔案則取所在資料夾
+#[derive(Serialize)]
+struct DirNode {
+    name: String,
+    path: String,
+    /// 是否有子資料夾（決定要不要顯示展開箭頭）
+    has_children: bool,
+}
+
+fn is_hidden(name: &str) -> bool {
+    name.starts_with('.') || name.starts_with('$') || name == "System Volume Information"
+}
+
+fn has_subdir(p: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(p) else { return false };
+    rd.flatten()
+        .take(2000)
+        .any(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false) && !is_hidden(&e.file_name().to_string_lossy()))
+}
+
+/// 列出資料夾裡的子資料夾（資料夾樹展開時使用，只讀這一層）
+#[tauri::command]
+async fn list_dirs(path: String) -> Result<Vec<DirNode>, String> {
+    let rd = std::fs::read_dir(&path).map_err(|e| format!("無法讀取資料夾：{e}"))?;
+    let mut dirs: Vec<(String, PathBuf)> = rd
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if is_hidden(&name) {
+                return None;
+            }
+            let p = e.path();
+            // 也接受指向資料夾的捷徑（symlink）
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false) || p.is_dir();
+            is_dir.then_some((name, p))
+        })
+        .collect();
+    dirs.sort_by_cached_key(|(n, _)| scan::natural_key(n));
+    let many = dirs.len() > 300;
+    Ok(dirs
+        .into_iter()
+        .map(|(name, p)| DirNode {
+            has_children: many || has_subdir(&p),
+            name,
+            path: p.to_string_lossy().into_owned(),
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+struct RootNode {
+    /// "home" / "desktop" / "downloads" / "pictures" / "volume"
+    kind: &'static str,
+    name: String,
+    path: String,
+    has_children: bool,
+}
+
+/// 資料夾樹的最上層：常用位置與所有磁碟（含外接硬碟）
+#[tauri::command]
+async fn list_roots(app: AppHandle) -> Vec<RootNode> {
+    let mut out = Vec::new();
+    let mut push = |kind: &'static str, name: String, p: PathBuf| {
+        if p.is_dir() && !out.iter().any(|r: &RootNode| r.path == p.to_string_lossy() && r.kind == kind) {
+            out.push(RootNode { kind, name, has_children: has_subdir(&p), path: p.to_string_lossy().into_owned() });
+        }
+    };
+    let pr = app.path();
+    if let Ok(h) = pr.home_dir() {
+        let name = h.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "家目錄".into());
+        push("home", name, h);
+    }
+    if let Ok(p) = pr.desktop_dir() {
+        push("desktop", "桌面".into(), p);
+    }
+    if let Ok(p) = pr.download_dir() {
+        push("downloads", "下載項目".into(), p);
+    }
+    if let Ok(p) = pr.picture_dir() {
+        push("pictures", "圖片".into(), p);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // /Volumes 底下是所有磁碟；開機磁碟（例如 Macintosh HD）是指向 / 的捷徑
+        if let Ok(rd) = std::fs::read_dir("/Volumes") {
+            let mut vols: Vec<_> = rd.flatten().collect();
+            vols.sort_by_key(|e| e.file_name());
+            for e in vols {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if is_hidden(&name) {
+                    continue;
+                }
+                let p = e.path();
+                let target = std::fs::canonicalize(&p).unwrap_or(p.clone());
+                push("volume", name, if target == Path::new("/") { PathBuf::from("/") } else { p });
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        for c in b'A'..=b'Z' {
+            let p = PathBuf::from(format!("{}:\\", c as char));
+            if p.exists() {
+                push("volume", format!("{}:", c as char), p);
+            }
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        push("volume", "電腦".into(), PathBuf::from("/"));
+        let user = std::env::var("USER").unwrap_or_default();
+        for base in [format!("/media/{user}"), "/media".to_string(), "/mnt".to_string()] {
+            if let Ok(rd) = std::fs::read_dir(&base) {
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if !is_hidden(&name) && e.path().is_dir() && name != user {
+                        push("volume", name, e.path());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 #[tauri::command]
 fn resolve_path(app: AppHandle, input: String) -> Result<ResolvedPath, String> {
     let mut t = input.trim().trim_matches(|c| c == '"' || c == '\'' ).trim().to_string();
@@ -501,6 +625,8 @@ pub fn run() {
             batch_rename,
             reveal_item,
             resolve_path,
+            list_dirs,
+            list_roots,
             cache_info,
             clear_cache,
             default_folder,

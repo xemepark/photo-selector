@@ -147,6 +147,7 @@ pub fn scan(data: &[u8], range: Range<usize>) -> Vec<EmbeddedJpeg> {
 }
 
 /// JPEG 檔頭裡的尺寸（SOF），只讀檔頭
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn jpeg_dims(data: &[u8]) -> Option<(u32, u32)> {
     jpeg_info(data).map(|(w, h, _)| (w, h))
 }

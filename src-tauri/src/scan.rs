@@ -100,7 +100,7 @@ pub struct DirInfo {
     pub path: String,
 }
 
-fn natural_key(s: &str) -> Vec<(u8, u64, String)> {
+pub fn natural_key(s: &str) -> Vec<(u8, u64, String)> {
     // 讓 IMG_2.jpg 排在 IMG_10.jpg 前面
     let mut out = Vec::new();
     let mut num = String::new();

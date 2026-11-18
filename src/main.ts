@@ -19,6 +19,7 @@ import {
 } from "./api";
 import { Grid } from "./grid";
 import { BatchRename } from "./rename";
+import { FolderTree } from "./foldertree";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
 import { Cull, Analysis, drawFaces, contentRect } from "./cull";
 import {
@@ -462,10 +463,7 @@ async function openFolder(path: string) {
   pathInput.value = res.dir;
   pathInput.scrollLeft = pathInput.scrollWidth;
   $("empty").classList.toggle("hidden", true);
-  const f = $("folders");
-  f.innerHTML =
-    (res.parent ? `<li class="up" data-path="${escapeHtml(res.parent)}">↰ 上一層</li>` : "") +
-    res.subdirs.map((d) => `<li data-path="${escapeHtml(d.path)}" title="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</li>`).join("");
+  void folderTree.reveal(res.dir); // 資料夾樹維持原狀，只反白目前資料夾並展開到它的位置
   gridEl.scrollTop = 0;
   update({ resetGrid: true });
   gridEl.focus();
@@ -477,10 +475,10 @@ async function pickFolder() {
   if (typeof dir === "string") openFolder(dir);
 }
 
-$("folders").addEventListener("click", (ev) => {
-  const li = (ev.target as HTMLElement).closest("li") as HTMLElement | null;
-  if (li?.dataset.path) openFolder(li.dataset.path);
+const folderTree = new FolderTree($("folder-tree"), (path) => {
+  if (path !== S.dir) void openFolder(path);
 });
+$("tree-refresh").addEventListener("click", () => void folderTree.refresh());
 $("btn-open").addEventListener("click", pickFolder);
 $("btn-open-2").addEventListener("click", pickFolder);
 $("btn-up").addEventListener("click", () => S.parent && openFolder(S.parent));
@@ -1681,6 +1679,7 @@ setSideWidth(storage("sideWidth", SIDE_DEFAULT));
   $("recent").innerHTML = recent.map((p) => `<li data-path="${escapeHtml(p)}" title="${escapeHtml(p)}">${escapeHtml(p)}</li>`).join("");
   renderFilters();
   await Promise.all(listeners);
+  await folderTree.init();
   await restoreMusic();
   const start = (await api.initialFolder().catch(() => null)) ?? storage<string | null>("last", null);
   if (start) await openFolder(start);
