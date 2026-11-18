@@ -14,7 +14,8 @@ name: Build macOS
 
 on:
   push:
-    branches: ["**"]
+    # beta-dmg 只放安裝檔（由下方步驟自動更新），不需要編譯
+    branches: ["**", "!beta-dmg"]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -209,3 +210,17 @@ jobs:
             --target "$GITHUB_SHA" --prerelease \
             --title "小日子寫真館 測試版（最新）" \
             --notes "自動編譯的最新測試版（${GITHUB_SHA::7}，分支 ${GITHUB_REF_NAME}）。Apple Silicon + Intel 通用版，macOS 11 以上。尚未經 Apple 公證，第一次開啟請見 README「在 Mac 上安裝」。"
+
+      - name: 安裝檔另存到 beta-dmg 分支（只保留最新一份，方便自動上傳到雲端硬碟）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          mkdir dmgbranch && cd dmgbranch
+          git init -q
+          git checkout -q -b beta-dmg
+          cp ../Photo-Selector-mac-universal.dmg .
+          printf '%s\n' "commit ${GITHUB_SHA}" "branch ${GITHUB_REF_NAME}" "built $(date -u +%Y-%m-%dT%H:%M:%SZ)" > VERSION.txt
+          git add Photo-Selector-mac-universal.dmg VERSION.txt
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "測試版安裝檔 ${GITHUB_SHA::7}"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" beta-dmg
