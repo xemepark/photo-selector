@@ -21,6 +21,8 @@ pub enum Kind {
     Medium,
     Preview,
     Full,
+    /// 調整視窗用：預覽大小、不套用調整（前端用 WebGL 即時套用）
+    Base,
 }
 
 pub fn apply_orientation(img: DynamicImage, o: u16) -> DynamicImage {
@@ -137,6 +139,7 @@ fn jpeg_embedded_preview(data: &[u8], min_edge: u32) -> Option<jpeg::EmbeddedJpe
 /// 沒有內嵌預覽的 JPEG 反正都要解碼原圖，就直接做成完整預覽（之後要完整預覽時不必再算一次）。
 pub fn render_medium(item: &Item) -> Result<(Vec<u8>, bool)> {
     let f = item.display();
+    let adj = crate::edit::load(item);
     if f.class == Class::Jpeg {
         let has_embedded = File::open(&f.path)
             .ok()
@@ -147,7 +150,10 @@ pub fn render_medium(item: &Item) -> Result<(Vec<u8>, bool)> {
             return Ok((render(item, Kind::Preview)?, true));
         }
     }
-    let img = decode_source(item, MEDIUM_MIN_SOURCE)?;
+    let mut img = decode_source(item, MEDIUM_MIN_SOURCE)?;
+    if let Some(p) = &adj {
+        img = crate::edit::apply(img, p);
+    }
     if img.width().max(img.height()) >= PREVIEW_EDGE {
         return Ok((encode_jpeg(&fit(img, PREVIEW_EDGE), 88)?, true));
     }
@@ -175,26 +181,39 @@ fn fit(img: DynamicImage, edge: u32) -> DynamicImage {
 }
 
 pub fn render(item: &Item, kind: Kind) -> Result<Vec<u8>> {
+    // 有「調整」設定時套用（縮小後才套用，速度快）
+    let adj = crate::edit::load(item);
+    let finish = |img: DynamicImage, edge: u32, q: u8| -> Result<Vec<u8>> {
+        let img = fit(img, edge);
+        let img = match &adj {
+            Some(p) => crate::edit::apply(img, p),
+            None => img,
+        };
+        encode_jpeg(&img, q)
+    };
     match kind {
-        Kind::Thumb => encode_jpeg(&fit(decode_source(item, THUMB_EDGE)?, THUMB_EDGE), 82),
-        Kind::Medium => encode_jpeg(&fit(decode_source(item, MEDIUM_MIN_SOURCE)?, MEDIUM_EDGE), 85),
-        Kind::Preview => encode_jpeg(&fit(decode_source(item, PREVIEW_EDGE)?, PREVIEW_EDGE), 88),
+        Kind::Thumb => finish(decode_source(item, THUMB_EDGE)?, THUMB_EDGE, 82),
+        Kind::Medium => finish(decode_source(item, MEDIUM_MIN_SOURCE)?, MEDIUM_EDGE, 85),
+        Kind::Preview => finish(decode_source(item, PREVIEW_EDGE)?, PREVIEW_EDGE, 88),
+        Kind::Base => encode_jpeg(&fit(decode_source(item, PREVIEW_EDGE)?, PREVIEW_EDGE), 90),
         Kind::Full => {
             let f = item.display();
-            // 原始 JPEG 直接交給 WebView（瀏覽器自己會依 EXIF 轉正）
-            if f.class == Class::Jpeg {
-                return Ok(std::fs::read(&f.path)?);
-            }
-            if matches!(f.class, Class::Raw | Class::Other) {
-                let file = File::open(&f.path)?;
-                let data = unsafe { memmap2::Mmap::map(&file)? };
-                if meta::orientation(f.class, &data) == 1 {
-                    if let Some(j) = jpeg::pick(&jpeg::embedded_jpegs(&data, u32::MAX), u32::MAX) {
-                        return Ok(j.bytes(&data).to_vec());
+            if adj.is_none() {
+                // 原始 JPEG 直接交給 WebView（瀏覽器自己會依 EXIF 轉正）
+                if f.class == Class::Jpeg {
+                    return Ok(std::fs::read(&f.path)?);
+                }
+                if matches!(f.class, Class::Raw | Class::Other) {
+                    let file = File::open(&f.path)?;
+                    let data = unsafe { memmap2::Mmap::map(&file)? };
+                    if meta::orientation(f.class, &data) == 1 {
+                        if let Some(j) = jpeg::pick(&jpeg::embedded_jpegs(&data, u32::MAX), u32::MAX) {
+                            return Ok(j.bytes(&data).to_vec());
+                        }
                     }
                 }
             }
-            encode_jpeg(&decode_source(item, 0)?, 92)
+            finish(decode_source(item, 0)?, u32::MAX, 92)
         }
     }
 }

@@ -23,6 +23,21 @@ export interface Meta {
   height?: number | null;
   rating: number;
   label?: string | null;
+  /** 有用「調整」改過 */
+  edited?: boolean;
+}
+
+export interface EditParams {
+  temp: number;
+  tint: number;
+  exposure: number;
+  contrast: number;
+  highlights: number;
+  shadows: number;
+  whites: number;
+  blacks: number;
+  vibrance: number;
+  saturation: number;
 }
 
 export interface DirInfo {
@@ -84,6 +99,8 @@ export const url = {
   medium: (session: number, id: number) => `${base}m/${session}/${id}${n()}`,
   preview: (session: number, id: number) => `${base}p/${session}/${id}${n()}`,
   full: (session: number, id: number) => `${base}f/${session}/${id}${n()}`,
+  /** 調整視窗用：未套用調整的預覽 */
+  base: (session: number, id: number) => `${base}o/${session}/${id}${n()}`,
 };
 
 export const api = {
@@ -105,6 +122,9 @@ export const api = {
   dragPrepare: (session: number, ids: number[], includeRaw: boolean) =>
     invoke<{ files: string[]; icon: string }>("drag_prepare", { session, ids, includeRaw }),
   forgetThumbs: (session: number, ids: number[]) => invoke<void>("forget_thumbs", { session, ids }),
+  getEdit: (session: number, id: number) => invoke<EditParams>("get_edit", { session, id }),
+  saveEdit: (session: number, ids: number[], params: EditParams) =>
+    invoke<TransferResult>("save_edit", { session, ids, params }),
   fileInfo: (session: number, id: number) => invoke<FileInfo>("file_info", { session, id }),
   exportImages: (session: number, ids: number[], options: ExportOptions) =>
     invoke<ExportResult>("export_images", { session, ids, options }),

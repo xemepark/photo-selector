@@ -11,11 +11,14 @@ use std::path::Path;
 
 const NS_XMP: &str = "http://ns.adobe.com/xap/1.0/";
 const NS_XMPMM: &str = "http://ns.adobe.com/xap/1.0/mm/";
+/// 本程式的照片調整設定（曝光、對比…）。用自己的命名空間，Lightroom / Camera Raw 不會誤用
+pub const NS_SD: &str = "http://ns.smallday.tw/edit/1.0/";
 
 fn namespace_of(prefix: &str) -> Option<&'static str> {
     match prefix {
         "xmp" => Some(NS_XMP),
         "xmpMM" => Some(NS_XMPMM),
+        "sd" => Some(NS_SD),
         _ => None,
     }
 }
@@ -106,12 +109,15 @@ fn set_prop(xml: &mut String, name: &str, value: Option<&str>) {
 pub struct RatingLabel {
     pub rating: Option<i32>,
     pub label: Option<String>,
+    /// 有本程式的照片調整設定
+    pub edited: bool,
 }
 
 pub fn parse(xml: &str) -> RatingLabel {
     RatingLabel {
         rating: get_prop(xml, "xmp:Rating").and_then(|v| v.parse::<f32>().ok()).map(|v| v as i32),
         label: get_prop(xml, "xmp:Label").filter(|s| !s.is_empty()),
+        edited: get_prop(xml, "sd:Version").is_some(),
     }
 }
 
@@ -156,6 +162,41 @@ pub fn preserve_name_sidecar(path: &Path, original: &str) -> io::Result<()> {
 
 pub fn preserve_name_jpeg(path: &Path, original: &str) -> io::Result<()> {
     update_jpeg_with(path, |x| set_named(x, "xmpMM:PreservedFileName", original))
+}
+
+/// 一次設定 / 移除多個屬性（None = 移除）。附屬檔版
+pub fn update_props(path: &Path, props: &[(&str, Option<String>)]) -> io::Result<()> {
+    update_with(path, |x| apply_props(x, props))
+}
+
+/// 同上，JPEG 檔案內嵌 XMP 版
+pub fn update_jpeg_props(path: &Path, props: &[(&str, Option<String>)]) -> io::Result<()> {
+    update_jpeg_with(path, |x| apply_props(x, props))
+}
+
+fn apply_props(xml: &mut String, props: &[(&str, Option<String>)]) {
+    if !xml.contains("<rdf:Description") {
+        *xml = template();
+    }
+    for (k, v) in props {
+        set_prop(xml, k, v.as_deref());
+    }
+}
+
+#[cfg(test)]
+pub fn test_set_prop(xml: &mut String, name: &str, value: Option<&str>) {
+    set_prop(xml, name, value)
+}
+
+/// 讀 JPEG 檔頭內嵌的整段 XMP
+pub fn read_jpeg_xml(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut buf = vec![0u8; 256 * 1024];
+    let n = fs::File::open(path).ok()?.read(&mut buf).ok()?;
+    buf.truncate(n);
+    let segs = segments(&buf)?;
+    let s = &segs[find_xmp(&buf, &segs)?];
+    Some(String::from_utf8_lossy(&buf[s.body + XMP_SIG.len()..s.end]).into_owned())
 }
 
 fn set_named(xml: &mut String, name: &str, value: &str) {
@@ -419,10 +460,10 @@ mod tests {
         let _ = fs::remove_file(&p);
 
         update(&p, Some(3), Some(Some("Red"))).unwrap();
-        assert_eq!(read_sidecar(&p).unwrap(), RatingLabel { rating: Some(3), label: Some("Red".into()) });
+        assert_eq!(read_sidecar(&p).unwrap(), RatingLabel { rating: Some(3), label: Some("Red".into()), edited: false });
 
         update(&p, Some(-1), Some(None)).unwrap();
-        assert_eq!(read_sidecar(&p).unwrap(), RatingLabel { rating: Some(-1), label: None });
+        assert_eq!(read_sidecar(&p).unwrap(), RatingLabel { rating: Some(-1), label: None, edited: false });
 
         // 既有的 Lightroom / ACR 附屬檔（元素形式 + 其他屬性）
         let existing = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -470,7 +511,7 @@ mod jpeg_tests {
         let orig = jpeg_with_exif();
         let p = tmp_jpeg("a.jpg", &orig);
         update_jpeg(&p, Some(4), Some(Some("Select"))).unwrap();
-        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(4), label: Some("Select".into()) });
+        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(4), label: Some("Select".into()), edited: false });
         let after_insert = fs::read(&p).unwrap();
         // 原檔開頭是 EXIF(APP1) + JFIF(APP0)：XMP 應插在這兩個之後，EXIF 仍是第一個區段
         let orig_segs = segments(&orig).unwrap();
@@ -485,7 +526,7 @@ mod jpeg_tests {
         update_jpeg(&p, Some(-1), Some(None)).unwrap();
         let after_edit = fs::read(&p).unwrap();
         assert_eq!(after_edit.len(), after_insert.len());
-        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(-1), label: None });
+        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(-1), label: None, edited: false });
         assert!(image::load_from_memory(&after_edit).is_ok());
         // 不留暫存檔
         let leftovers: Vec<_> = fs::read_dir(p.parent().unwrap()).unwrap().flatten()
@@ -504,7 +545,7 @@ mod jpeg_tests {
         update_jpeg(&p, Some(5), Some(Some("Approved"))).unwrap();
         let s = String::from_utf8_lossy(&fs::read(&p).unwrap()).into_owned();
         assert!(s.contains("<dc:rights>(c) Studio</dc:rights>"));
-        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(5), label: Some("Approved".into()) });
+        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(5), label: Some("Approved".into()), edited: false });
     }
 }
 
@@ -542,7 +583,7 @@ mod mpo_tests {
             assert_eq!((a.width, a.height, a.len), (b.width, b.height, b.len));
             assert_eq!(a.bytes(&fs::read(&src).unwrap()), b.bytes(&data));
         }
-        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(2), label: Some("Approved".into()) });
+        assert_eq!(read_jpeg(&p).unwrap(), RatingLabel { rating: Some(2), label: Some("Approved".into()), edited: false });
         assert!(image::load_from_memory(&data).is_ok());
 
         // 情境二：XMP 位在 MPF 標頭「之後」（某些軟體會這樣寫）→ 放大 XMP 時必須修正 MPF 位移
@@ -564,7 +605,7 @@ mod mpo_tests {
         let after2 = crate::jpeg::jpeg_file_previews(&d2);
         assert_eq!(after2.len(), 1);
         assert_eq!(after2[0].bytes(&d2), before[0].bytes(&orig));
-        assert_eq!(read_jpeg(&p2).unwrap(), RatingLabel { rating: Some(4), label: Some("Review".into()) });
+        assert_eq!(read_jpeg(&p2).unwrap(), RatingLabel { rating: Some(4), label: Some("Review".into()), edited: false });
         println!("XMP after MPF: preview still correct after growth");
     }
 }
@@ -609,7 +650,7 @@ mod export_tests {
 
     #[test]
     fn export_packet_fields() {
-        let rl = RatingLabel { rating: Some(4), label: Some("Select".into()) };
+        let rl = RatingLabel { rating: Some(4), label: Some("Select".into()), edited: false };
         let x = export_packet(Some(&rl), "© 小日子寫真館 <2026>").unwrap();
         assert_eq!(parse(&x), rl);
         assert!(x.contains("© 小日子寫真館 &lt;2026&gt;"));

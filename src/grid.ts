@@ -332,6 +332,7 @@ export class Grid {
     let badges = "";
     if (item?.kind === "raw+jpeg") badges += `<span class="badge">RAW+JPG</span>`;
     else if (item?.kind === "raw") badges += `<span class="badge">RAW</span>`;
+    if (m?.edited) badges += `<span class="badge edited" title="已調整">調整</span>`;
     badges += this.host.badges(c.id);
     if (c.badges.innerHTML !== badges) c.badges.innerHTML = badges;
   }

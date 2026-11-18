@@ -26,6 +26,7 @@
       <label class="tool" title="縮圖大小（+ / −）"><input id="size" type="range" min="100" max="380" step="10" value="180" /></label>
       <label class="tool check" title="評分後自動跳到下一張"><input id="auto-advance" type="checkbox" checked /> 自動下一張</label>
       <button id="btn-crop" title="用瀏覽器開啟「照片裁切輸出」 https://xemepark.github.io/crop/">✂ 照片裁切輸出</button>
+      <button id="btn-edit" title="調整選取的照片：白平衡、曝光、對比、亮部、陰影等（E）">◐ 調整</button>
       <button id="btn-export" title="把選取的照片縮到指定尺寸，另存為 JPEG / TIFF / PNG（仿 Photoshop 影像處理器，⇧⌘E）">影像轉存</button>
       <button id="btn-batch-rename" title="批次重新命名（⇧⌘R）">批次重新命名</button>
       <button id="btn-slideshow" title="播放幻燈片（P）">▶ 幻燈片</button>
@@ -204,6 +205,8 @@
     </div>
 
     <div id="export-dialog" class="modal hidden"></div>
+
+    <div id="editor" class="editor hidden"></div>
 
     <div id="ctx-menu" class="ctx-menu hidden"></div>
 

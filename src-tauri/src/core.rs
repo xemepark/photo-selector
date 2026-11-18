@@ -129,6 +129,7 @@ impl Core {
                     "p" => Some(Kind::Preview),
                     "m" => Some(Kind::Medium),
                     "f" => Some(Kind::Full),
+                    "o" => Some(Kind::Base),
                     _ => None,
                 };
                 kind.zip(s.parse::<u64>().ok()).zip(i.parse::<u32>().ok()).map(|((k, s), i)| (k, s, i))
@@ -147,7 +148,7 @@ impl Core {
             Kind::Thumb => self.mem_thumbs.lock().get(&key).cloned(),
             Kind::Preview => self.mem_previews.lock().get(&key).cloned(),
             Kind::Medium => self.mem_medium.lock().get(&key).cloned(),
-            Kind::Full => None,
+            Kind::Full | Kind::Base => None,
         };
         if let Some(bytes) = hit {
             return respond(responder, StatusCode::OK, "image/jpeg", bytes.as_ref().clone(), true);
@@ -231,7 +232,7 @@ impl Core {
                     Kind::Preview => {
                         self.mem_previews.lock().put(key, Arc::new(bytes.clone()));
                     }
-                    Kind::Full => {}
+                    Kind::Full | Kind::Base => {}
                 }
                 respond(job.responder, StatusCode::OK, "image/jpeg", bytes, true);
             }

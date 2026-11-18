@@ -23,6 +23,7 @@ import { Grid } from "./grid";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { BatchRename } from "./rename";
 import { Exporter } from "./exporter";
+import { Editor, isIdentity } from "./editor";
 import { FolderTree } from "./foldertree";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
 import { Cull, Analysis, drawFaces, contentRect } from "./cull";
@@ -1118,6 +1119,11 @@ $("sort-dir").addEventListener("click", () => {
 // ---------------------------------------------------------------- keyboard
 
 document.addEventListener("keydown", (ev) => {
+  // 調整視窗開著時，按鍵全部交給它（包含焦點在滑桿上時的 Esc / Enter）
+  if (editor.isOpen) {
+    if (editor.key(ev)) ev.preventDefault();
+    return;
+  }
   const t = ev.target as HTMLElement;
   if (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA") return;
   const mod = ev.ctrlKey || ev.metaKey;
@@ -1207,6 +1213,7 @@ document.addEventListener("keydown", (ev) => {
     else if (k === "ArrowRight" || k === "ArrowDown") moveFocus(1);
     else if (k === "ArrowLeft" || k === "ArrowUp") moveFocus(-1);
     else if (k.toLowerCase() === "z") toggleZoom();
+    else if (k.toLowerCase() === "e" && !mod) openEditor();
     else if (k.toLowerCase() === "f") {
       showFaces = !showFaces;
       store("showFaces", showFaces);
@@ -1242,6 +1249,7 @@ document.addEventListener("keydown", (ev) => {
       if (mod && k.toLowerCase() === "a") selectAll();
       else if (k.toLowerCase() === "c" && !mod) openCompare();
       else if (k.toLowerCase() === "p" && !mod) openSlideDialog();
+      else if (k.toLowerCase() === "e" && !mod) openEditor();
       else return;
   }
   ev.preventDefault();
@@ -1551,6 +1559,9 @@ on<string>("menu", (e) => {
     case "export":
       openExport();
       break;
+    case "edit":
+      openEditor();
+      break;
     case "goto":
       focusPath();
       break;
@@ -1650,6 +1661,7 @@ function showCellMenu(index: number, ev: MouseEvent) {
     ["reveal", isMac ? "在 Finder 中顯示" : "在檔案總管中顯示"],
     ["rename", "重新命名…", "F2"],
     ["batch", n > 1 ? `批次重新命名 ${n} 張…` : "批次重新命名…", "⇧⌘R"],
+    ["edit", n > 1 ? `調整 ${n} 張照片…` : "調整照片…", "E"],
     ["rethumb", n > 1 ? `重新產生 ${n} 張縮圖` : "重新產生縮圖"],
     ["export", n > 1 ? `影像轉存 ${n} 張…` : "影像轉存…", "⇧⌘E"],
     ["-", ""],
@@ -1679,6 +1691,7 @@ ctxMenu.addEventListener("click", (ev) => {
   else if (a === "batch") openBatchRename();
   else if (a === "export") openExport();
   else if (a === "rethumb") void regenerateThumbs();
+  else if (a === "edit") openEditor();
   else if (a === "copy") void transfer("copy");
   else if (a === "move") void transfer("move");
   else if (a === "trash") void deleteTargets();
@@ -1769,6 +1782,45 @@ function openBatchRename() {
   batchRename.open();
 }
 $("btn-batch-rename").addEventListener("click", openBatchRename);
+
+// ---------------------------------------------------------------- 照片調整
+
+const editor = new Editor($("editor"), {
+  session: () => S.session,
+  toast: (m) => toast(m, 6000),
+  focus: (id) => {
+    if (S.viewIndex.has(id) && S.focus !== id) {
+      S.focus = id;
+      S.anchor = id;
+      if (!S.selected.has(id)) S.selected = new Set([id]);
+      grid.scrollToIndex(S.viewIndex.get(id)!);
+      grid.render();
+      grid.refresh();
+      renderStatus();
+    }
+  },
+  saved: (ids, params) => {
+    const edited = !isIdentity(params);
+    for (const id of ids) {
+      const m = S.meta.get(id);
+      if (m) m.edited = edited;
+    }
+    grid.reloadThumbs(new Set(ids));
+    grid.refresh();
+  },
+});
+
+/** 調整：選取多張時逐張調整選取的照片，否則可在目前顯示的所有照片間切換 */
+function openEditor() {
+  if (S.focus === null || slideshow.active || S.compare.length) return;
+  const sel = S.view.filter((it) => S.selected.has(it.id));
+  const list = sel.length > 1 ? sel : S.view;
+  const start = Math.max(0, list.findIndex((it) => it.id === S.focus));
+  const wasLoupe = S.loupe;
+  if (wasLoupe) closeLoupe();
+  void editor.open(list, start, sel.map((it) => it.id));
+}
+$("btn-edit").addEventListener("click", openEditor);
 
 // ---------------------------------------------------------------- 影像轉存
 

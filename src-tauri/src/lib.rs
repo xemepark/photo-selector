@@ -2,6 +2,7 @@ mod blur;
 mod cache;
 mod core;
 mod dragout;
+mod edit;
 mod export;
 mod face;
 mod fileinfo;
@@ -123,11 +124,12 @@ fn set_viewport(core: CoreState<'_>, session: u64, ids: Vec<u32>) {
     core.set_viewport(session, ids);
 }
 
+/// 同一時間只寫一個檔案：快速連按評分鍵、評分與調整同時存檔時，不會互相覆蓋或把檔案寫壞
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 依 Adobe Bridge 的做法寫入評等 / 標籤：
 /// RAW → 附屬檔 .xmp；JPEG → 檔案內嵌 XMP；其他格式 → 附屬檔。RAW+JPEG 配對兩邊都寫。
 fn write_meta(core: &Core, it: &scan::Item, rating: Option<i32>, label: Option<Option<&str>>) -> Result<(), String> {
-    // 同一時間只寫一個檔案：快速連按評分鍵時，兩次寫入不會互相覆蓋或把檔案寫壞
-    static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let err = |e: std::io::Error| format!("{}：{e}", it.name);
     let mut wrote = false;
@@ -152,6 +154,55 @@ fn write_meta(core: &Core, it: &scan::Item, rating: Option<i32>, label: Option<O
     }
     if !wrote {
         xmp::update(&it.sidecar_path(), rating, label).map_err(err)?;
+    }
+    Ok(())
+}
+
+/// 讀取一張照片的調整設定（沒有 = 全部 0）
+#[tauri::command]
+async fn get_edit(core: CoreState<'_>, session: u64, id: u32) -> Result<edit::Params, String> {
+    let sess = core.session(session)?;
+    let it = sess.items.get(id as usize).ok_or("找不到項目")?.clone();
+    tauri::async_runtime::spawn_blocking(move || edit::load(&it).unwrap_or_default()).await.map_err(|e| e.to_string())
+}
+
+/// 儲存調整設定到這些照片（寫入方式與評等相同），並丟掉舊的縮圖 / 預覽快取
+#[tauri::command]
+async fn save_edit(core: CoreState<'_>, session: u64, ids: Vec<u32>, params: edit::Params) -> Result<ops::TransferResult, String> {
+    let sess = core.session(session)?;
+    let core = core.inner().clone();
+    let props = params.clamped().xmp_props();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut res = ops::TransferResult::default();
+        for id in ids {
+            let Some(it) = sess.items.get(id as usize) else { continue };
+            match write_props(it, &props) {
+                Ok(()) => res.done += 1,
+                Err(e) => res.failed.push(e),
+            }
+            core.forget(it);
+        }
+        res
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 寫入任意 XMP 屬性，位置規則與 write_meta 相同（RAW → 附屬檔、JPEG → 內嵌、配對兩邊都寫）
+fn write_props(it: &scan::Item, props: &[(&str, Option<String>)]) -> Result<(), String> {
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let err = |e: std::io::Error| format!("{}：{e}", it.name);
+    let mut wrote = false;
+    if it.raw().is_some() {
+        xmp::update_props(&it.sidecar_path(), props).map_err(err)?;
+        wrote = true;
+    }
+    for f in it.files.iter().filter(|f| f.class == scan::Class::Jpeg) {
+        xmp::update_jpeg_props(&f.path, props).map_err(err)?;
+        wrote = true;
+    }
+    if !wrote {
+        xmp::update_props(&it.sidecar_path(), props).map_err(err)?;
     }
     Ok(())
 }
@@ -708,6 +759,7 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
             &P::separator(app)?,
             &MenuItem::with_id(app, "slideshow", "播放幻燈片…", true, Some("CmdOrCtrl+Shift+P"))?,
             &MenuItem::with_id(app, "batch-rename", "批次重新命名…", true, Some("CmdOrCtrl+Shift+R"))?,
+            &MenuItem::with_id(app, "edit", "調整照片…", true, None::<&str>)?,
             &MenuItem::with_id(app, "export", "影像轉存…", true, Some("CmdOrCtrl+Shift+E"))?,
             &MenuItem::with_id(app, "goto", "前往資料夾…", true, Some("CmdOrCtrl+Shift+G"))?,
             &MenuItem::with_id(app, "refresh", "重新整理", true, Some("CmdOrCtrl+R"))?,
@@ -766,6 +818,8 @@ pub fn run() {
             drag_prepare,
             export_images,
             file_info,
+            get_edit,
+            save_edit,
             forget_thumbs,
             export_cancel,
             app_version,

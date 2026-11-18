@@ -156,7 +156,9 @@ fn load(item: &Item, formats: &[FormatOptions]) -> Result<Source> {
             render::decode_jpeg_with_meta(j.bytes(&data), min)?
         }
     };
-    Ok(Source { img: render::apply_orientation(img, orient), icc: m.icc, exif: m.exif })
+    // 套用「調整」設定（在色彩轉換之前，與畫面上看到的一致）
+    let img = crate::edit::apply_item(item, render::apply_orientation(img, orient));
+    Ok(Source { img, icc: m.icc, exif: m.exif })
 }
 
 // ---------------------------------------------------------------- 色彩
@@ -337,7 +339,7 @@ pub fn export_item(item: &Item, opts: &ExportOptions) -> Result<Vec<PathBuf>> {
         reset_orientation(e);
     }
     let m = meta::read_meta(item);
-    let rl = xmp::RatingLabel { rating: Some(m.rating), label: m.label };
+    let rl = xmp::RatingLabel { rating: Some(m.rating), label: m.label, edited: false };
     let xmp_packet = xmp::export_packet(Some(&rl), &opts.copyright);
 
     let base_dir = match &opts.dest {

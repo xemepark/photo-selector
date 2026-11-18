@@ -20,6 +20,8 @@ pub struct Meta {
     pub height: Option<u32>,
     pub rating: i32,
     pub label: Option<String>,
+    /// 有本程式的照片調整
+    pub edited: bool,
 }
 
 #[derive(Default)]
@@ -223,6 +225,7 @@ pub fn read_meta(item: &Item) -> Meta {
         height: h,
         rating: rl.rating.unwrap_or(0),
         label: rl.label,
+        edited: rl.edited,
     }
 }
 
