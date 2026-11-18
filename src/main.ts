@@ -1821,7 +1821,7 @@ function openEditor() {
   const start = Math.max(0, list.findIndex((it) => it.id === S.focus));
   const wasLoupe = S.loupe;
   if (wasLoupe) closeLoupe();
-  void editor.open(list, start, sel.map((it) => it.id));
+  void editor.open(list, start);
 }
 $("btn-edit").addEventListener("click", openEditor);
 

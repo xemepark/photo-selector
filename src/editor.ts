@@ -195,7 +195,9 @@ export class Editor {
   /** 目前照片在檔案裡的設定（判斷有沒有改過） */
   private saved: EditParams = clone(ZERO);
   private p: EditParams = clone(ZERO);
-  private selection: number[] = [];
+  /** 縮圖列中選取的照片（位置）：「套用到選取的照片」的對象，⌘ / ⇧ 點選增減 */
+  private stripSel = new Set<number>();
+  private stripAnchor = 0;
   private gl: WebGLRenderingContext | null = null;
   private prog: WebGLProgram | null = null;
   private tex: WebGLTexture | null = null;
@@ -267,8 +269,24 @@ export class Editor {
     this.q("#ed-done").addEventListener("click", () => void this.close(true));
     this.q("#ed-strip").addEventListener("click", (e) => {
       const i = (e.target as HTMLElement).closest<HTMLElement>("[data-pos]")?.dataset.pos;
-      if (i !== undefined) void this.goto(Number(i));
+      if (i === undefined) return;
+      const n = Number(i);
+      if (e.metaKey || e.ctrlKey) {
+        // ⌘ 點選：加入 / 移出「一起套用」的選取（目前編輯的這張一定在內）
+        if (n !== this.pos) this.stripSel.has(n) ? this.stripSel.delete(n) : this.stripSel.add(n);
+        this.stripAnchor = n;
+        this.markStrip();
+      } else if (e.shiftKey) {
+        // ⇧ 點選：選取一段範圍
+        const a = Math.min(this.stripAnchor, n);
+        const b = Math.max(this.stripAnchor, n);
+        for (let k = a; k <= b; k++) this.stripSel.add(k);
+        this.markStrip();
+      } else {
+        void this.goto(n);
+      }
     });
+    this.q("#ed-sel-all").addEventListener("click", () => this.selectAllStrip());
     // 色階分布圖：滑過顯示區域、左右拖曳調整
     this.histo.addEventListener("pointermove", (e) => this.histMove(e));
     this.histo.addEventListener("pointerdown", (e) => this.histDown(e));
@@ -308,8 +326,10 @@ export class Editor {
         )
         .join("")}</div>`,
     ).join("");
-    const sync = SYNC_GROUPS.map(
-      (g) => `<div class="ed-sync-group">
+    const sync = SYNC_GROUPS.map((g) =>
+      g.keys.length === 1
+        ? `<div class="ed-sync-group"><label class="check grp"><input type="checkbox" data-sync="${g.keys[0]}" data-group="${g.group}" /> ${LABEL_OF[g.keys[0]]}</label></div>`
+        : `<div class="ed-sync-group">
         <label class="check grp"><input type="checkbox" data-sync-group="${g.group}" /> ${g.group}</label>
         ${g.keys.map((k) => `<label class="check"><input type="checkbox" data-sync="${k}" data-group="${g.group}" /> ${LABEL_OF[k]}</label>`).join("")}
       </div>`,
@@ -340,7 +360,10 @@ export class Editor {
             <button id="ed-before" title="按 \\ 切換調整前 / 調整後">調整前 / 後（\\）</button>
             <button id="ed-reset" title="全部恢復為 0">全部重設</button>
           </div>
-          <button id="ed-sync" class="ed-sync" title="把目前的設定套用到所有選取的照片，可勾選只套用某幾項"></button>
+          <div id="ed-syncrow" class="ed-syncrow">
+            <button id="ed-sync" class="ed-sync" title="把目前的設定套用到縮圖列中選取的照片，可勾選只套用某幾項"></button>
+            <div class="ed-sync-hint muted small">在下方縮圖列 ⌘ 點選或 ⇧ 點選要一起套用的照片 · <button id="ed-sel-all" class="link">全選（⌘A）</button></div>
+          </div>
           <div id="ed-syncbox" class="ed-syncbox hidden">
             <div id="ed-sync-title" class="ed-sync-title"></div>
             <div class="ed-sync-quick"><button data-sync-all="1" class="link">全選</button><button data-sync-all="0" class="link">全不選</button></div>
@@ -357,12 +380,13 @@ export class Editor {
       </aside>`;
   }
 
-  /** 開啟：list = 要逐張調整的照片，start = 從哪一張開始，selection = 「套用到選取」的對象 */
-  async open(list: Item[], start: number, selection: number[]) {
+  /** 開啟：list = 要逐張調整的照片（下方縮圖列），start = 從哪一張開始 */
+  async open(list: Item[], start: number) {
     if (!list.length) return;
     this.list = list;
     this.pos = Math.max(0, Math.min(start, list.length - 1));
-    this.selection = selection;
+    this.stripSel = new Set([this.pos]);
+    this.stripAnchor = this.pos;
     this.el.classList.remove("hidden");
     if (!this.gl) this.initGl();
     if (!this.gl) {
@@ -401,9 +425,34 @@ export class Editor {
   }
 
   private markStrip() {
+    this.stripSel.add(this.pos);
     const strip = this.q("#ed-strip");
-    strip.querySelectorAll<HTMLElement>(".ed-thumb").forEach((d) => d.classList.toggle("current", Number(d.dataset.pos) === this.pos));
+    strip.querySelectorAll<HTMLElement>(".ed-thumb").forEach((d) => {
+      const i = Number(d.dataset.pos);
+      d.classList.toggle("current", i === this.pos);
+      d.classList.toggle("picked", this.stripSel.has(i));
+    });
     strip.querySelector<HTMLElement>(".ed-thumb.current")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const n = this.stripSel.size;
+    const sync = this.q<HTMLButtonElement>("#ed-sync");
+    sync.disabled = n < 2;
+    sync.textContent = n < 2 ? "套用到選取的照片（先在縮圖列選取）" : `套用到選取的 ${n} 張照片`;
+    if (n < 2) this.q("#ed-syncbox").classList.add("hidden");
+    else if (!this.q("#ed-syncbox").classList.contains("hidden")) this.q("#ed-sync-title").textContent = this.syncTitle();
+  }
+
+  private selectAllStrip() {
+    this.list.forEach((_, i) => this.stripSel.add(i));
+    this.markStrip();
+  }
+
+  /** 「一起套用」的照片 id（縮圖列順序） */
+  private get targets(): number[] {
+    return [...this.stripSel].sort((a, b) => a - b).map((i) => this.list[i].id);
+  }
+
+  private syncTitle() {
+    return `要套用到選取的 ${this.stripSel.size} 張照片的項目`;
   }
 
   /** 存檔後重新載入縮圖列中這些照片的縮圖 */
@@ -498,10 +547,7 @@ export class Editor {
     this.q("#ed-count").textContent = this.list.length > 1 ? `${this.pos + 1} / ${this.list.length}` : "";
     this.q<HTMLButtonElement>("#ed-prev").disabled = this.pos === 0;
     this.q<HTMLButtonElement>("#ed-next").disabled = this.pos >= this.list.length - 1;
-    const n = this.selection.length;
-    const sync = this.q<HTMLButtonElement>("#ed-sync");
-    sync.textContent = `套用到所有選取的照片（${n} 張）`;
-    sync.classList.toggle("hidden", n < 2);
+    this.q("#ed-syncrow").classList.toggle("hidden", this.list.length < 2);
     this.markStrip();
     this.setBefore(false);
     this.q("#ed-syncbox").classList.add("hidden");
@@ -816,18 +862,20 @@ export class Editor {
       return;
     }
     this.pos = next;
+    this.stripSel = new Set([next]);
+    this.stripAnchor = next;
     await this.show();
   }
 
   /** 「套用到所有選取的照片」：先選要同步哪些項目 */
   private openSync() {
-    if (this.selection.length < 2) return;
+    if (this.stripSel.size < 2) return;
     const box = this.q("#ed-syncbox");
     const chosen = loadSyncFields();
     box.querySelectorAll<HTMLInputElement>("input[data-sync]").forEach((i) => {
       i.checked = chosen.includes(i.dataset.sync!);
     });
-    this.q("#ed-sync-title").textContent = `要套用到選取的 ${this.selection.length} 張照片的項目`;
+    this.q("#ed-sync-title").textContent = this.syncTitle();
     this.updateSyncUi();
     box.classList.remove("hidden");
     box.scrollIntoView({ block: "nearest" });
@@ -861,7 +909,7 @@ export class Editor {
   }
 
   private async syncToSelection() {
-    const ids = this.selection;
+    const ids = this.targets;
     const fields = this.syncFields();
     if (ids.length < 2 || !fields.length) return;
     saveSyncFields(fields);
@@ -917,6 +965,7 @@ export class Editor {
     if (ev.key === "Enter" && !typing) return void this.close(true), true;
     if (typing) return false;
     if (ev.key === "\\") return this.toggleBefore(), true;
+    if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "a") return this.selectAllStrip(), true;
     if (ev.key === "ArrowLeft") return void this.goto(this.pos - 1), true;
     if (ev.key === "ArrowRight") return void this.goto(this.pos + 1), true;
     return true; // 其他按鍵不傳到背後的主畫面（避免誤評分）
