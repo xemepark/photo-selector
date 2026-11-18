@@ -16,6 +16,8 @@ import {
   getLabelNames,
   setLabelNames,
   stars,
+  fmtBytes,
+  FileInfo,
 } from "./api";
 import { Grid } from "./grid";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
@@ -275,6 +277,8 @@ function sortValue(it: Item): number | string {
   switch (S.sort) {
     case "date":
       return m?.capture ?? new Date(it.mtime).toISOString().replace("T", " ");
+    case "mtime":
+      return it.mtime;
     case "rating":
       return m?.rating ?? 0;
     case "size":
@@ -430,6 +434,68 @@ function renderStatus() {
   if (total && S.metaLoaded < total) p = `讀取中繼資料 ${S.metaLoaded}/${total}`;
   if (cull.running) p += `${p ? " · " : ""}選片分析 ${cull.analysis.size}/${total}`;
   $("progress").textContent = p;
+  renderFileInfo();
+}
+
+// ---------------------------------------------------------------- 狀態列：目前照片的檔案資訊
+
+const fileInfoCache = new Map<string, FileInfo>();
+let fileInfoTimer = 0;
+
+function fmtDateTime(ms: number | null) {
+  if (!ms) return "—";
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function fileInfoHtml(id: number, info: FileInfo | undefined) {
+  const m = S.meta.get(id);
+  const seg: string[] = [];
+  if (info) {
+    const fmt = info.parts.map((p) => p.ext).join(" + ");
+    const size = info.parts.map((p) => fmtBytes(p.size)).join(" + ");
+    seg.push(`<b>${escapeHtml(fmt)}</b>`);
+    const w = m?.width || info.width;
+    const h = m?.height || info.height;
+    if (w && h) seg.push(`${w} × ${h}`);
+    seg.push(size);
+    seg.push(`建立 ${fmtDateTime(info.created)}`);
+    seg.push(`修改 ${fmtDateTime(info.modified)}`);
+    seg.push(`色彩空間 ${escapeHtml(info.color_space ?? "未標示（視為 sRGB）")}`);
+  } else if (m?.width && m?.height) {
+    seg.push(`${m.width} × ${m.height}`);
+  }
+  return seg.map((x) => `<span>${x}</span>`).join("");
+}
+
+function renderFileInfo() {
+  const el = $("file-info");
+  const id = S.focus;
+  const it = id !== null ? S.items[id] : undefined;
+  if (id === null || !it || S.removed.has(id) || !S.selected.has(id)) {
+    el.innerHTML = "";
+    el.title = "";
+    return;
+  }
+  const key = `${S.session}:${id}`;
+  const cached = fileInfoCache.get(key);
+  el.innerHTML = fileInfoHtml(id, cached);
+  el.title = it.files.join("\n");
+  if (cached) return;
+  // 快速按方向鍵瀏覽時不必每張都讀
+  clearTimeout(fileInfoTimer);
+  const session = S.session;
+  fileInfoTimer = window.setTimeout(() => {
+    api
+      .fileInfo(session, id)
+      .then((info) => {
+        if (fileInfoCache.size > 2000) fileInfoCache.clear();
+        fileInfoCache.set(`${session}:${id}`, info);
+        if (S.session === session && S.focus === id) renderFileInfo();
+      })
+      .catch(() => {});
+  }, 80);
 }
 
 

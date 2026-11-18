@@ -4,6 +4,7 @@ mod core;
 mod dragout;
 mod export;
 mod face;
+mod fileinfo;
 mod icc;
 mod jpeg;
 mod meta;
@@ -211,6 +212,14 @@ async fn delete_items(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Resul
     let sess = core.session(session)?;
     let items: Vec<_> = ids.iter().filter_map(|&i| sess.items.get(i as usize)).collect();
     Ok(ops::trash_items(&items))
+}
+
+/// 狀態列顯示的檔案資訊
+#[tauri::command]
+async fn file_info(core: CoreState<'_>, session: u64, id: u32) -> Result<fileinfo::FileInfo, String> {
+    let sess = core.session(session)?;
+    let it = sess.items.get(id as usize).ok_or("找不到項目")?.clone();
+    tauri::async_runtime::spawn_blocking(move || fileinfo::file_info(&it)).await.map_err(|e| e.to_string())
 }
 
 static EXPORT_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -742,6 +751,7 @@ pub fn run() {
             delete_items,
             drag_prepare,
             export_images,
+            file_info,
             export_cancel,
             app_version,
             open_dir,

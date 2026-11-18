@@ -143,7 +143,9 @@ h3 {
   display: flex; gap: 16px; align-items: center; padding: 5px 12px;
   background: var(--panel); border-top: 1px solid var(--line); color: var(--muted); font-size: 12px;
 }
-.keys { display: flex; gap: 4px; align-items: center; flex-wrap: nowrap; white-space: nowrap; overflow: hidden; }
+.file-info { display: flex; gap: 0; align-items: center; white-space: nowrap; overflow: hidden; min-width: 0; font-variant-numeric: tabular-nums; }
+.file-info span + span::before { content: "·"; margin: 0 8px; color: var(--line); }
+.file-info b { color: var(--text); font-weight: 600; }
 
 /* ---------- overlays ---------- */
 .overlay { position: fixed; inset: 0; background: #0c0c0e; z-index: 10; display: flex; flex-direction: column; }

@@ -16,6 +16,7 @@
         <select id="sort">
           <option value="name">檔名</option>
           <option value="date">拍攝時間</option>
+          <option value="mtime">修改時間</option>
           <option value="rating">評等</option>
           <option value="size">檔案大小</option>
         </select>
@@ -80,10 +81,7 @@
       <span id="diag" class="diag"></span>
       <span id="app-version" class="version"></span>
       <span class="spacer"></span>
-      <span class="keys">
-        <kbd>0</kbd>–<kbd>5</kbd> 評等 <kbd>X</kbd> 拒絕 <kbd>6</kbd>–<kbd>9</kbd> 標籤
-        <kbd>Space</kbd> 全螢幕 <kbd>Z</kbd> 100% <kbd>C</kbd> 比較 <kbd>P</kbd> 幻燈片 <kbd>Del</kbd> 刪除 <kbd>Ctrl</kbd>+<kbd>A</kbd> 全選
-      </span>
+      <span id="file-info" class="file-info"></span>
     </footer>
 
     <div id="loupe" class="overlay hidden">
