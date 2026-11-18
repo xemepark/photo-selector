@@ -104,6 +104,11 @@ impl Cache {
         let _ = c.execute("UPDATE OR REPLACE analysis SET path=?2 WHERE path=?1", params![old, new]);
     }
 
+    /// 刪除某個檔案的縮圖快取（「重新產生縮圖」用）
+    pub fn delete_thumb(&self, path: &str) {
+        let _ = self.conn.lock().execute("DELETE FROM thumbs WHERE path=?1", params![path]);
+    }
+
     pub fn clear(&self) -> Result<()> {
         let c = self.conn.lock();
         c.execute_batch("DELETE FROM thumbs; DELETE FROM analysis;")?;

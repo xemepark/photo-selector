@@ -260,6 +260,15 @@ impl Core {
         Ok(b)
     }
 
+    /// 丟掉某個項目的縮圖與預覽快取，下次要圖時重新產生
+    pub fn forget(&self, item: &Item) {
+        let key = item.display().cache_key();
+        self.mem_thumbs.lock().pop(&key);
+        self.mem_previews.lock().pop(&key);
+        self.mem_medium.lock().pop(&key);
+        self.cache.delete_thumb(&key.0);
+    }
+
     pub fn clear_memory(&self) {
         self.mem_thumbs.lock().clear();
         self.mem_previews.lock().clear();

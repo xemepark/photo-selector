@@ -104,6 +104,7 @@ export const api = {
   /** 拖曳到其他程式前：取得要拖的檔案路徑與拖曳圖示 */
   dragPrepare: (session: number, ids: number[], includeRaw: boolean) =>
     invoke<{ files: string[]; icon: string }>("drag_prepare", { session, ids, includeRaw }),
+  forgetThumbs: (session: number, ids: number[]) => invoke<void>("forget_thumbs", { session, ids }),
   fileInfo: (session: number, id: number) => invoke<FileInfo>("file_info", { session, id }),
   exportImages: (session: number, ids: number[], options: ExportOptions) =>
     invoke<ExportResult>("export_images", { session, ids, options }),

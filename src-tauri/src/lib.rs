@@ -587,6 +587,18 @@ fn cache_info(core: CoreState<'_>) -> (String, u64) {
     (core.cache.path.to_string_lossy().into_owned(), core.cache.size_bytes())
 }
 
+/// 重新產生縮圖：刪掉這些項目的快取（前端接著重新要圖）
+#[tauri::command]
+async fn forget_thumbs(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<(), String> {
+    let sess = core.session(session)?;
+    for &i in &ids {
+        if let Some(it) = sess.items.get(i as usize) {
+            core.forget(it);
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn clear_cache(core: CoreState<'_>) -> Result<(), String> {
     core.clear_memory();
@@ -698,6 +710,8 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
             &MenuItem::with_id(app, "batch-rename", "批次重新命名…", true, Some("CmdOrCtrl+Shift+R"))?,
             &MenuItem::with_id(app, "export", "影像轉存…", true, Some("CmdOrCtrl+Shift+E"))?,
             &MenuItem::with_id(app, "goto", "前往資料夾…", true, Some("CmdOrCtrl+Shift+G"))?,
+            &MenuItem::with_id(app, "refresh", "重新整理", true, Some("CmdOrCtrl+R"))?,
+            &MenuItem::with_id(app, "rethumb", "重新產生選取照片的縮圖", true, None::<&str>)?,
             &P::separator(app)?,
             &P::close_window(app, Some("關閉視窗"))?,
         ],
@@ -752,6 +766,7 @@ pub fn run() {
             drag_prepare,
             export_images,
             file_info,
+            forget_thumbs,
             export_cancel,
             app_version,
             open_dir,

@@ -196,12 +196,25 @@ export class Grid {
     // 回報可見範圍（多抓一列當緩衝），後端據此取消捲出畫面的工作
     const vFirst = Math.max(0, (firstVisRow - 1) * this.cols);
     const vLast = Math.min(view.length - 1, (lastVisRow + 2) * this.cols - 1);
-    const key = `${this.host.session()}:${vFirst}:${vLast}:${view.length}`;
+    // key 要包含實際的 id：改變排序 / 篩選後，同一段範圍內的照片不同，必須重新回報，
+    // 否則後端會以為新出現的照片不在畫面上而一直取消（縮圖留白）
+    const ids: number[] = [];
+    for (let i = vFirst; i <= vLast; i++) ids.push(view[i].id);
+    const key = `${this.host.session()}:${ids.join(",")}`;
     if (key !== this.lastViewportKey) {
       this.lastViewportKey = key;
-      const ids: number[] = [];
-      for (let i = vFirst; i <= vLast; i++) ids.push(view[i].id);
       this.host.onViewport(ids);
+    }
+  }
+
+  /** 重新載入縮圖（ids 省略 = 畫面上全部） */
+  reloadThumbs(ids?: Set<number>) {
+    for (const [, c] of this.cells) {
+      if (c.id < 0 || (ids && !ids.has(c.id))) continue;
+      c.retry = 0;
+      c.img.removeAttribute("data-loaded");
+      clearImg(c.img);
+      this.loadThumb(c);
     }
   }
 
@@ -251,8 +264,13 @@ export class Grid {
         this.loadThumb(c);
       }
     }, 6000 + Math.min(c.retry, 5) * 2000);
-    setImg(c.img, url.thumb(this.host.session(), id), () => {
+    setImg(c.img, url.thumb(this.host.session(), id), (status) => {
       if (c.id !== id) return;
+      // 410 = 後端認為不在畫面上；這格明明在畫面上，就重新回報可見範圍（保險）
+      if (status === 410 && c.retry >= 2) {
+        this.lastViewportKey = "";
+        this.schedule();
+      }
       clearTimeout(c.timer);
       c.timer = window.setTimeout(() => {
         // 只要這格還在畫面上就持續重試（不設上限）：大檔案在外接硬碟上可能要排隊很久

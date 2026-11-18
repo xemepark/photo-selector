@@ -540,6 +540,51 @@ async function openFolder(path: string) {
   if (!res.items.length) toast("這個資料夾沒有支援的照片");
 }
 
+/** 重新整理（⌘R）：重新讀取資料夾（新增 / 變更的檔案），保留選取、篩選與捲動位置，並重新載入縮圖 */
+let refreshing = false;
+async function refreshFolder() {
+  if (!S.dir || refreshing) return;
+  refreshing = true;
+  try {
+    await doRefreshFolder();
+  } finally {
+    refreshing = false;
+  }
+}
+
+async function doRefreshFolder() {
+  const selNames = new Set([...S.selected].map((id) => S.items[id]?.name));
+  const focusName = S.focus !== null ? S.items[S.focus]?.name : undefined;
+  const filters = FILTER_KEYS.map((k) => [k, new Set(S.filters[k])] as const);
+  const top = gridEl.scrollTop;
+  await openFolder(S.dir);
+  for (const [k, v] of filters) S.filters[k] = v;
+  const sel = S.items.filter((it) => selNames.has(it.name)).map((it) => it.id);
+  if (sel.length) {
+    S.selected = new Set(sel);
+    const f = S.items.find((it) => it.name === focusName);
+    S.focus = f ? f.id : sel[0];
+    S.anchor = S.focus;
+  }
+  update();
+  gridEl.scrollTop = top;
+  grid.reloadThumbs();
+  toast("已重新整理");
+}
+
+/** 重新產生選取照片的縮圖（刪掉快取重新讀取原檔） */
+async function regenerateThumbs() {
+  const ids = [...S.selected];
+  if (!ids.length) return toast("請先選取照片");
+  try {
+    await api.forgetThumbs(S.session, ids);
+  } catch (e) {
+    return toast(`無法重新產生縮圖：${e}`);
+  }
+  grid.reloadThumbs(new Set(ids));
+  toast(`正在重新產生 ${ids.length} 張縮圖`);
+}
+
 async function pickFolder() {
   const dir = await openDialog({ directory: true, defaultPath: S.dir || undefined });
   if (typeof dir === "string") openFolder(dir);
@@ -552,6 +597,7 @@ $("tree-refresh").addEventListener("click", () => void folderTree.refresh());
 $("btn-open").addEventListener("click", pickFolder);
 $("btn-open-2").addEventListener("click", pickFolder);
 $("btn-up").addEventListener("click", () => S.parent && openFolder(S.parent));
+$("btn-refresh").addEventListener("click", () => void refreshFolder());
 $("recent").addEventListener("click", (ev) => {
   const li = (ev.target as HTMLElement).closest("li") as HTMLElement | null;
   if (li?.dataset.path) openFolder(li.dataset.path);
@@ -1081,6 +1127,7 @@ document.addEventListener("keydown", (ev) => {
   if (k === "F2" && !S.loupe && !S.compare.length && !slideshow.active) return ev.preventDefault(), openRename();
   if (mod && ev.shiftKey && k.toLowerCase() === "r") return ev.preventDefault(), openBatchRename();
   if (mod && ev.shiftKey && k.toLowerCase() === "e") return ev.preventDefault(), openExport();
+  if ((mod && !ev.shiftKey && k.toLowerCase() === "r") || k === "F5") return ev.preventDefault(), void refreshFolder();
   if (mod && ev.shiftKey && k.toLowerCase() === "g") return ev.preventDefault(), focusPath();
 
   if (!slideDialog.classList.contains("hidden")) {
@@ -1489,6 +1536,12 @@ on<string>("menu", (e) => {
     case "goto":
       focusPath();
       break;
+    case "refresh":
+      void refreshFolder();
+      break;
+    case "rethumb":
+      void regenerateThumbs();
+      break;
     case "slideshow":
       if (!slideshow.active) openSlideDialog();
       break;
@@ -1579,6 +1632,7 @@ function showCellMenu(index: number, ev: MouseEvent) {
     ["reveal", isMac ? "在 Finder 中顯示" : "在檔案總管中顯示"],
     ["rename", "重新命名…", "F2"],
     ["batch", n > 1 ? `批次重新命名 ${n} 張…` : "批次重新命名…", "⇧⌘R"],
+    ["rethumb", n > 1 ? `重新產生 ${n} 張縮圖` : "重新產生縮圖"],
     ["export", n > 1 ? `影像轉存 ${n} 張…` : "影像轉存…", "⇧⌘E"],
     ["-", ""],
     ["copy", n > 1 ? `複製 ${n} 張到…` : "複製到…"],
@@ -1606,6 +1660,7 @@ ctxMenu.addEventListener("click", (ev) => {
   else if (a === "rename") openRename();
   else if (a === "batch") openBatchRename();
   else if (a === "export") openExport();
+  else if (a === "rethumb") void regenerateThumbs();
   else if (a === "copy") void transfer("copy");
   else if (a === "move") void transfer("move");
   else if (a === "trash") void deleteTargets();
