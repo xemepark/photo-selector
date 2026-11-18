@@ -110,3 +110,32 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 }
+
+/// 拖曳到其他程式用：把套用調整後的照片放在暫存資料夾（同一張、同一組調整只做一次）。
+/// 檔名與原檔相同，對方程式收到的名稱不變。
+pub fn cached(item: &Item, root: &Path) -> Result<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let f = item.display();
+    let p = crate::edit::load(item).unwrap_or_default();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    f.path.hash(&mut h);
+    f.mtime.hash(&mut h);
+    f.size.hash(&mut h);
+    format!("{:?}", p.xmp_props()).hash(&mut h);
+    let dir = root.join(format!("{:016x}", h.finish()));
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        if let Some(done) = rd.flatten().map(|e| e.path()).find(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".tmp"))) {
+            return Ok(done);
+        }
+    }
+    // 先寫到暫存子資料夾再搬過去：背景預先處理與拖曳同時進行時，不會拿到寫一半的檔案
+    let tmp = root.join(format!(".tmp-{:016x}-{}", h.finish(), std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp)?;
+    let out = bake_to(item, &tmp.join(&f.name))?;
+    std::fs::create_dir_all(&dir)?;
+    let final_path = dir.join(out.file_name().unwrap_or_default());
+    std::fs::rename(&out, &final_path).or_else(|_| std::fs::copy(&out, &final_path).map(|_| ()))?;
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(final_path)
+}

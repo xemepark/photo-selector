@@ -239,7 +239,13 @@ fn preserve_names(it: &Item) -> io::Result<()> {
 /// 配對的 RAW / JPEG 與 .xmp 附屬檔使用相同的新檔名，副檔名維持原樣。
 /// 在相同資料夾改名時：先全部檢查，有任何衝突就完全不動；
 /// 再分兩階段（先改成暫存名稱、再改成新名稱），名稱互換也不會出錯，失敗時還原。
-pub fn batch_rename(items: &[(&Item, String)], mode: &RenameMode, preserve: bool, cache: &crate::cache::Cache) -> TransferResult {
+pub fn batch_rename(
+    items: &[(&Item, String)],
+    mode: &RenameMode,
+    preserve: bool,
+    cache: &crate::cache::Cache,
+    bake: bool,
+) -> TransferResult {
     let mut res = TransferResult::default();
     if preserve {
         for (it, _) in items {
@@ -324,15 +330,30 @@ pub fn batch_rename(items: &[(&Item, String)], mode: &RenameMode, preserve: bool
                     res.failed.push(format!("{}：目的地已有同名檔案 {}", it.name, d.display()));
                     continue;
                 }
+                // 有調整的 JPEG / 一般影像：目的地輸出已套用調整的檔案（與複製 / 移動相同）
+                let baked = bake && crate::bake::needs_bake(it);
+                let disp = it.display().path.clone();
                 let mut ok = true;
                 for (src, dst) in &pairs {
-                    let r = if mv { move_file(src, dst) } else { copy_preserving(src, dst) };
-                    match r {
-                        Ok(()) if mv => cache.rename_path(&src.to_string_lossy(), &dst.to_string_lossy()),
-                        Ok(()) => {}
-                        Err(e) => {
-                            ok = false;
-                            res.failed.push(format!("{}：{e}", src.display()));
+                    let r = if baked && *src == disp {
+                        crate::bake::bake_to(it, dst).map(|_| ()).map_err(|e| io::Error::other(format!("{e:#}")))
+                    } else if mv {
+                        move_file(src, dst).map(|_| cache.rename_path(&src.to_string_lossy(), &dst.to_string_lossy()))
+                    } else {
+                        copy_preserving(src, dst)
+                    };
+                    if let Err(e) = r {
+                        ok = false;
+                        res.failed.push(format!("{}：{e}", src.display()));
+                    }
+                }
+                if baked && ok {
+                    if let Some((_, d)) = pairs.iter().find(|(s, _)| s.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmp"))) {
+                        crate::bake::strip_sidecar(d);
+                    }
+                    if mv {
+                        if let Err(e) = trash_paths(std::slice::from_ref(&disp)) {
+                            res.failed.push(format!("{}：已輸出調整後的照片，但原檔無法移到垃圾桶（{e}）", disp.display()));
                         }
                     }
                 }
@@ -377,12 +398,12 @@ mod rename_tests {
         let (items, _) = crate::scan::scan_dir(&dir).unwrap();
         let by = |n: &str| items.iter().find(|i| i.name == n).unwrap();
         // 衝突：B 改成 C（C 不在改名範圍）→ 完全不動
-        let r = batch_rename(&[(by("B"), "C".into())], &RenameMode::InPlace, false, &cache);
+        let r = batch_rename(&[(by("B"), "C".into())], &RenameMode::InPlace, false, &cache, true);
         assert_eq!(r.done, 0);
         assert!(r.failed[0].contains("已有同名檔案"));
         assert!(dir.join("B.jpg").exists());
         // 互換：A ↔ B（A 是 RAW+JPEG 配對含附屬檔）
-        let r = batch_rename(&[(by("A"), "B".into()), (by("B"), "A".into())], &RenameMode::InPlace, false, &cache);
+        let r = batch_rename(&[(by("A"), "B".into()), (by("B"), "A".into())], &RenameMode::InPlace, false, &cache, true);
         assert_eq!((r.done, r.failed.len()), (2, 0), "{:?}", r.failed);
         assert_eq!(fs::read_to_string(dir.join("B.CR2")).unwrap(), "A.CR2");
         assert_eq!(fs::read_to_string(dir.join("B.JPG")).unwrap(), "A.JPG");
@@ -482,6 +503,39 @@ mod transfer_bake_tests {
         assert_eq!(r.done, 1, "{:?}", r.failed);
         assert!(bright(&out_m.join("E.jpg")) > 110);
         assert!(!src.join("E.jpg").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod rename_bake_tests {
+    use super::*;
+    use crate::edit::Params;
+    use image::{DynamicImage, RgbImage};
+
+    #[test]
+    fn batch_rename_copy_applies_edits_and_drag_cache() {
+        let dir = std::env::temp_dir().join(format!("rename-bake-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        fs::create_dir_all(&src).unwrap();
+        let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(64, 48, image::Rgb([80, 80, 80])));
+        fs::write(src.join("E.jpg"), crate::render::encode_jpeg(&img, 95).unwrap()).unwrap();
+        crate::xmp::update_jpeg_props(&src.join("E.jpg"), &Params { exposure: 1.0, ..Default::default() }.xmp_props()).unwrap();
+        let (items, _) = crate::scan::scan_dir(&src).unwrap();
+        let cache = crate::cache::Cache::open(&dir.join("cache")).unwrap();
+        let out = dir.join("out");
+        let r = batch_rename(&[(&items[0], "Wedding_001".into())], &RenameMode::Copy(out.clone()), false, &cache, true);
+        assert_eq!(r.done, 1, "{:?}", r.failed);
+        let px = image::open(out.join("Wedding_001.jpg")).unwrap().to_rgb8().get_pixel(5, 5)[0];
+        assert!(px > 110, "改名後拷貝要套用調整");
+        // 拖曳用暫存檔：同名、套用調整、第二次直接沿用
+        let root = dir.join("baked");
+        let a = crate::bake::cached(&items[0], &root).unwrap();
+        assert_eq!(a.file_name().unwrap(), "E.jpg");
+        assert!(image::open(&a).unwrap().to_rgb8().get_pixel(5, 5)[0] > 110);
+        let b = crate::bake::cached(&items[0], &root).unwrap();
+        assert_eq!(a, b);
         let _ = fs::remove_dir_all(&dir);
     }
 }

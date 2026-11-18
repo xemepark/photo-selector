@@ -436,7 +436,15 @@ function renderStatus() {
   if (cull.running) p += `${p ? " · " : ""}選片分析 ${cull.analysis.size}/${total}`;
   $("progress").textContent = p;
   renderFileInfo();
+  prepareDragSoon();
 }
+
+/** 選取了有調整的照片 → 背景先做好「套用調整後」的拖曳用檔案（拖曳時不必等） */
+const prepareDragSoon = debounce(() => {
+  if (!dragBake.checked) return;
+  const ids = [...S.selected].filter((id) => S.meta.get(id)?.edited).slice(0, 30);
+  if (ids.length) api.prepareDrag(S.session, ids).catch(() => {});
+}, 500);
 
 // ---------------------------------------------------------------- 狀態列：目前照片的檔案資訊
 
@@ -738,7 +746,11 @@ async function onCellDrag(index: number) {
   if (!ids.length) return;
   dragging = true;
   try {
-    const { files, icon } = await api.dragPrepare(S.session, ids, dragRaw.checked);
+    const edited = dragBake.checked && ids.some((id) => S.meta.get(id)?.edited);
+    if (edited) document.body.style.cursor = "progress";
+    const { files, icon } = await api.dragPrepare(S.session, ids, dragRaw.checked, dragBake.checked).finally(() => {
+      document.body.style.cursor = "";
+    });
     await startDrag({ item: files, icon, mode: "copy" });
   } catch (e) {
     console.warn("drag failed", e);
@@ -757,9 +769,15 @@ function moveFocus(delta: number, extend = false) {
 /** 評分 / 標籤要套用的對象 */
 // ---------------------------------------------------------------- 刪除（移到垃圾桶）
 
-const transferBake = $<HTMLInputElement>("transfer-bake");
-transferBake.checked = storage("transferBake", true);
-transferBake.addEventListener("change", () => store("transferBake", transferBake.checked));
+function settingBox(id: string, key: string, def: boolean) {
+  const el = $<HTMLInputElement>(id);
+  el.checked = storage(key, def);
+  el.addEventListener("change", () => store(key, el.checked));
+  return el;
+}
+const transferBake = settingBox("transfer-bake", "transferBake", true);
+const renameBake = settingBox("rename-bake", "renameBake", true);
+const dragBake = settingBox("drag-bake", "dragBake", true);
 
 const confirmDelete = $<HTMLInputElement>("confirm-delete");
 confirmDelete.checked = storage("confirmDelete", true);
@@ -1773,7 +1791,7 @@ const batchRename = new BatchRename($("batch-rename"), {
   selectedCount: () => S.selected.size,
   viewCount: () => S.view.length,
   meta: (id) => S.meta.get(id),
-  run: (entries, s) => api.batchRename(S.session, entries, s.dest, s.dest === "rename" ? null : s.destDir, s.preserve),
+  run: (entries, s) => api.batchRename(S.session, entries, s.dest, s.dest === "rename" ? null : s.destDir, s.preserve, renameBake.checked),
   done: async (s, firstNewName) => {
     if (s.dest === "copy") {
       notify(`已重新命名並拷貝到「${folderName(s.destDir)}」`, openDirAction(s.destDir));

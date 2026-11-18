@@ -120,10 +120,13 @@ export const api = {
     mode: "rename" | "move" | "copy",
     dest: string | null,
     preserve: boolean,
-  ) => invoke<TransferResult>("batch_rename", { session, entries, mode, dest, preserve }),
+    applyEdits = true,
+  ) => invoke<TransferResult>("batch_rename", { session, entries, mode, dest, preserve, applyEdits }),
   /** 拖曳到其他程式前：取得要拖的檔案路徑與拖曳圖示 */
-  dragPrepare: (session: number, ids: number[], includeRaw: boolean) =>
-    invoke<{ files: string[]; icon: string }>("drag_prepare", { session, ids, includeRaw }),
+  dragPrepare: (session: number, ids: number[], includeRaw: boolean, applyEdits = true) =>
+    invoke<{ files: string[]; icon: string }>("drag_prepare", { session, ids, includeRaw, applyEdits }),
+  /** 背景先準備好有調整照片的拖曳用檔案 */
+  prepareDrag: (session: number, ids: number[]) => invoke<void>("prepare_drag", { session, ids }),
   forgetThumbs: (session: number, ids: number[]) => invoke<void>("forget_thumbs", { session, ids }),
   getEdit: (session: number, id: number) => invoke<EditParams>("get_edit", { session, id }),
   /** fields 有值時只覆寫這些項目（同步部分設定），其他保留各自的值 */

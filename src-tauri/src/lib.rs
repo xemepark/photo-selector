@@ -382,7 +382,12 @@ struct DragPayload {
     icon: PathBuf,
 }
 
-/// 準備拖曳到其他程式：回傳檔案路徑與拖曳圖示（暫存 PNG）
+fn baked_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_cache_dir().map_err(|e| e.to_string())?.join("baked"))
+}
+
+/// 準備拖曳到其他程式：回傳檔案路徑與拖曳圖示（暫存 PNG）。
+/// `apply_edits`：有調整的照片改拖出「已套用調整」的暫存檔（同名）。
 #[tauri::command]
 async fn drag_prepare(
     app: AppHandle,
@@ -390,20 +395,52 @@ async fn drag_prepare(
     session: u64,
     ids: Vec<u32>,
     include_raw: bool,
+    apply_edits: Option<bool>,
 ) -> Result<DragPayload, String> {
     let sess = core.session(session)?;
-    let items: Vec<_> = ids.iter().filter_map(|&i| sess.items.get(i as usize)).collect();
+    let items: Vec<scan::Item> = ids.iter().filter_map(|&i| sess.items.get(i as usize).cloned()).collect();
     if items.is_empty() {
         return Err("沒有選取照片".into());
     }
-    let files = dragout::files_for(&items, include_raw);
-    let thumbs: Vec<Vec<u8>> =
-        items.iter().take(3).filter_map(|it| core.thumb_bytes(it).ok()).map(|b| b.as_ref().clone()).collect();
+    let bake = apply_edits.unwrap_or(true);
+    let root = baked_dir(&app)?;
+    let core2 = core.inner().clone();
     let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let icon = dir.join("drag-icon.png");
-    dragout::make_icon(&thumbs, &icon).map_err(|e| e.to_string())?;
-    Ok(DragPayload { files, icon })
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut files = Vec::new();
+        for it in &items {
+            if bake && bake::needs_bake(it) {
+                files.push(bake::cached(it, &root).map_err(|e| format!("{e:#}"))?);
+                if include_raw {
+                    files.extend(it.raw().map(|r| r.path.clone()));
+                }
+            } else {
+                files.extend(dragout::files_for(&[it], include_raw));
+            }
+        }
+        let thumbs: Vec<Vec<u8>> =
+            items.iter().take(3).filter_map(|it| core2.thumb_bytes(it).ok()).map(|b| b.as_ref().clone()).collect();
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let icon = dir.join("drag-icon.png");
+        dragout::make_icon(&thumbs, &icon).map_err(|e| e.to_string())?;
+        Ok(DragPayload { files, icon })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 選取有調整的照片時，先在背景準備好「套用調整後」的拖曳用檔案，拖曳時就不必等
+#[tauri::command]
+async fn prepare_drag(app: AppHandle, core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<(), String> {
+    let sess = core.session(session)?;
+    let items: Vec<scan::Item> = ids.iter().take(30).filter_map(|&i| sess.items.get(i as usize).cloned()).collect();
+    let root = baked_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        for it in items.iter().filter(|it| bake::needs_bake(it)) {
+            let _ = bake::cached(it, &root);
+        }
+    });
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
@@ -421,6 +458,7 @@ async fn batch_rename(
     mode: String,
     dest: Option<String>,
     preserve: bool,
+    apply_edits: Option<bool>,
 ) -> Result<ops::TransferResult, String> {
     let sess = core.session(session)?;
     let list: Vec<(&scan::Item, String)> = entries
@@ -435,7 +473,7 @@ async fn batch_rename(
     };
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    Ok(ops::batch_rename(&list, &m, preserve, &core.cache))
+    Ok(ops::batch_rename(&list, &m, preserve, &core.cache, apply_edits.unwrap_or(true)))
 }
 
 pub const WEBSITE: &str = "https://smallday.tw";
@@ -831,6 +869,8 @@ pub fn run() {
         .plugin(tauri_plugin_drag::init())
         .setup(|app| {
             let dir = app.path().app_cache_dir()?;
+            // 上次拖曳用的暫存檔（套用調整後的照片）啟動時清掉
+            let _ = std::fs::remove_dir_all(dir.join("baked"));
             app.manage(Core::new(dir)?);
             Ok(())
         })
@@ -847,6 +887,7 @@ pub fn run() {
             analyze,
             delete_items,
             drag_prepare,
+            prepare_drag,
             export_images,
             file_info,
             get_edit,

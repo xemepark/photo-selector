@@ -434,3 +434,6 @@ body.resizing { cursor: col-resize; user-select: none; }
 .ed-syncrow { display: flex; flex-direction: column; gap: 4px; }
 .ed-syncrow.hidden { display: none; }
 .ed-sync:disabled { opacity: .55; }
+
+.settings-sub { color: var(--text); font-size: 13px; margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
+.settings-form > label.indent { margin-left: 22px; }
