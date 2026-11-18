@@ -39,6 +39,19 @@ pub fn apply_orientation(img: DynamicImage, o: u16) -> DynamicImage {
 /// 用 DCT 縮放解碼 JPEG：直接解出 1/2、1/4、1/8 尺寸，
 /// 解出的長邊會 ≥ min_edge（min_edge = 0 代表全尺寸）。
 pub fn decode_jpeg_scaled(bytes: &[u8], min_edge: u32) -> Result<DynamicImage> {
+    decode_jpeg_with_meta(bytes, min_edge).map(|(img, _)| img)
+}
+
+/// JPEG 內的色彩描述檔 / EXIF（轉存時要帶到新檔案）
+#[derive(Default)]
+pub struct JpegMeta {
+    pub icc: Option<Vec<u8>>,
+    /// 從 TIFF 檔頭開始的 EXIF 資料
+    pub exif: Option<Vec<u8>>,
+}
+
+/// 同 decode_jpeg_scaled，另外回傳 ICC / EXIF
+pub fn decode_jpeg_with_meta(bytes: &[u8], min_edge: u32) -> Result<(DynamicImage, JpegMeta)> {
     let mut d = jpeg_decoder::Decoder::new(Cursor::new(bytes));
     d.read_info()?;
     let info = d.info().ok_or_else(|| anyhow!("no jpeg info"))?;
@@ -72,7 +85,11 @@ pub fn decode_jpeg_scaled(bytes: &[u8], min_edge: u32) -> Result<DynamicImage> {
             DynamicImage::ImageRgb8(RgbImage::from_raw(w, h, rgb).context("cmyk")?)
         }
     };
-    Ok(img)
+    let meta = JpegMeta {
+        icc: d.icc_profile(),
+        exif: d.exif_data().map(|e| e.to_vec()),
+    };
+    Ok((img, meta))
 }
 
 /// 解碼一個項目的顯示影像（已套用方向），長邊至少 min_edge（0 = 全尺寸）。

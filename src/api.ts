@@ -43,6 +43,23 @@ export interface TransferResult {
   failed: string[];
 }
 
+export type ExportFormat = "jpeg" | "tiff" | "png";
+
+export interface ExportOptions {
+  /** null = 儲存至相同位置 */
+  dest: string | null;
+  formats: { format: ExportFormat; fit: [number, number] | null; quality: number; lzw: boolean }[];
+  to_srgb: boolean;
+  embed_icc: boolean;
+  copyright: string;
+}
+
+export interface ExportResult {
+  done: number;
+  failed: string[];
+  dirs: string[];
+}
+
 // Linux / macOS：img://localhost/   Windows：http://img.localhost/
 const base = convertFileSrc("", "img");
 
@@ -78,6 +95,9 @@ export const api = {
   /** 拖曳到其他程式前：取得要拖的檔案路徑與拖曳圖示 */
   dragPrepare: (session: number, ids: number[], includeRaw: boolean) =>
     invoke<{ files: string[]; icon: string }>("drag_prepare", { session, ids, includeRaw }),
+  exportImages: (session: number, ids: number[], options: ExportOptions) =>
+    invoke<ExportResult>("export_images", { session, ids, options }),
+  exportCancel: () => invoke<void>("export_cancel"),
   revealItem: (session: number, id: number) => invoke<void>("reveal_item", { session, id }),
   openDir: (path: string) => invoke<void>("open_dir", { path }),
   openWebsite: () => invoke<void>("open_website"),

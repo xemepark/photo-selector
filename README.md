@@ -149,6 +149,11 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 後端單元測試
   訊息上有「在 Finder 中開啟」按鈕，點了直接開啟目的地資料夾；滑鼠停在訊息上時會暫停倒數。
 - **路徑列可以直接編輯**：點一下（或 ⇧⌘G）貼上 / 輸入路徑後按 Enter 前往；可用 `~`、可貼上帶引號的路徑。
   貼上的是照片路徑時，會開啟所在資料夾並選取那張照片。
+- **影像轉存**（工具列、右鍵選單或 ⇧⌘E，仿 Photoshop / Bridge「影像處理器」）：選取的照片另存為 JPEG（品質 0–12，與 Photoshop 相同）、TIFF（可 LZW 壓縮）、PNG，每種格式可各自「重新調整尺寸以符合」寬 × 高（不放大）。
+  - 儲存至相同位置或指定資料夾，與 Photoshop 一樣建立 JPEG / TIFF / PNG 子資料夾；同名檔案不覆蓋，自動加 -1、-2…
+  - 可「將描述檔轉換為 sRGB」（讀取原圖 ICC；相機設 Adobe RGB 卻沒嵌描述檔時依 EXIF 判斷）與「包含 ICC 描述檔」（sRGB 使用相容性最好的 ICC v2）
+  - 保留 EXIF（方向改為正常，因為影像已轉正）；評等、標籤與「版權資訊」寫入 XMP
+  - RAW+JPEG 使用相機 JPEG；只有 RAW 時使用 RAW 內嵌的相機預覽圖（尚未套用 Camera Raw 調整）
 - **拖曳到其他程式**：選取一張或多張縮圖後直接拖到 Finder、LINE、瀏覽器上傳欄、Photoshop 等（複製，不會移動原檔）。在多選中的某張上按下時會保留整組選取；RAW+JPEG 預設只拖出 JPEG，可在左側「動作」勾選「拖曳到其他程式時包含 RAW」。
 - **右鍵選單**：在 Finder 中顯示、重新命名（F2）、批次重新命名、複製 / 移動到…、移到垃圾桶。
 - **重新命名**：RAW + JPEG 配對與 .xmp 附屬檔一起改名，副檔名不變；縮圖與分析快取沿用。
@@ -214,6 +219,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 後端單元測試
 | Ctrl+O、Ctrl+↑ | 開啟資料夾、上一層 |
 | ⇧⌘G | 前往資料夾（編輯路徑列） |
 | F2、⇧⌘R | 重新命名、批次重新命名 |
+| ⇧⌘E | 影像轉存 |
 | Delete / Backspace（Mac 的 delete 鍵） | 把焦點或選取的照片（含配對 RAW/JPEG 與 .xmp）移到垃圾桶，停留在同一個資料夾 |
 
 ## 為什麼快：架構說明
@@ -296,6 +302,7 @@ src-tauri/models/       MediaPipe 人臉模型（ONNX，Apache 2.0）
 
 **v0.3 — Bridge 等級的素材管理**
 - [x] 選取縮圖拖曳到其他程式
+- [x] 影像轉存（JPEG / TIFF / PNG、尺寸、品質、sRGB、ICC、版權）
 - [x] 批次重新命名（仿 Bridge：預設集、多種命名規則、保留原檔名）
 - [ ] 關鍵字面板（階層式關鍵字）、IPTC 中繼資料編輯與範本
 - [ ] 收藏集、智慧型收藏集（條件式）

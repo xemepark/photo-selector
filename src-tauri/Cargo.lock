@@ -2904,6 +2904,7 @@ dependencies = [
  "lru",
  "memchr",
  "memmap2",
+ "moxcms",
  "parking_lot 0.13.0",
  "rayon",
  "rusqlite",
@@ -2913,6 +2914,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-drag",
+ "tiff",
  "tract-onnx",
  "trash",
 ]

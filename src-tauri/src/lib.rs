@@ -2,7 +2,9 @@ mod blur;
 mod cache;
 mod core;
 mod dragout;
+mod export;
 mod face;
+mod icc;
 mod jpeg;
 mod meta;
 mod ops;
@@ -209,6 +211,78 @@ async fn delete_items(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Resul
     let sess = core.session(session)?;
     let items: Vec<_> = ids.iter().filter_map(|&i| sess.items.get(i as usize)).collect();
     Ok(ops::trash_items(&items))
+}
+
+static EXPORT_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[derive(Serialize, Clone)]
+struct ExportProgress {
+    done: usize,
+    total: usize,
+}
+
+/// 影像轉存（仿 Photoshop 影像處理器）。進度以 export-progress 事件回報
+#[tauri::command]
+async fn export_images(
+    app: AppHandle,
+    core: CoreState<'_>,
+    session: u64,
+    ids: Vec<u32>,
+    options: export::ExportOptions,
+) -> Result<export::ExportResult, String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    if options.formats.is_empty() {
+        return Err("請至少選擇一種檔案類型".into());
+    }
+    let sess = core.session(session)?;
+    let items: Vec<scan::Item> = ids.iter().filter_map(|&i| sess.items.get(i as usize).cloned()).collect();
+    EXPORT_CANCEL.store(false, Ordering::SeqCst);
+    let total = items.len();
+    tauri::async_runtime::spawn_blocking(move || {
+        // 5000 萬像素的照片解碼後約 150MB，同時處理的張數要有上限
+        let threads = (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).clamp(1, 4);
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().map_err(|e| e.to_string())?;
+        let done = AtomicUsize::new(0);
+        let _ = app.emit("export-progress", ExportProgress { done: 0, total });
+        let results: Vec<Result<Vec<PathBuf>, String>> = pool.install(|| {
+            items
+                .par_iter()
+                .map(|it| {
+                    if EXPORT_CANCEL.load(Ordering::SeqCst) {
+                        return Err(format!("{}：已取消", it.display().name));
+                    }
+                    let r = export::export_item(it, &options).map_err(|e| format!("{e:#}"));
+                    let n = done.fetch_add(1, Ordering::SeqCst) + 1;
+                    let _ = app.emit("export-progress", ExportProgress { done: n, total });
+                    r
+                })
+                .collect()
+        });
+        let mut res = export::ExportResult::default();
+        let mut dirs = std::collections::BTreeSet::new();
+        for r in results {
+            match r {
+                Ok(paths) => {
+                    res.done += 1;
+                    for p in paths {
+                        if let Some(d) = p.parent() {
+                            dirs.insert(d.to_string_lossy().into_owned());
+                        }
+                    }
+                }
+                Err(e) => res.failed.push(e),
+            }
+        }
+        res.dirs = dirs.into_iter().collect();
+        Ok(res)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn export_cancel() {
+    EXPORT_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[derive(Serialize)]
@@ -613,6 +687,7 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
             &P::separator(app)?,
             &MenuItem::with_id(app, "slideshow", "播放幻燈片…", true, Some("CmdOrCtrl+Shift+P"))?,
             &MenuItem::with_id(app, "batch-rename", "批次重新命名…", true, Some("CmdOrCtrl+Shift+R"))?,
+            &MenuItem::with_id(app, "export", "影像轉存…", true, Some("CmdOrCtrl+Shift+E"))?,
             &MenuItem::with_id(app, "goto", "前往資料夾…", true, Some("CmdOrCtrl+Shift+G"))?,
             &P::separator(app)?,
             &P::close_window(app, Some("關閉視窗"))?,
@@ -666,6 +741,8 @@ pub fn run() {
             analyze,
             delete_items,
             drag_prepare,
+            export_images,
+            export_cancel,
             app_version,
             open_dir,
             open_website,

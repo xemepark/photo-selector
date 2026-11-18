@@ -568,3 +568,52 @@ mod mpo_tests {
         println!("XMP after MPF: preview still correct after growth");
     }
 }
+
+/// 轉存新檔案用的 XMP：只帶評等、標籤與版權（不帶 Camera Raw 調整，免得 Lightroom / ACR 對成品再套一次）
+pub fn export_packet(src: Option<&RatingLabel>, copyright: &str) -> Option<String> {
+    let rating = src.and_then(|r| r.rating).filter(|&r| r != 0);
+    let label = src.and_then(|r| r.label.clone());
+    let copyright = copyright.trim();
+    if rating.is_none() && label.is_none() && copyright.is_empty() {
+        return None;
+    }
+    let mut attrs = String::new();
+    if let Some(r) = rating {
+        attrs.push_str(&format!("\n    xmp:Rating=\"{r}\""));
+    }
+    if let Some(l) = &label {
+        attrs.push_str(&format!("\n    xmp:Label=\"{}\"", escape(l)));
+    }
+    let mut body = String::new();
+    if !copyright.is_empty() {
+        attrs.push_str("\n    xmpRights:Marked=\"True\"");
+        body = format!(
+            "\n   <dc:rights>\n    <rdf:Alt>\n     <rdf:li xml:lang=\"x-default\">{}</rdf:li>\n    </rdf:Alt>\n   </dc:rights>\n  ",
+            escape(copyright)
+        );
+    }
+    Some(format!(
+        "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n\
+<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"Photo Selector\">\n \
+<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  \
+<rdf:Description rdf:about=\"\"\n    xmlns:xmp=\"{NS_XMP}\"\n    \
+xmlns:dc=\"http://purl.org/dc/elements/1.1/\"\n    \
+xmlns:xmpRights=\"http://ns.adobe.com/xap/1.0/rights/\"{attrs}>{body}</rdf:Description>\n \
+</rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>\n"
+    ))
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+
+    #[test]
+    fn export_packet_fields() {
+        let rl = RatingLabel { rating: Some(4), label: Some("Select".into()) };
+        let x = export_packet(Some(&rl), "© 小日子寫真館 <2026>").unwrap();
+        assert_eq!(parse(&x), rl);
+        assert!(x.contains("© 小日子寫真館 &lt;2026&gt;"));
+        assert!(x.contains("xmpRights:Marked=\"True\""));
+        assert!(export_packet(None, "  ").is_none());
+    }
+}

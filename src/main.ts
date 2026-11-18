@@ -20,6 +20,7 @@ import {
 import { Grid } from "./grid";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { BatchRename } from "./rename";
+import { Exporter } from "./exporter";
 import { FolderTree } from "./foldertree";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
 import { Cull, Analysis, drawFaces, contentRect } from "./cull";
@@ -998,6 +999,10 @@ document.addEventListener("keydown", (ev) => {
 
   // 對話框開著時，鍵盤只用來關閉它（不要誤評分背景的照片）
   if (!ctxMenu.classList.contains("hidden") && k === "Escape") return ev.preventDefault(), hideMenu();
+  if (exporter.isOpen) {
+    if (k === "Escape") exporter.close();
+    return;
+  }
   if (batchRename.isOpen || !renameDialog.classList.contains("hidden") || !$("label-dialog").classList.contains("hidden")) {
     if (k === "Escape") {
       batchRename.close();
@@ -1009,6 +1014,7 @@ document.addEventListener("keydown", (ev) => {
   }
   if (k === "F2" && !S.loupe && !S.compare.length && !slideshow.active) return ev.preventDefault(), openRename();
   if (mod && ev.shiftKey && k.toLowerCase() === "r") return ev.preventDefault(), openBatchRename();
+  if (mod && ev.shiftKey && k.toLowerCase() === "e") return ev.preventDefault(), openExport();
   if (mod && ev.shiftKey && k.toLowerCase() === "g") return ev.preventDefault(), focusPath();
 
   if (!slideDialog.classList.contains("hidden")) {
@@ -1411,6 +1417,9 @@ on<string>("menu", (e) => {
     case "batch-rename":
       openBatchRename();
       break;
+    case "export":
+      openExport();
+      break;
     case "goto":
       focusPath();
       break;
@@ -1504,6 +1513,7 @@ function showCellMenu(index: number, ev: MouseEvent) {
     ["reveal", isMac ? "在 Finder 中顯示" : "在檔案總管中顯示"],
     ["rename", "重新命名…", "F2"],
     ["batch", n > 1 ? `批次重新命名 ${n} 張…` : "批次重新命名…", "⇧⌘R"],
+    ["export", n > 1 ? `影像轉存 ${n} 張…` : "影像轉存…", "⇧⌘E"],
     ["-", ""],
     ["copy", n > 1 ? `複製 ${n} 張到…` : "複製到…"],
     ["move", n > 1 ? `移動 ${n} 張到…` : "移動到…"],
@@ -1529,6 +1539,7 @@ ctxMenu.addEventListener("click", (ev) => {
   if (a === "reveal") api.revealItem(S.session, S.focus).catch((e) => toast(`無法開啟：${e}`));
   else if (a === "rename") openRename();
   else if (a === "batch") openBatchRename();
+  else if (a === "export") openExport();
   else if (a === "copy") void transfer("copy");
   else if (a === "move") void transfer("move");
   else if (a === "trash") void deleteTargets();
@@ -1619,6 +1630,34 @@ function openBatchRename() {
   batchRename.open();
 }
 $("btn-batch-rename").addEventListener("click", openBatchRename);
+
+// ---------------------------------------------------------------- 影像轉存
+
+const exporter = new Exporter($("export-dialog"), {
+  session: () => S.session,
+  selectedIds: () => S.view.filter((it) => S.selected.has(it.id)).map((it) => it.id),
+  currentDir: () => S.dir,
+  toast: (m) => toast(m),
+  done: (r) => {
+    const dir = r.dirs[0];
+    const more = r.dirs.length > 1 ? `（共 ${r.dirs.length} 個資料夾）` : dir ? `到「${folderName(dir)}」` : "";
+    notify(
+      `已轉存 ${r.done} 張${more}${r.failed.length ? `，${r.failed.length} 張失敗` : ""}`,
+      dir ? openDirAction(dir) : undefined,
+      r.failed.length ? Math.max(8000, toastSeconds() * 1000) : undefined,
+    );
+    if (r.failed.length) {
+      console.warn(r.failed);
+      if (!r.failed.every((f) => f.endsWith("已取消"))) toast(`轉存失敗：${r.failed.slice(0, 3).join("；")}`, 10000);
+    }
+  },
+});
+
+function openExport() {
+  if (S.loupe || S.compare.length || slideshow.active) return;
+  exporter.open();
+}
+$("btn-export").addEventListener("click", openExport);
 
 // ---------------------------------------------------------------- 標籤名稱設定（與 Bridge 一致）
 
