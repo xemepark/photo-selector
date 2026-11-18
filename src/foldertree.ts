@@ -137,7 +137,14 @@ export class FolderTree {
       }
     }
     this.render();
-    this.el.querySelector<HTMLElement>(".tree-row.current")?.scrollIntoView({ block: "nearest" });
+    // 只捲動資料夾樹本身（不用 scrollIntoView，否則整個側欄也會被捲到最下面）
+    const row = this.el.querySelector<HTMLElement>(".tree-row.current");
+    if (row) {
+      const top = row.getBoundingClientRect().top - this.el.getBoundingClientRect().top + this.el.scrollTop;
+      const bottom = top + row.offsetHeight;
+      if (top < this.el.scrollTop) this.el.scrollTop = top - 4;
+      else if (bottom > this.el.scrollTop + this.el.clientHeight) this.el.scrollTop = bottom - this.el.clientHeight + 4;
+    }
   }
 
   private find(path: string, ns = [...this.favs, ...this.vols]): Node | undefined {

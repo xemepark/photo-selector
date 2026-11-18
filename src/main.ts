@@ -1125,6 +1125,10 @@ document.addEventListener("keydown", (ev) => {
 
   // 對話框開著時，鍵盤只用來關閉它（不要誤評分背景的照片）
   if (!ctxMenu.classList.contains("hidden") && k === "Escape") return ev.preventDefault(), hideMenu();
+  if (!settingsDialog.classList.contains("hidden")) {
+    if (k === "Escape") settingsDialog.classList.add("hidden"), gridEl.focus();
+    return;
+  }
   if (exporter.isOpen) {
     if (k === "Escape") exporter.close();
     return;
@@ -1794,6 +1798,18 @@ function openExport() {
 }
 $("btn-export").addEventListener("click", openExport);
 
+// ---------------------------------------------------------------- 系統設定
+
+const settingsDialog = $("settings-dialog");
+$("btn-settings").addEventListener("click", () => settingsDialog.classList.remove("hidden"));
+$("settings-close").addEventListener("click", () => {
+  settingsDialog.classList.add("hidden");
+  gridEl.focus();
+});
+settingsDialog.addEventListener("mousedown", (e) => {
+  if (e.target === settingsDialog) settingsDialog.classList.add("hidden");
+});
+
 // ---------------------------------------------------------------- 標籤名稱設定（與 Bridge 一致）
 
 const labelDialog = $("label-dialog");
@@ -1831,6 +1847,7 @@ labelDialog.addEventListener("input", (e) => {
   }
 });
 $("btn-label-names").addEventListener("click", () => {
+  settingsDialog.classList.add("hidden");
   renderLabelDialog(getLabelNames());
   labelDialog.classList.remove("hidden");
 });

@@ -367,3 +367,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .export-box .ex-fmt.off .sub, .export-box .ex-fmt.off .ex-fmt-right { opacity: 0.45; }
 .export-box .ex-copy input { flex: 1; }
 .export-box input:disabled { opacity: 0.45; }
+
+/* ---------------------------------------------------------------- 系統設定 */
+.settings-form { gap: 12px; }
+.settings-form > label { color: var(--text); }
+.settings-form input[type="number"] { width: 64px; }
+.settings-row { display: flex; align-items: center; gap: 10px; }
+.settings-row span { flex: 1; }

@@ -42,20 +42,16 @@
           <div class="actions">
             <button id="btn-copy">複製選取項目到…</button>
             <button id="btn-move">移動選取項目到…</button>
-            <label class="tool check" title="按 delete 鍵刪除照片前先跳出確認"><input id="confirm-delete" type="checkbox" checked /> 刪除照片前先確認</label>
-            <label class="tool check" title="選取縮圖後直接拖到 Finder、LINE、瀏覽器、Photoshop 等其他程式。RAW+JPEG 的照片預設只拖出 JPEG，勾選後連 RAW 一起拖出"><input id="drag-raw" type="checkbox" /> 拖曳到其他程式時包含 RAW</label>
-            <label class="tool" title="複製 / 移動完成後，提示訊息停留在畫面上的秒數">提示訊息停留
-              <input id="toast-seconds" type="number" min="1" max="60" step="1" /> 秒</label>
-            <button id="btn-label-names" title="色彩標籤寫入檔案時使用的名稱，需與 Bridge 偏好設定中的標籤名稱一致">標籤名稱（與 Bridge 一致）…</button>
+            <button id="btn-settings" title="刪除確認、拖曳、提示訊息、標籤名稱等設定">⚙ 系統設定…</button>
           </div>
-        </section>
-        <section>
-          <h3>資料夾 <button id="tree-refresh" class="link" title="重新整理資料夾樹（新增資料夾、插上外接硬碟後）">↻ 重新整理</button></h3>
-          <div id="folder-tree" class="folder-tree"></div>
         </section>
         <section>
           <h3>篩選 <button id="btn-clear-filter" class="link">清除</button></h3>
           <div id="filters"></div>
+        </section>
+        <section>
+          <h3>資料夾 <button id="tree-refresh" class="link" title="重新整理資料夾樹（新增資料夾、插上外接硬碟後）">↻ 重新整理</button></h3>
+          <div id="folder-tree" class="folder-tree"></div>
         </section>
       </aside>
       <div id="side-resizer" title="拖曳調整欄寬（雙擊恢復預設）"></div>
@@ -162,6 +158,27 @@
           <span id="ss-summary" class="muted"></span>
           <button id="ss-cancel">取消</button>
           <button id="ss-go" class="primary">開始播放</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="settings-dialog" class="modal hidden">
+      <div class="modal-box">
+        <h2>系統設定</h2>
+        <div class="form settings-form">
+          <label class="check" title="按 delete 鍵刪除照片前先跳出確認"><input id="confirm-delete" type="checkbox" checked /> 刪除照片前先確認</label>
+          <label class="check" title="RAW+JPEG 的照片預設只拖出 JPEG，勾選後連 RAW 一起拖出"><input id="drag-raw" type="checkbox" /> 拖曳到其他程式時包含 RAW</label>
+          <label title="複製 / 移動 / 轉存完成後，提示訊息停留在畫面上的秒數">提示訊息停留
+            <input id="toast-seconds" type="number" min="1" max="60" step="1" /> 秒</label>
+          <div class="settings-row">
+            <span>色彩標籤名稱</span>
+            <button id="btn-label-names" title="色彩標籤寫入檔案時使用的名稱，需與 Bridge 偏好設定中的標籤名稱一致">標籤名稱（與 Bridge 一致）…</button>
+          </div>
+        </div>
+        <p class="muted small">設定會立即套用並自動儲存。</p>
+        <div class="modal-actions">
+          <span></span>
+          <button id="settings-close" class="primary">完成</button>
         </div>
       </div>
     </div>
