@@ -51,6 +51,27 @@ export const ZERO: EditParams = {
 
 const KEYS = Object.keys(ZERO) as Key[];
 
+const LABEL_OF = Object.fromEntries(SLIDERS.flatMap((g) => g.items.map((s) => [s.key, s.label]))) as Record<Key, string>;
+
+/** 上次同步時勾選的項目（預設全部） */
+function loadSyncFields(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem("editSyncFields") ?? "null");
+    if (Array.isArray(v) && v.length) return v.filter((k) => (KEYS as string[]).includes(k));
+  } catch {
+    /* ignore */
+  }
+  return [...KEYS];
+}
+
+function saveSyncFields(f: string[]) {
+  try {
+    localStorage.setItem("editSyncFields", JSON.stringify(f));
+  } catch {
+    /* ignore */
+  }
+}
+
 export function isIdentity(p: EditParams) {
   return KEYS.every((k) => Math.abs(p[k]) < 1e-4);
 }
@@ -119,8 +140,8 @@ function wbGains(p: EditParams): [number, number, number] {
 export interface EditorHost {
   session(): number;
   toast(msg: string): void;
-  /** 存檔後通知（更新縮圖與「已調整」標記） */
-  saved(ids: number[], params: EditParams): void;
+  /** 存檔後通知（更新縮圖與「已調整」標記）：[id, 是否還有調整] */
+  saved(results: [number, boolean][]): void;
   /** 編輯中的照片換了（讓主畫面的焦點跟著） */
   focus(id: number): void;
 }
@@ -162,7 +183,14 @@ export class Editor {
     this.q("#ed-before").addEventListener("click", () => this.toggleBefore());
     this.q("#ed-prev").addEventListener("click", () => void this.go(-1));
     this.q("#ed-next").addEventListener("click", () => void this.go(1));
-    this.q("#ed-sync").addEventListener("click", () => void this.syncToSelection());
+    this.q("#ed-sync").addEventListener("click", () => this.openSync());
+    this.q("#ed-sync-go").addEventListener("click", () => void this.syncToSelection());
+    this.q("#ed-sync-cancel").addEventListener("click", () => this.q("#ed-syncbox").classList.add("hidden"));
+    this.q("#ed-syncbox").addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLElement>("[data-sync-all]");
+      if (b) this.onSyncChange(b as unknown as HTMLInputElement);
+    });
+    this.q("#ed-syncbox").addEventListener("change", (e) => this.onSyncChange(e.target as HTMLInputElement));
     this.q("#ed-cancel").addEventListener("click", () => this.close(false));
     this.q("#ed-done").addEventListener("click", () => void this.close(true));
     new ResizeObserver(() => this.draw()).observe(this.q("#ed-stage"));
@@ -205,7 +233,19 @@ export class Editor {
           <button id="ed-before" title="按 \\ 切換調整前 / 調整後">調整前 / 後（\\）</button>
           <button id="ed-reset" title="全部恢復為 0">重設</button>
         </div>
-        <button id="ed-sync" class="ed-sync" title="把目前的設定套用到所有選取的照片"></button>
+        <button id="ed-sync" class="ed-sync" title="把目前的設定套用到所有選取的照片，可勾選只套用某幾項"></button>
+        <div id="ed-syncbox" class="ed-syncbox hidden">
+          <div id="ed-sync-title" class="ed-sync-title"></div>
+          <div class="ed-sync-quick"><button data-sync-all="1" class="link">全選</button><button data-sync-all="0" class="link">全不選</button></div>
+          ${SLIDERS.map(
+            (g) => `<div class="ed-sync-group">
+              <label class="check grp"><input type="checkbox" data-sync-group="${g.group}" /> ${g.group}</label>
+              ${g.items.map((s) => `<label class="check"><input type="checkbox" data-sync="${s.key}" data-group="${g.group}" /> ${s.label}</label>`).join("")}
+            </div>`,
+          ).join("")}
+          <p class="muted small">沒勾選的項目，每張照片保留各自原本的值。</p>
+          <div class="ed-sync-actions"><button id="ed-sync-cancel">取消</button><button id="ed-sync-go" class="primary"></button></div>
+        </div>
         <p class="muted small">調整不會改動原始影像，只把設定存在檔案的中繼資料裡；切換照片或按「完成」時自動儲存。拖曳到其他程式的是原檔（未調整）；要輸出調整後的照片請用「影像轉存」。</p>
         <div class="ed-foot">
           <button id="ed-cancel" title="放棄這張照片尚未儲存的變更（Esc）">取消</button>
@@ -283,6 +323,7 @@ export class Editor {
     sync.textContent = `套用到所有選取的照片（${n} 張）`;
     sync.classList.toggle("hidden", n < 2);
     this.setBefore(false);
+    this.q("#ed-syncbox").classList.add("hidden");
     try {
       this.saved = { ...ZERO, ...(await api.getEdit(this.host.session(), it.id)) };
     } catch {
@@ -396,10 +437,10 @@ export class Editor {
     this.setBefore(!this.bypass);
   }
 
-  private async save(ids: number[], params: EditParams) {
-    const r = await api.saveEdit(this.host.session(), ids, params);
+  private async save(ids: number[], params: EditParams, fields: string[] | null = null) {
+    const r = await api.saveEdit(this.host.session(), ids, params, fields);
     if (r.failed.length) this.host.toast(`有 ${r.failed.length} 張無法儲存調整：${r.failed[0]}`);
-    this.host.saved(ids, params);
+    this.host.saved(r.edited);
   }
 
   /** 有改過才存 */
@@ -423,14 +464,62 @@ export class Editor {
     await this.show();
   }
 
+  /** 「套用到所有選取的照片」：先選要同步哪些項目 */
+  private openSync() {
+    if (this.selection.length < 2) return;
+    const box = this.q("#ed-syncbox");
+    const chosen = loadSyncFields();
+    box.querySelectorAll<HTMLInputElement>("input[data-sync]").forEach((i) => {
+      i.checked = chosen.includes(i.dataset.sync!);
+    });
+    this.q("#ed-sync-title").textContent = `要套用到選取的 ${this.selection.length} 張照片的項目`;
+    this.updateSyncUi();
+    box.classList.remove("hidden");
+    box.scrollIntoView({ block: "nearest" });
+  }
+
+  private syncFields(): string[] {
+    return [...this.el.querySelectorAll<HTMLInputElement>("input[data-sync]")].filter((i) => i.checked).map((i) => i.dataset.sync!);
+  }
+
+  private updateSyncUi() {
+    const n = this.syncFields().length;
+    const go = this.q<HTMLButtonElement>("#ed-sync-go");
+    go.disabled = n === 0;
+    go.textContent = n === KEYS.length ? "全部套用" : `套用勾選的 ${n} 項`;
+    // 群組勾選框：全勾 / 部分 / 全不勾
+    this.el.querySelectorAll<HTMLInputElement>("input[data-sync-group]").forEach((g) => {
+      const items = [...this.el.querySelectorAll<HTMLInputElement>(`input[data-sync][data-group="${g.dataset.syncGroup}"]`)];
+      const on = items.filter((i) => i.checked).length;
+      g.checked = on === items.length;
+      g.indeterminate = on > 0 && on < items.length;
+    });
+  }
+
+  private onSyncChange(t: HTMLInputElement) {
+    if (t.dataset.syncGroup) {
+      this.el.querySelectorAll<HTMLInputElement>(`input[data-sync][data-group="${t.dataset.syncGroup}"]`).forEach((i) => (i.checked = t.checked));
+    }
+    if (t.dataset.syncAll !== undefined) {
+      this.el.querySelectorAll<HTMLInputElement>("input[data-sync]").forEach((i) => (i.checked = t.dataset.syncAll === "1"));
+    }
+    this.updateSyncUi();
+  }
+
   private async syncToSelection() {
     const ids = this.selection;
-    if (ids.length < 2) return;
+    const fields = this.syncFields();
+    if (ids.length < 2 || !fields.length) return;
+    saveSyncFields(fields);
+    this.q("#ed-syncbox").classList.add("hidden");
     try {
-      const params = { ...this.p };
-      await this.save(ids, params);
-      this.saved = params;
-      this.host.toast(`已把調整套用到 ${ids.length} 張照片`);
+      // 目前這張先完整存檔（包含沒勾選的項目），其他照片只覆寫勾選的項目
+      await this.saveCurrent();
+      const others = ids.filter((id) => id !== this.item.id);
+      const all = fields.length === KEYS.length;
+      await this.save(others, { ...this.p }, all ? null : fields);
+      const names = fields.map((f) => LABEL_OF[f as Key]).join("、");
+      this.host.toast(all ? `已把全部調整套用到 ${ids.length} 張照片` : `已把「${names}」套用到 ${ids.length} 張照片，其他設定保留各自的值`);
     } catch (e) {
       this.host.toast(`無法套用：${e}`);
     }
@@ -461,7 +550,11 @@ export class Editor {
     const t = ev.target as HTMLElement;
     // 焦點在滑桿或數字欄時，方向鍵用來微調數值
     const typing = t.tagName === "INPUT";
-    if (ev.key === "Escape") return void this.close(false), true;
+    if (ev.key === "Escape") {
+      const box = this.q("#ed-syncbox");
+      if (!box.classList.contains("hidden")) return box.classList.add("hidden"), true;
+      return void this.close(false), true;
+    }
     if (ev.key === "Enter" && !typing) return void this.close(true), true;
     if (typing) return false;
     if (ev.key === "\\") return this.toggleBefore(), true;

@@ -84,6 +84,22 @@ impl Params {
         Params::from_values(v)
     }
 
+    /// 欄位名稱（與前端 / serde 相同），順序與 values() 相同
+    pub const KEYS: [&'static str; 10] =
+        ["temp", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "vibrance", "saturation"];
+
+    /// 只把 `fields` 列出的項目換成 `src` 的值，其餘保留自己的
+    pub fn merged(&self, src: &Params, fields: &[String]) -> Params {
+        let mut v = self.values();
+        let s = src.values();
+        for (i, k) in Self::KEYS.iter().enumerate() {
+            if fields.iter().any(|f| f == k) {
+                v[i] = s[i];
+            }
+        }
+        Params::from_values(v).clamped()
+    }
+
     pub fn is_identity(&self) -> bool {
         self.values().iter().all(|v| v.abs() < 1e-4)
     }
@@ -314,6 +330,20 @@ mod tests {
         }
         assert_eq!(Params::from_xmp(&xml), None);
         assert!(!xml.contains("sd:"));
+    }
+
+    #[test]
+    fn merge_only_selected_fields() {
+        let mine = Params { exposure: -1.0, contrast: 40.0, temp: 5.0, ..Default::default() };
+        let src = Params { exposure: 1.5, contrast: 0.0, saturation: 20.0, ..Default::default() };
+        let m = mine.merged(&src, &["exposure".into(), "saturation".into()]);
+        assert_eq!(m.exposure, 1.5);
+        assert_eq!(m.saturation, 20.0);
+        assert_eq!(m.contrast, 40.0); // 沒勾的保留
+        assert_eq!(m.temp, 5.0);
+        // 全勾 = 完全一樣
+        let all: Vec<String> = Params::KEYS.iter().map(|k| k.to_string()).collect();
+        assert_eq!(mine.merged(&src, &all), src);
     }
 
     #[test]

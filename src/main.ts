@@ -23,7 +23,7 @@ import { Grid } from "./grid";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { BatchRename } from "./rename";
 import { Exporter } from "./exporter";
-import { Editor, isIdentity } from "./editor";
+import { Editor } from "./editor";
 import { FolderTree } from "./foldertree";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
 import { Cull, Analysis, drawFaces, contentRect } from "./cull";
@@ -1799,13 +1799,12 @@ const editor = new Editor($("editor"), {
       renderStatus();
     }
   },
-  saved: (ids, params) => {
-    const edited = !isIdentity(params);
-    for (const id of ids) {
+  saved: (results) => {
+    for (const [id, edited] of results) {
       const m = S.meta.get(id);
       if (m) m.edited = edited;
     }
-    grid.reloadThumbs(new Set(ids));
+    grid.reloadThumbs(new Set(results.map(([id]) => id)));
     grid.refresh();
   },
 });

@@ -166,18 +166,40 @@ async fn get_edit(core: CoreState<'_>, session: u64, id: u32) -> Result<edit::Pa
     tauri::async_runtime::spawn_blocking(move || edit::load(&it).unwrap_or_default()).await.map_err(|e| e.to_string())
 }
 
-/// 儲存調整設定到這些照片（寫入方式與評等相同），並丟掉舊的縮圖 / 預覽快取
+#[derive(Serialize)]
+struct EditSaveResult {
+    done: usize,
+    failed: Vec<String>,
+    /// 存檔後每張照片是否還有調整（給前端更新「調整」標記）
+    edited: Vec<(u32, bool)>,
+}
+
+/// 儲存調整設定到這些照片（寫入方式與評等相同），並丟掉舊的縮圖 / 預覽快取。
+/// `fields` 有值時只覆寫列出的項目（例如只同步曝光），每張照片其他的設定保留。
 #[tauri::command]
-async fn save_edit(core: CoreState<'_>, session: u64, ids: Vec<u32>, params: edit::Params) -> Result<ops::TransferResult, String> {
+async fn save_edit(
+    core: CoreState<'_>,
+    session: u64,
+    ids: Vec<u32>,
+    params: edit::Params,
+    fields: Option<Vec<String>>,
+) -> Result<EditSaveResult, String> {
     let sess = core.session(session)?;
     let core = core.inner().clone();
-    let props = params.clamped().xmp_props();
+    let params = params.clamped();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut res = ops::TransferResult::default();
+        let mut res = EditSaveResult { done: 0, failed: vec![], edited: vec![] };
         for id in ids {
             let Some(it) = sess.items.get(id as usize) else { continue };
-            match write_props(it, &props) {
-                Ok(()) => res.done += 1,
+            let p = match &fields {
+                Some(f) => edit::load(it).unwrap_or_default().merged(&params, f),
+                None => params,
+            };
+            match write_props(it, &p.xmp_props()) {
+                Ok(()) => {
+                    res.done += 1;
+                    res.edited.push((id, !p.is_identity()));
+                }
                 Err(e) => res.failed.push(e),
             }
             core.forget(it);

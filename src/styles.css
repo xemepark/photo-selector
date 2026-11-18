@@ -169,7 +169,7 @@ h3 {
 
 .toast {
   position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
-  background: #333338; border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; z-index: 20;
+  background: #333338; border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; z-index: 40; /* 高於調整視窗（30）與對話框（25） */
   box-shadow: 0 6px 20px #0008;
 }
 
@@ -402,3 +402,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 .ed-foot { display: flex; gap: 8px; margin-top: auto; }
 .ed-foot button { flex: 1; }
 .badge.edited { background: #3b6fd666; }
+
+.ed-syncbox { border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.ed-syncbox.hidden { display: none; }
+.ed-sync-title { font-weight: 600; font-size: 12px; }
+.ed-sync-quick { display: flex; gap: 12px; }
+.ed-sync-group { display: flex; flex-wrap: wrap; gap: 2px 12px; padding: 4px 0; border-top: 1px solid var(--line); }
+.ed-sync-group label { display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer; }
+.ed-sync-group label.grp { width: 100%; font-weight: 600; color: var(--muted); }
+.ed-sync-actions { display: flex; gap: 8px; }
+.ed-sync-actions button { flex: 1; }

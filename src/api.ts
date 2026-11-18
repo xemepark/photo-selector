@@ -123,8 +123,9 @@ export const api = {
     invoke<{ files: string[]; icon: string }>("drag_prepare", { session, ids, includeRaw }),
   forgetThumbs: (session: number, ids: number[]) => invoke<void>("forget_thumbs", { session, ids }),
   getEdit: (session: number, id: number) => invoke<EditParams>("get_edit", { session, id }),
-  saveEdit: (session: number, ids: number[], params: EditParams) =>
-    invoke<TransferResult>("save_edit", { session, ids, params }),
+  /** fields 有值時只覆寫這些項目（同步部分設定），其他保留各自的值 */
+  saveEdit: (session: number, ids: number[], params: EditParams, fields: string[] | null = null) =>
+    invoke<{ done: number; failed: string[]; edited: [number, boolean][] }>("save_edit", { session, ids, params, fields }),
   fileInfo: (session: number, id: number) => invoke<FileInfo>("file_info", { session, id }),
   exportImages: (session: number, ids: number[], options: ExportOptions) =>
     invoke<ExportResult>("export_images", { session, ids, options }),
