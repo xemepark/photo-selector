@@ -168,6 +168,7 @@
         <h2>系統設定</h2>
         <div class="form settings-form">
           <label class="check" title="按 delete 鍵刪除照片前先跳出確認"><input id="confirm-delete" type="checkbox" checked /> 刪除照片前先確認</label>
+          <label class="check" title="有用「調整」改過的照片，複製 / 移動到其他資料夾時輸出已套用調整的檔案（JPEG 仍是 JPEG，保留 EXIF、星等、標籤）；移動時原本未調整的原檔會移到垃圾桶。只有 RAW 的照片無法寫入調整，會照原樣複製並帶著調整設定。"><input id="transfer-bake" type="checkbox" checked /> 複製 / 移動時套用調整</label>
           <label class="check" title="RAW+JPEG 的照片預設只拖出 JPEG，勾選後連 RAW 一起拖出"><input id="drag-raw" type="checkbox" /> 拖曳到其他程式時包含 RAW</label>
           <label title="複製 / 移動 / 轉存完成後，提示訊息停留在畫面上的秒數">提示訊息停留
             <input id="toast-seconds" type="number" min="1" max="60" step="1" /> 秒</label>

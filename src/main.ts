@@ -757,6 +757,10 @@ function moveFocus(delta: number, extend = false) {
 /** 評分 / 標籤要套用的對象 */
 // ---------------------------------------------------------------- 刪除（移到垃圾桶）
 
+const transferBake = $<HTMLInputElement>("transfer-bake");
+transferBake.checked = storage("transferBake", true);
+transferBake.addEventListener("change", () => store("transferBake", transferBake.checked));
+
 const confirmDelete = $<HTMLInputElement>("confirm-delete");
 confirmDelete.checked = storage("confirmDelete", true);
 confirmDelete.addEventListener("change", () => store("confirmDelete", confirmDelete.checked));
@@ -1066,10 +1070,15 @@ async function transfer(mode: "copy" | "move") {
   if (!ids.length) return toast("沒有選取任何照片");
   const dest = await openDialog({ directory: true, title: mode === "copy" ? "複製到…" : "移動到…" });
   if (typeof dest !== "string") return;
-  if (mode === "move" && !(await ask(`確定要把 ${ids.length} 個項目（含配對的 RAW/JPEG 與 .xmp）移動到\n${dest}？`, { title: "移動檔案", okLabel: "確定", cancelLabel: "取消" })))
+  const editedCount = transferBake.checked ? ids.filter((id) => S.meta.get(id)?.edited).length : 0;
+  const bakeNote = editedCount
+    ? `\n\n其中 ${editedCount} 張有調整過：會在目的地輸出套用調整後的照片${mode === "move" ? "，原本未調整的原檔移到垃圾桶" : ""}。`
+    : "";
+  if (mode === "move" && !(await ask(`確定要把 ${ids.length} 個項目（含配對的 RAW/JPEG 與 .xmp）移動到\n${dest}？${bakeNote}`, { title: "移動檔案", okLabel: "確定", cancelLabel: "取消" })))
     return;
+  if (editedCount) toast(`正在輸出 ${editedCount} 張套用調整後的照片…`, 60000);
   try {
-    const r = await api.transfer(S.session, ids, dest, mode);
+    const r = await api.transfer(S.session, ids, dest, mode, transferBake.checked);
     notify(
       `${mode === "copy" ? "已複製" : "已移動"} ${r.done} 個項目到「${folderName(dest)}」${r.failed.length ? `，${r.failed.length} 個檔案失敗` : ""}`,
       r.done ? openDirAction(dest) : undefined,

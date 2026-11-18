@@ -110,8 +110,9 @@ export const api = {
   setViewport: (session: number, ids: number[]) => invoke<void>("set_viewport", { session, ids }),
   setRating: (session: number, ids: number[], rating: number) => invoke<void>("set_rating", { session, ids, rating }),
   setLabel: (session: number, ids: number[], label: string | null) => invoke<void>("set_label", { session, ids, label }),
-  transfer: (session: number, ids: number[], dest: string, mode: "copy" | "move") =>
-    invoke<TransferResult>("transfer", { session, ids, dest, mode }),
+  /** applyEdits：有調整的照片輸出「已套用調整」的檔案（移動時原檔移到垃圾桶） */
+  transfer: (session: number, ids: number[], dest: string, mode: "copy" | "move", applyEdits = true) =>
+    invoke<TransferResult>("transfer", { session, ids, dest, mode, applyEdits }),
   deleteItems: (session: number, ids: number[]) => invoke<TransferResult>("delete_items", { session, ids }),
   batchRename: (
     session: number,

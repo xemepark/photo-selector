@@ -1,3 +1,4 @@
+mod bake;
 mod blur;
 mod cache;
 mod core;
@@ -259,10 +260,18 @@ async fn transfer(
     ids: Vec<u32>,
     dest: String,
     mode: String,
+    apply_edits: Option<bool>,
 ) -> Result<ops::TransferResult, String> {
     let sess = core.session(session)?;
-    let items: Vec<_> = ids.iter().filter_map(|&i| sess.items.get(i as usize)).collect();
-    Ok(ops::transfer(&items, &PathBuf::from(dest), mode == "move"))
+    let items: Vec<scan::Item> = ids.iter().filter_map(|&i| sess.items.get(i as usize).cloned()).collect();
+    let bake = apply_edits.unwrap_or(true);
+    // 套用調整需要解碼、編碼整張照片，放到背景執行緒
+    tauri::async_runtime::spawn_blocking(move || {
+        let refs: Vec<&scan::Item> = items.iter().collect();
+        ops::transfer(&refs, &PathBuf::from(dest), mode == "move", bake)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// 選片分析專用的執行緒池：最多用一半的 CPU 核心，留給縮圖與全螢幕預覽，操作才不會卡

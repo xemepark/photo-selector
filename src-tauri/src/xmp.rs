@@ -174,7 +174,7 @@ pub fn update_jpeg_props(path: &Path, props: &[(&str, Option<String>)]) -> io::R
     update_jpeg_with(path, |x| apply_props(x, props))
 }
 
-fn apply_props(xml: &mut String, props: &[(&str, Option<String>)]) {
+pub fn apply_props(xml: &mut String, props: &[(&str, Option<String>)]) {
     if !xml.contains("<rdf:Description") {
         *xml = template();
     }

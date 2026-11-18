@@ -95,10 +95,10 @@ fn jpeg_quality(q: u8) -> u8 {
 }
 
 /// 解碼後的來源影像與附帶資訊
-struct Source {
-    img: DynamicImage,
-    icc: Option<Vec<u8>>,
-    exif: Option<Vec<u8>>,
+pub(crate) struct Source {
+    pub img: DynamicImage,
+    pub icc: Option<Vec<u8>>,
+    pub exif: Option<Vec<u8>>,
 }
 
 /// 框內縮放後的長邊（不放大）。回傳 None = 不需縮小
@@ -127,7 +127,7 @@ fn decode_min_edge(dims: Option<(u32, u32)>, formats: &[FormatOptions]) -> u32 {
     need.saturating_mul(5) / 4
 }
 
-fn load(item: &Item, formats: &[FormatOptions]) -> Result<Source> {
+pub(crate) fn load(item: &Item, formats: &[FormatOptions]) -> Result<Source> {
     let f = item.display();
     let file = File::open(&f.path)?;
     let data = unsafe { memmap2::Mmap::map(&file)? };
@@ -204,7 +204,7 @@ fn convert_to_srgb(rgb: &mut RgbImage, profile: &ColorProfile) -> Result<()> {
 // ---------------------------------------------------------------- EXIF
 
 /// 把 EXIF 的方向改成 1（影像已經轉正）。exif 從 TIFF 檔頭開始。
-fn reset_orientation(exif: &mut [u8]) {
+pub(crate) fn reset_orientation(exif: &mut [u8]) {
     let le = match exif.get(..2) {
         Some(b"II") => true,
         Some(b"MM") => false,
@@ -246,7 +246,7 @@ fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
         .unwrap()
 }
 
-fn write_jpeg(path: &Path, rgb: &RgbImage, q: u8, icc: Option<&[u8]>, exif: Option<&[u8]>, xmp: Option<&str>) -> Result<()> {
+pub(crate) fn write_jpeg(path: &Path, rgb: &RgbImage, q: u8, icc: Option<&[u8]>, exif: Option<&[u8]>, xmp: Option<&str>) -> Result<()> {
     let mut buf = Vec::with_capacity((rgb.width() * rgb.height() / 3) as usize);
     let mut enc = jpeg_encoder::Encoder::new(&mut buf, jpeg_quality(q));
     // 與 Photoshop 相同：品質 7 以上不做色度抽樣（4:4:4）
@@ -281,7 +281,7 @@ fn write_jpeg(path: &Path, rgb: &RgbImage, q: u8, icc: Option<&[u8]>, exif: Opti
     Ok(())
 }
 
-fn write_tiff(path: &Path, rgb: &RgbImage, lzw: bool, icc: Option<&[u8]>, xmp: Option<&str>) -> Result<()> {
+pub(crate) fn write_tiff(path: &Path, rgb: &RgbImage, lzw: bool, icc: Option<&[u8]>, xmp: Option<&str>) -> Result<()> {
     use tiff::encoder::{colortype::RGB8, Compression, TiffEncoder};
     use tiff::tags::Tag;
     let w = BufWriter::new(File::create(path)?);
@@ -297,7 +297,7 @@ fn write_tiff(path: &Path, rgb: &RgbImage, lzw: bool, icc: Option<&[u8]>, xmp: O
     Ok(())
 }
 
-fn write_png(path: &Path, rgb: &RgbImage, icc: Option<&[u8]>) -> Result<()> {
+pub(crate) fn write_png(path: &Path, rgb: &RgbImage, icc: Option<&[u8]>) -> Result<()> {
     use image::ImageEncoder;
     let w = BufWriter::new(File::create(path)?);
     let mut enc = image::codecs::png::PngEncoder::new(w);

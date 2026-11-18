@@ -126,7 +126,7 @@ fn friendly_trash_error(e: &str) -> String {
     }
 }
 
-pub fn transfer(items: &[&Item], dest: &Path, mv: bool) -> TransferResult {
+pub fn transfer(items: &[&Item], dest: &Path, mv: bool, bake: bool) -> TransferResult {
     let mut res = TransferResult::default();
     if let Err(e) = fs::create_dir_all(dest) {
         res.failed.push(format!("{}：{e}", dest.display()));
@@ -135,15 +135,36 @@ pub fn transfer(items: &[&Item], dest: &Path, mv: bool) -> TransferResult {
     for it in items {
         let files = it.all_paths();
         let targets = target_names(&files, dest);
+        // 有調整的 JPEG / 一般影像：在目的地輸出「已套用調整」的新檔案
+        let baked = bake && crate::bake::needs_bake(it);
+        let disp = it.display().path.clone();
         let mut ok = true;
         for (src, dst) in files.iter().zip(&targets) {
             if src.parent() == Some(dest) && !mv {
                 continue;
             }
-            let r = if mv { move_file(src, dst) } else { copy_preserving(src, dst) };
+            let r = if baked && *src == disp {
+                crate::bake::bake_to(it, dst).map(|_| ()).map_err(|e| io::Error::other(format!("{e:#}")))
+            } else if mv {
+                move_file(src, dst)
+            } else {
+                copy_preserving(src, dst)
+            };
             if let Err(e) = r {
                 ok = false;
                 res.failed.push(format!("{}：{e}", src.display()));
+            }
+        }
+        if baked && ok {
+            // RAW+JPEG：JPEG 已套用調整，附屬檔裡的調整設定移除（RAW 維持原樣），避免重複套用
+            if let Some(sc) = files.iter().zip(&targets).find(|(s, _)| s.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmp"))) {
+                crate::bake::strip_sidecar(sc.1);
+            }
+            // 移動：原本未調整的檔案移到垃圾桶（可以從垃圾桶救回）
+            if mv && disp.parent() != Some(dest) {
+                if let Err(e) = trash_paths(std::slice::from_ref(&disp)) {
+                    res.failed.push(format!("{}：已輸出調整後的照片，但原檔無法移到垃圾桶（{e}）", disp.display()));
+                }
             }
         }
         if ok {
@@ -151,6 +172,33 @@ pub fn transfer(items: &[&Item], dest: &Path, mv: bool) -> TransferResult {
         }
     }
     res
+}
+
+/// 把檔案移到垃圾桶（macOS 被隱私權保護擋下時改請 Finder 代勞）
+fn trash_paths(paths: &[PathBuf]) -> Result<(), String> {
+    #[allow(unused_mut)]
+    let mut ctx = trash::TrashContext::default();
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+    }
+    match ctx.delete_all(paths) {
+        Ok(()) => Ok(()),
+        #[allow(unused_variables)]
+        Err(e) => {
+            #[cfg(target_os = "macos")]
+            {
+                use trash::macos::{DeleteMethod, TrashContextExtMacos};
+                let left: Vec<PathBuf> = paths.iter().filter(|p| p.exists()).cloned().collect();
+                let mut finder = trash::TrashContext::default();
+                finder.set_delete_method(DeleteMethod::Finder);
+                return finder.delete_all(&left).map_err(|e2| friendly_trash_error(&format!("{e}；{e2}")));
+            }
+            #[allow(unreachable_code)]
+            Err(friendly_trash_error(&e.to_string()))
+        }
+    }
 }
 
 // ---------------------------------------------------------------- 重新命名（單張 / 批次）
@@ -376,4 +424,64 @@ fn open_with_system(target: &std::ffi::OsStr) -> io::Result<()> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut cmd = Command::new("xdg-open");
     cmd.arg(target).spawn().map(|_| ())
+}
+
+#[cfg(test)]
+mod transfer_bake_tests {
+    use super::*;
+    use crate::edit::Params;
+    use crate::xmp;
+    use image::{DynamicImage, RgbImage};
+
+    fn jpg(path: &Path, v: u8) {
+        let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(64, 48, image::Rgb([v, v, v])));
+        fs::write(path, crate::render::encode_jpeg(&img, 95).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn copy_and_move_apply_edits() {
+        let dir = std::env::temp_dir().join(format!("transfer-bake-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let (src, out_c, out_m) = (dir.join("src"), dir.join("copy"), dir.join("move"));
+        fs::create_dir_all(&src).unwrap();
+        jpg(&src.join("E.jpg"), 80); // 有調整
+        jpg(&src.join("P.jpg"), 80); // 沒調整
+        jpg(&src.join("R.JPG"), 80); // RAW+JPEG 配對、有調整
+        fs::write(src.join("R.NEF"), b"fake raw").unwrap();
+        let p = Params { exposure: 1.0, ..Default::default() };
+        xmp::update_jpeg_props(&src.join("E.jpg"), &p.xmp_props()).unwrap();
+        xmp::update_jpeg_props(&src.join("R.JPG"), &p.xmp_props()).unwrap();
+        xmp::update_props(&src.join("R.xmp"), &p.xmp_props()).unwrap();
+        let (items, _) = crate::scan::scan_dir(&src).unwrap();
+        let refs: Vec<&Item> = items.iter().collect();
+
+        // 複製：E、R 輸出變亮的 JPEG，P 原樣；RAW 原樣、附屬檔的調整移除；原檔都還在
+        let r = transfer(&refs, &out_c, false, true);
+        assert_eq!(r.done, 3, "{:?}", r.failed);
+        let bright = |p: &Path| image::open(p).unwrap().to_rgb8().get_pixel(5, 5)[0];
+        assert!(bright(&out_c.join("E.jpg")) > 110);
+        assert!(bright(&out_c.join("R.JPG")) > 110);
+        assert!(bright(&out_c.join("P.jpg")) < 90);
+        assert_eq!(fs::read(out_c.join("R.NEF")).unwrap(), b"fake raw");
+        assert!(!fs::read_to_string(out_c.join("R.xmp")).unwrap().contains("sd:"));
+        assert!(xmp::read_jpeg_xml(&out_c.join("E.jpg")).map_or(true, |x| !x.contains("sd:")));
+        assert!(src.join("E.jpg").exists() && src.join("R.NEF").exists());
+        // 目的地的照片不會被重複套用調整
+        let (copied, _) = crate::scan::scan_dir(&out_c).unwrap();
+        assert!(copied.iter().all(|i| crate::edit::load(i).is_none()));
+
+        // 關閉套用：原檔照搬（調整設定跟著走）
+        let out_raw = dir.join("raw");
+        transfer(&refs, &out_raw, false, false);
+        assert!(bright(&out_raw.join("E.jpg")) < 90);
+        assert!(xmp::read_jpeg_xml(&out_raw.join("E.jpg")).unwrap().contains("sd:Exposure"));
+
+        // 移動：只移動 E → 目的地是調整後的照片，原檔不在原處（進了垃圾桶）
+        let e: Vec<&Item> = items.iter().filter(|i| i.name == "E").collect();
+        let r = transfer(&e, &out_m, true, true);
+        assert_eq!(r.done, 1, "{:?}", r.failed);
+        assert!(bright(&out_m.join("E.jpg")) > 110);
+        assert!(!src.join("E.jpg").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
