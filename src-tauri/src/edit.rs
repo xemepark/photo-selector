@@ -1,5 +1,5 @@
 //! 簡易照片調整（仿 Camera Raw「基本」面板）：白平衡、曝光、對比、亮部、陰影、白色、黑色、
-//! 自然飽和度、飽和度。
+//! 自然飽和度、飽和度，以及點曲線（RGB）。
 //!
 //! - 非破壞性：設定存在 XMP（自訂命名空間 sd:），原始影像不動；RAW 寫附屬檔、JPEG 寫檔案內嵌 XMP，
 //!   RAW+JPEG 兩邊都寫（與評等相同）。
@@ -12,7 +12,7 @@ use image::{DynamicImage, RgbImage};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Params {
     /// 色溫 −100…100（負 = 偏藍、正 = 偏黃）
     pub temp: f32,
@@ -27,6 +27,90 @@ pub struct Params {
     pub blacks: f32,
     pub vibrance: f32,
     pub saturation: f32,
+    /// 點曲線（RGB，0–255 的 [輸入, 輸出]，依輸入排序）。空的 = 不套用
+    #[serde(default)]
+    pub curve: Vec<[f32; 2]>,
+}
+
+/// 曲線最多幾個點（與前端相同）
+const MAX_CURVE_POINTS: usize = 16;
+
+/// 整理曲線：數值限制在 0–255、依輸入排序、去掉重複；直線（沒有作用）回傳空的
+pub fn clean_curve(c: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut v: Vec<[f32; 2]> = c
+        .iter()
+        .filter(|p| p[0].is_finite() && p[1].is_finite())
+        .map(|p| [p[0].clamp(0.0, 255.0).round(), p[1].clamp(0.0, 255.0).round()])
+        .collect();
+    v.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    v.dedup_by(|b, a| a[0] == b[0]);
+    v.truncate(MAX_CURVE_POINTS);
+    if v.len() < 2 || v.iter().all(|p| (p[0] - p[1]).abs() < 0.5) && v[0][0] == 0.0 && v[v.len() - 1][0] == 255.0 {
+        return vec![];
+    }
+    v
+}
+
+/// 由曲線控制點算出 256 格查表（單調三次插值 Fritsch–Carlson；前端 editor.ts 用同一個演算法）
+pub fn curve_lut(c: &[[f32; 2]]) -> Option<[f32; 256]> {
+    if c.len() < 2 {
+        return None;
+    }
+    let n = c.len();
+    let xs: Vec<f32> = c.iter().map(|p| p[0]).collect();
+    let ys: Vec<f32> = c.iter().map(|p| p[1]).collect();
+    let mut d = vec![0f32; n - 1];
+    for i in 0..n - 1 {
+        d[i] = (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]);
+    }
+    let mut m = vec![0f32; n];
+    m[0] = d[0];
+    m[n - 1] = d[n - 2];
+    for i in 1..n - 1 {
+        m[i] = if d[i - 1] * d[i] <= 0.0 { 0.0 } else { (d[i - 1] + d[i]) / 2.0 };
+    }
+    for i in 0..n - 1 {
+        if d[i] == 0.0 {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+        } else {
+            let a = m[i] / d[i];
+            let b = m[i + 1] / d[i];
+            let h = a * a + b * b;
+            if h > 9.0 {
+                let t = 3.0 / h.sqrt();
+                m[i] = t * a * d[i];
+                m[i + 1] = t * b * d[i];
+            }
+        }
+    }
+    let mut lut = [0f32; 256];
+    let mut k = 0;
+    for (x, out) in lut.iter_mut().enumerate() {
+        let x = x as f32;
+        let y = if x <= xs[0] {
+            ys[0]
+        } else if x >= xs[n - 1] {
+            ys[n - 1]
+        } else {
+            while k < n - 2 && x > xs[k + 1] {
+                k += 1;
+            }
+            let h = xs[k + 1] - xs[k];
+            let t = (x - xs[k]) / h;
+            let (t2, t3) = (t * t, t * t * t);
+            (2.0 * t3 - 3.0 * t2 + 1.0) * ys[k] + (t3 - 2.0 * t2 + t) * h * m[k] + (-2.0 * t3 + 3.0 * t2) * ys[k + 1] + (t3 - t2) * h * m[k + 1]
+        };
+        *out = (y / 255.0).clamp(0.0, 1.0);
+    }
+    Some(lut)
+}
+
+fn lut_apply(lut: &[f32; 256], v: f32) -> f32 {
+    let x = v.clamp(0.0, 1.0) * 255.0;
+    let i = (x.floor() as usize).min(254);
+    let f = x - i as f32;
+    lut[i] * (1.0 - f) + lut[i + 1] * f
 }
 
 /// XMP 屬性名，順序與 Params::values() 相同
@@ -59,8 +143,9 @@ impl Params {
         ]
     }
 
-    fn from_values(v: [f32; 10]) -> Self {
+    fn from_values(v: [f32; 10], curve: Vec<[f32; 2]>) -> Self {
         Params {
+            curve,
             temp: v[0],
             tint: v[1],
             exposure: v[2],
@@ -74,34 +159,35 @@ impl Params {
         }
     }
 
-    /// 把數值限制在合理範圍（也擋掉 NaN）
-    pub fn clamped(self) -> Self {
+    /// 把數值限制在合理範圍（也擋掉 NaN），曲線整理過
+    pub fn clamped(&self) -> Self {
         let mut v = self.values();
         for (i, x) in v.iter_mut().enumerate() {
             let lim = if i == 2 { 5.0 } else { 100.0 };
             *x = if x.is_finite() { x.clamp(-lim, lim) } else { 0.0 };
         }
-        Params::from_values(v)
+        Params::from_values(v, clean_curve(&self.curve))
     }
 
     /// 欄位名稱（與前端 / serde 相同），順序與 values() 相同
-    pub const KEYS: [&'static str; 10] =
-        ["temp", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "vibrance", "saturation"];
+    pub const KEYS: [&'static str; 11] =
+        ["temp", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "vibrance", "saturation", "curve"];
 
     /// 只把 `fields` 列出的項目換成 `src` 的值，其餘保留自己的
     pub fn merged(&self, src: &Params, fields: &[String]) -> Params {
         let mut v = self.values();
         let s = src.values();
-        for (i, k) in Self::KEYS.iter().enumerate() {
+        for (i, k) in Self::KEYS.iter().take(10).enumerate() {
             if fields.iter().any(|f| f == k) {
                 v[i] = s[i];
             }
         }
-        Params::from_values(v).clamped()
+        let curve = if fields.iter().any(|f| f == "curve") { src.curve.clone() } else { self.curve.clone() };
+        Params::from_values(v, curve).clamped()
     }
 
     pub fn is_identity(&self) -> bool {
-        self.values().iter().all(|v| v.abs() < 1e-4)
+        self.values().iter().all(|v| v.abs() < 1e-4) && clean_curve(&self.curve).is_empty()
     }
 
     /// 要寫進 XMP 的屬性（0 的項目移除；全部 0 時連 sd:Version 一起移除）
@@ -112,6 +198,9 @@ impl Params {
             .zip(p.values())
             .map(|(k, v)| (*k, (v.abs() >= 1e-4).then(|| format!("{}", (v * 100.0).round() / 100.0))))
             .collect();
+        let curve = (!p.curve.is_empty())
+            .then(|| p.curve.iter().map(|q| format!("{},{}", q[0], q[1])).collect::<Vec<_>>().join(";"));
+        out.push(("sd:ToneCurve", curve));
         out.push(("sd:Version", (!p.is_identity()).then(|| "1".to_string())));
         out
     }
@@ -122,7 +211,17 @@ impl Params {
         for (i, k) in FIELDS.iter().enumerate() {
             v[i] = xmp::get_prop(xml, k).and_then(|s| s.parse().ok()).unwrap_or(0.0);
         }
-        let p = Params::from_values(v).clamped();
+        let curve: Vec<[f32; 2]> = xmp::get_prop(xml, "sd:ToneCurve")
+            .map(|s| {
+                s.split(';')
+                    .filter_map(|pt| {
+                        let (a, b) = pt.split_once(',')?;
+                        Some([a.trim().parse().ok()?, b.trim().parse().ok()?])
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let p = Params::from_values(v, curve).clamped();
         (!p.is_identity()).then_some(p)
     }
 }
@@ -194,7 +293,7 @@ pub fn tone(l: f32, p: &Params) -> f32 {
 }
 
 /// 調整一個像素（輸入輸出都是 0–1 的 sRGB 編碼值）
-pub fn pixel(rgb: [f32; 3], p: &Params, gains: &[f32; 3]) -> [f32; 3] {
+pub fn pixel(rgb: [f32; 3], p: &Params, gains: &[f32; 3], lut: Option<&[f32; 256]>) -> [f32; 3] {
     let ev = p.exposure.exp2();
     let mut c = [0f32; 3];
     for i in 0..3 {
@@ -215,6 +314,10 @@ pub fn pixel(rgb: [f32; 3], p: &Params, gains: &[f32; 3]) -> [f32; 3] {
     let mut out = [0f32; 3];
     for i in 0..3 {
         out[i] = linear_to_srgb((y + (c[i] - y) * k).max(0.0));
+        // 點曲線：在顯示用的 sRGB 數值上套用（與 Camera Raw / Photoshop 的 RGB 曲線相同）
+        if let Some(l) = lut {
+            out[i] = lut_apply(l, out[i]);
+        }
     }
     out
 }
@@ -226,12 +329,13 @@ pub fn apply_rgb(img: &mut RgbImage, p: &Params) {
     }
     let p = p.clamped();
     let gains = wb_gains(&p);
+    let lut = curve_lut(&p.curve);
     let w = img.width() as usize;
     img.as_mut()
         .par_chunks_mut(w * 3)
         .for_each(|row| {
             for px in row.chunks_exact_mut(3) {
-                let o = pixel([px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0], &p, &gains);
+                let o = pixel([px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0], &p, &gains, lut.as_ref());
                 px[0] = (o[0] * 255.0 + 0.5) as u8;
                 px[1] = (o[1] * 255.0 + 0.5) as u8;
                 px[2] = (o[2] * 255.0 + 0.5) as u8;
@@ -266,7 +370,7 @@ mod tests {
         let g = wb_gains(&p);
         for v in [0u8, 1, 17, 64, 128, 200, 254, 255] {
             let x = v as f32 / 255.0;
-            let o = pixel([x, x * 0.5, 1.0 - x], &p, &g);
+            let o = pixel([x, x * 0.5, 1.0 - x], &p, &g, None);
             assert!((o[0] * 255.0 - v as f32).abs() < 0.6, "{v} → {o:?}");
         }
         // 單純 tone 也要恆等
@@ -280,11 +384,11 @@ mod tests {
     fn exposure_brightens_and_darkens() {
         let mut p = Params::default();
         let g = wb_gains(&p);
-        let base = pixel([0.4, 0.4, 0.4], &p, &g)[0];
+        let base = pixel([0.4, 0.4, 0.4], &p, &g, None)[0];
         p.exposure = 1.0;
-        assert!(pixel([0.4, 0.4, 0.4], &p, &g)[0] > base + 0.1);
+        assert!(pixel([0.4, 0.4, 0.4], &p, &g, None)[0] > base + 0.1);
         p.exposure = -1.0;
-        assert!(pixel([0.4, 0.4, 0.4], &p, &g)[0] < base - 0.1);
+        assert!(pixel([0.4, 0.4, 0.4], &p, &g, None)[0] < base - 0.1);
     }
 
     #[test]
@@ -292,7 +396,7 @@ mod tests {
         for (field, amt) in [(3, 100.0), (3, -100.0), (4, -100.0), (4, 100.0), (5, 100.0), (5, -100.0), (6, 100.0), (7, -100.0)] {
             let mut v = [0f32; 10];
             v[field] = amt;
-            let p = Params::from_values(v);
+            let p = Params::from_values(v, vec![]);
             let mut prev = -1.0;
             for i in 0..=200 {
                 let y = tone(i as f32 / 200.0, &p);
@@ -305,14 +409,14 @@ mod tests {
     #[test]
     fn warm_temperature_adds_yellow() {
         let p = Params { temp: 50.0, ..Default::default() };
-        let o = pixel([0.5, 0.5, 0.5], &p, &wb_gains(&p));
+        let o = pixel([0.5, 0.5, 0.5], &p, &wb_gains(&p), None);
         assert!(o[0] > o[2]);
     }
 
     #[test]
     fn saturation_zero_is_gray() {
         let p = Params { saturation: -100.0, ..Default::default() };
-        let o = pixel([0.8, 0.3, 0.1], &p, &wb_gains(&p));
+        let o = pixel([0.8, 0.3, 0.1], &p, &wb_gains(&p), None);
         assert!((o[0] - o[1]).abs() < 1e-3 && (o[1] - o[2]).abs() < 1e-3);
     }
 
@@ -343,7 +447,44 @@ mod tests {
         assert_eq!(m.temp, 5.0);
         // 全勾 = 完全一樣
         let all: Vec<String> = Params::KEYS.iter().map(|k| k.to_string()).collect();
-        assert_eq!(mine.merged(&src, &all), src);
+        assert_eq!(mine.merged(&src, &all), src.clamped());
+    }
+
+    #[test]
+    fn curve_identity_and_lut() {
+        assert!(clean_curve(&[[0.0, 0.0], [255.0, 255.0]]).is_empty());
+        assert!(clean_curve(&[[0.0, 0.0], [128.0, 128.0], [255.0, 255.0]]).is_empty());
+        let s = clean_curve(&[[255.0, 255.0], [0.0, 0.0], [64.0, 50.0], [192.0, 210.0]]);
+        assert_eq!(s.len(), 4);
+        assert_eq!(s[1], [64.0, 50.0]); // 已排序
+        let lut = curve_lut(&s).unwrap();
+        assert!((lut[0] - 0.0).abs() < 1e-6 && (lut[255] - 1.0).abs() < 1e-6);
+        assert!((lut[64] * 255.0 - 50.0).abs() < 0.01);
+        assert!((lut[192] * 255.0 - 210.0).abs() < 0.01);
+        for i in 1..256 {
+            assert!(lut[i] >= lut[i - 1] - 1e-6, "S 曲線要單調");
+        }
+        // 曲線會改變像素；沒有其他調整時，曲線以外完全不動
+        let p = Params { curve: s.clone(), ..Default::default() };
+        assert!(!p.is_identity());
+        let o = pixel([64.0 / 255.0; 3], &p, &wb_gains(&p), Some(&lut));
+        assert!((o[0] * 255.0 - 50.0).abs() < 0.6);
+    }
+
+    #[test]
+    fn curve_xmp_roundtrip_and_merge() {
+        let p = Params { exposure: 0.5, curve: vec![[0.0, 10.0], [128.0, 140.0], [255.0, 245.0]], ..Default::default() };
+        let mut xml = String::from("<x:xmpmeta><rdf:RDF><rdf:Description rdf:about=\"\"/></rdf:RDF></x:xmpmeta>");
+        for (k, v) in p.xmp_props() {
+            crate::xmp::test_set_prop(&mut xml, k, v.as_deref());
+        }
+        assert!(xml.contains("sd:ToneCurve=\"0,10;128,140;255,245\""));
+        assert_eq!(Params::from_xmp(&xml), Some(p.clone()));
+        let other = Params { contrast: 30.0, ..Default::default() };
+        let m = other.merged(&p, &["curve".into()]);
+        assert_eq!(m.curve, p.curve);
+        assert_eq!(m.contrast, 30.0);
+        assert_eq!(m.exposure, 0.0);
     }
 
     #[test]

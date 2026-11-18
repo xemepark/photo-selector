@@ -193,7 +193,7 @@ async fn save_edit(
             let Some(it) = sess.items.get(id as usize) else { continue };
             let p = match &fields {
                 Some(f) => edit::load(it).unwrap_or_default().merged(&params, f),
-                None => params,
+                None => params.clone(),
             };
             match write_props(it, &p.xmp_props()) {
                 Ok(()) => {

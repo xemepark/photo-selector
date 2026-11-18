@@ -207,6 +207,12 @@ export class Grid {
     }
   }
 
+  /** 強制重新回報可見範圍（例如調整視窗關閉後，後端的可見清單被縮圖列換掉了） */
+  refreshViewport() {
+    this.lastViewportKey = "";
+    this.schedule();
+  }
+
   /** 重新載入縮圖（ids 省略 = 畫面上全部） */
   reloadThumbs(ids?: Set<number>) {
     for (const [, c] of this.cells) {

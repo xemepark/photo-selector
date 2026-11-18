@@ -38,6 +38,8 @@ export interface EditParams {
   blacks: number;
   vibrance: number;
   saturation: number;
+  /** 點曲線（RGB）：0–255 的 [輸入, 輸出]，空陣列 = 不套用 */
+  curve: [number, number][];
 }
 
 export interface DirInfo {

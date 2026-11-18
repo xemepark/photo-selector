@@ -1807,6 +1807,10 @@ const editor = new Editor($("editor"), {
     grid.reloadThumbs(new Set(results.map(([id]) => id)));
     grid.refresh();
   },
+  closed: () => {
+    grid.refreshViewport();
+    gridEl.focus();
+  },
 });
 
 /** 調整：選取多張時逐張調整選取的照片，否則可在目前顯示的所有照片間切換 */
