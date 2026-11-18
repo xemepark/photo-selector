@@ -1,7 +1,8 @@
 # 用 GitHub 的 Mac 主機編譯 macOS 安裝檔（.dmg）
 #
-# - 一般推送（測試版）：只編 Apple Silicon 版、不跑單元測試（推送前已在開發環境測過），約 8–12 分鐘
-# - v 開頭的標籤（正式版）：跑完整單元測試，編 Apple Silicon + Intel 通用版
+# - 一般推送（測試版）：Apple Silicon 與 Intel 兩台主機「同時」編譯（不跑單元測試，推送前已在開發環境測過），
+#   最後合併成一個通用版 .dmg，兩種 Mac 都能用同一個網址下載安裝
+# - v 開頭的標籤（正式版）：跑完整單元測試，以 tauri 直接編通用版（支援正式簽署與公證）
 #
 # - 每次推送都會編譯，並更新固定的測試版下載連結（不需登入 GitHub）：
 #   https://github.com/xemepark/photo-selector/releases/download/beta/Photo-Selector-mac-universal.dmg
@@ -26,7 +27,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ---------------------------------------------------------------- 正式版（v* 標籤）
   macos:
+    if: github.ref_type == 'tag'
     # 指定 macos-15（Apple Silicon）：macos-latest 曾發生長時間分配不到機器；macos-14 已無法使用
     runs-on: macos-15
     timeout-minutes: 60
@@ -38,15 +41,10 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: 決定編譯目標
+      - name: 編譯目標
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "TARGET=universal-apple-darwin" >> "$GITHUB_ENV"
-            echo "TARGET_DESC=Apple Silicon + Intel 通用版" >> "$GITHUB_ENV"
-          else
-            echo "TARGET=aarch64-apple-darwin" >> "$GITHUB_ENV"
-            echo "TARGET_DESC=Apple Silicon（M1–M4）版" >> "$GITHUB_ENV"
-          fi
+          echo "TARGET=universal-apple-darwin" >> "$GITHUB_ENV"
+          echo "TARGET_DESC=Apple Silicon + Intel 通用版" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -60,8 +58,7 @@ jobs:
       - name: 安裝前端套件
         run: npm ci
 
-      - name: 後端單元測試（含人臉模型，僅正式版）
-        if: github.ref_type == 'tag'
+      - name: 後端單元測試（含人臉模型）
         run: cargo test --release --manifest-path src-tauri/Cargo.toml
 
       - name: 設定 Apple 簽署憑證（有設定 Secrets 才會啟用）
@@ -108,22 +105,101 @@ jobs:
           path: ${{ steps.dmg.outputs.path }}
           retention-days: 30
 
-      - name: 建立 Release（僅限 v* 標籤）
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: 建立 Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.path }}" --title "小日子寫真館 $GITHUB_REF_NAME" --generate-notes
 
-      - name: 更新測試版下載連結（branch 推送時）
-        if: github.ref_type == 'branch'
+  # ---------------------------------------------------------------- 測試版（分支推送）：兩種晶片同時編譯
+  beta-build:
+    if: github.ref_type == 'branch'
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [aarch64, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.arch }}
+
+      - name: 安裝前端套件
+        run: npm ci
+
+      - name: 編譯 ${{ matrix.arch }}
+        env:
+          BUILD_SHA: ${{ github.sha }}
+        run: npx tauri build --target ${{ matrix.arch }}-apple-darwin --bundles app
+
+      - name: 打包 .app
+        run: |
+          cd src-tauri/target/${{ matrix.arch }}-apple-darwin/release/bundle/macos
+          ls -d *.app
+          lipo -info *.app/Contents/MacOS/*
+          tar -czf "$GITHUB_WORKSPACE/app-${{ matrix.arch }}.tgz" *.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.arch }}
+          path: app-${{ matrix.arch }}.tgz
+          retention-days: 3
+
+  beta-publish:
+    if: github.ref_type == 'branch'
+    needs: beta-build
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: app-*
+
+      - name: 合併成通用版（lipo）並製作 .dmg
+        id: dmg
+        run: |
+          set -e
+          mkdir arm x86 dmgroot
+          tar -xzf app-aarch64/app-aarch64.tgz -C arm
+          tar -xzf app-x86_64/app-x86_64.tgz -C x86
+          APP=$(cd arm && ls -d *.app | head -1)
+          cp -R "arm/$APP" "dmgroot/$APP"
+          for bin in "arm/$APP/Contents/MacOS/"*; do
+            name=$(basename "$bin")
+            lipo -create "$bin" "x86/$APP/Contents/MacOS/$name" -output "dmgroot/$APP/Contents/MacOS/$name"
+          done
+          lipo -info "dmgroot/$APP/Contents/MacOS/"*
+          codesign --force --deep --sign - "dmgroot/$APP"
+          codesign --verify --deep --strict "dmgroot/$APP"
+          ln -s /Applications dmgroot/Applications
+          hdiutil create -volname "小日子寫真館" -srcfolder dmgroot -ov -format UDZO Photo-Selector-mac-universal.dmg
+          ls -lh Photo-Selector-mac-universal.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Photo-Selector-macOS
+          path: Photo-Selector-mac-universal.dmg
+          retention-days: 30
+
+      - name: 更新測試版下載連結
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 檔名維持不變，下載網址才不會換
-          cp "${{ steps.dmg.outputs.path }}" Photo-Selector-mac-universal.dmg
           gh release delete beta --yes --cleanup-tag -R "$GITHUB_REPOSITORY" 2>/dev/null || true
           sleep 5
           gh release create beta Photo-Selector-mac-universal.dmg -R "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" --prerelease \
             --title "小日子寫真館 測試版（最新）" \
-            --notes "自動編譯的最新測試版（${GITHUB_SHA::7}，分支 ${GITHUB_REF_NAME}）。${TARGET_DESC}，macOS 11 以上。尚未經 Apple 公證，第一次開啟請見 README「在 Mac 上安裝」。"
+            --notes "自動編譯的最新測試版（${GITHUB_SHA::7}，分支 ${GITHUB_REF_NAME}）。Apple Silicon + Intel 通用版，macOS 11 以上。尚未經 Apple 公證，第一次開啟請見 README「在 Mac 上安裝」。"
