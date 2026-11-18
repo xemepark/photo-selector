@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>刪除桌面、文件等受保護資料夾裡的照片時，需要請 Finder 代為移到垃圾桶。</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>瀏覽、整理桌面上的照片。</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>瀏覽、整理「文件」資料夾裡的照片。</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>瀏覽、整理「下載項目」裡的照片。</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>瀏覽、整理外接硬碟與記憶卡裡的照片。</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>瀏覽、整理網路磁碟裡的照片。</string>
+</dict>
+</plist>

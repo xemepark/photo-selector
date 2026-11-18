@@ -51,16 +51,20 @@ fn move_file(src: &Path, dst: &Path) -> io::Result<()> {
 }
 
 /// 把項目（含配對的 RAW/JPEG 與 .xmp 附屬檔）移到系統垃圾桶，可從垃圾桶復原。
+///
+/// macOS 先用系統 API（NSFileManager，不需額外權限）；若因隱私權保護（例如「桌面」「文件」
+/// 資料夾）被拒絕，改請 Finder 代為移到垃圾桶（第一次會詢問是否允許控制 Finder）。
 pub fn trash_items(items: &[&Item]) -> TransferResult {
     let mut res = TransferResult::default();
     #[allow(unused_mut)]
     let mut ctx = trash::TrashContext::default();
     #[cfg(target_os = "macos")]
     {
-        // 用系統 API 直接移到垃圾桶，不需要「控制 Finder」的權限詢問
         use trash::macos::{DeleteMethod, TrashContextExtMacos};
         ctx.set_delete_method(DeleteMethod::NsFileManager);
     }
+    #[allow(unused_mut)]
+    let mut retry: Vec<(&Item, Vec<PathBuf>, String)> = Vec::new();
     for it in items {
         let paths: Vec<PathBuf> = it.all_paths().into_iter().filter(|p| p.exists()).collect();
         if paths.is_empty() {
@@ -69,10 +73,57 @@ pub fn trash_items(items: &[&Item]) -> TransferResult {
         }
         match ctx.delete_all(&paths) {
             Ok(()) => res.done += 1,
-            Err(e) => res.failed.push(format!("{}：{e}", it.name)),
+            Err(e) => {
+                // 部分檔案可能已經移走，只重試還在的
+                let left: Vec<PathBuf> = paths.into_iter().filter(|p| p.exists()).collect();
+                if left.is_empty() {
+                    res.done += 1;
+                } else {
+                    retry.push((it, left, e.to_string()));
+                }
+            }
         }
     }
+    #[cfg(target_os = "macos")]
+    if !retry.is_empty() {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        let mut finder = trash::TrashContext::default();
+        finder.set_delete_method(DeleteMethod::Finder);
+        // 一次交給 Finder，只會跳一次權限詢問、速度也快
+        let all: Vec<PathBuf> = retry.iter().flat_map(|(_, p, _)| p.clone()).collect();
+        let batch_ok = finder.delete_all(&all).is_ok();
+        let mut still = Vec::new();
+        for (it, paths, e) in retry {
+            let left: Vec<PathBuf> = paths.into_iter().filter(|p| p.exists()).collect();
+            if left.is_empty() {
+                res.done += 1;
+            } else if !batch_ok {
+                match finder.delete_all(&left) {
+                    Ok(()) => res.done += 1,
+                    Err(e2) => still.push((it, format!("{e}；{e2}"))),
+                }
+            } else {
+                still.push((it, e));
+            }
+        }
+        for (it, e) in still {
+            res.failed.push(format!("{}：{}", it.name, friendly_trash_error(&e)));
+        }
+        return res;
+    }
+    for (it, _, e) in retry {
+        res.failed.push(format!("{}：{}", it.name, friendly_trash_error(&e)));
+    }
     res
+}
+
+fn friendly_trash_error(e: &str) -> String {
+    let lower = e.to_lowercase();
+    if lower.contains("permission") || lower.contains("not permitted") || lower.contains("-1743") || lower.contains("not authorized") {
+        "沒有權限".into()
+    } else {
+        e.chars().take(160).collect()
+    }
 }
 
 pub fn transfer(items: &[&Item], dest: &Path, mv: bool) -> TransferResult {

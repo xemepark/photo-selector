@@ -786,7 +786,21 @@ async function deleteTargets() {
     if (S.loupe && !live().length) closeLoupe();
     update({ resetGrid: true }); // 重新排版（保留捲動位置）
     if (S.loupe) showLoupe();
-    if (r.failed.length) toast(`有 ${r.failed.length} 個項目無法刪除：${r.failed.join("、")}`, 6000);
+    if (r.failed.length) {
+      console.warn(r.failed);
+      const perm = r.failed.some((f) => f.includes("沒有權限"));
+      const isMac = /Mac/.test(navigator.platform) || navigator.userAgent.includes("Mac OS X");
+      const names = r.failed.slice(0, 3).map((f) => f.split("：")[0]).join("、") + (r.failed.length > 3 ? "…" : "");
+      toast(
+        `有 ${r.failed.length} 個項目無法刪除（${names}）` +
+          (perm && isMac
+            ? "：沒有權限。請到「系統設定 → 隱私權與安全性 → 自動化」允許小日子寫真館控制 Finder，或在「檔案與檔案夾」允許存取該資料夾後再試一次。"
+            : perm
+              ? "：沒有權限。"
+              : `：${r.failed[0].split("：").slice(1).join("：")}`),
+        10000,
+      );
+    }
     else toast(`已將${what}移到垃圾桶`, 2000);
   } catch (e) {
     toast(`刪除失敗：${e}`);
