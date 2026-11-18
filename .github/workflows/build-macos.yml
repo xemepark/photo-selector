@@ -184,7 +184,13 @@ jobs:
           codesign --force --deep --sign - "dmgroot/$APP"
           codesign --verify --deep --strict "dmgroot/$APP"
           ln -s /Applications dmgroot/Applications
-          hdiutil create -volname "小日子寫真館" -srcfolder dmgroot -ov -format UDZO Photo-Selector-mac-universal.dmg
+          # hdiutil 自動估算映像檔大小時偶爾會估太小（No space left on device）→ 明確指定大小並留餘裕
+          SIZE=$(( $(du -sm dmgroot | cut -f1) * 13 / 10 + 40 ))
+          for try in 1 2 3; do
+            hdiutil create -volname "小日子寫真館" -srcfolder dmgroot -fs HFS+ -size "${SIZE}m" -ov -format UDZO Photo-Selector-mac-universal.dmg && break
+            echo "hdiutil 失敗（第 $try 次），加大後重試"; SIZE=$(( SIZE + 80 )); sleep 3
+          done
+          test -f Photo-Selector-mac-universal.dmg
           ls -lh Photo-Selector-mac-universal.dmg
 
       - uses: actions/upload-artifact@v4
