@@ -243,6 +243,19 @@ async fn batch_rename(
 }
 
 pub const WEBSITE: &str = "https://smallday.tw";
+/// 照片裁切輸出（線上工具）
+pub const CROP_TOOL: &str = "https://xemepark.github.io/crop/";
+
+/// 開啟內建的外部連結。只接受固定的名稱，不接受任意網址
+#[tauri::command]
+fn open_link(name: String) -> Result<(), String> {
+    let url = match name.as_str() {
+        "website" => WEBSITE,
+        "crop" => CROP_TOOL,
+        _ => return Err("未知的連結".into()),
+    };
+    ops::open_url(url).map_err(|e| e.to_string())
+}
 
 /// 用 Finder 開啟資料夾（複製 / 移動完成後的提示訊息使用）
 #[tauri::command]
@@ -550,6 +563,7 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
         &[
             &P::about(app, Some("關於 小日子寫真館"), Some(about))?,
             &MenuItem::with_id(app, "website", "前往 smallday.tw", true, None::<&str>)?,
+            &MenuItem::with_id(app, "crop", "照片裁切輸出", true, None::<&str>)?,
             &P::separator(app)?,
             &P::hide(app, Some("隱藏 小日子寫真館"))?,
             &P::hide_others(app, Some("隱藏其他"))?,
@@ -622,6 +636,7 @@ pub fn run() {
             app_version,
             open_dir,
             open_website,
+            open_link,
             batch_rename,
             reveal_item,
             resolve_path,

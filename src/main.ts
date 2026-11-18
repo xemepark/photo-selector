@@ -1363,6 +1363,9 @@ on<string>("menu", (e) => {
     case "website":
       api.openWebsite().catch((e) => toast(`無法開啟網站：${e}`));
       break;
+    case "crop":
+      api.openLink("crop").catch((e) => toast(`無法開啟「照片裁切輸出」：${e}`));
+      break;
     case "batch-rename":
       openBatchRename();
       break;
@@ -1626,6 +1629,7 @@ $("label-save").addEventListener("click", () => {
 // ---------------------------------------------------------------- 品牌連結、提示秒數設定
 
 $("brand").addEventListener("click", () => api.openWebsite().catch((e) => toast(`無法開啟網站：${e}`)));
+$("btn-crop").addEventListener("click", () => api.openLink("crop").catch((e) => toast(`無法開啟「照片裁切輸出」：${e}`)));
 {
   const inp = $<HTMLInputElement>("toast-seconds");
   inp.value = String(toastSeconds());

@@ -304,7 +304,12 @@ pub fn open_dir(dir: &Path) -> io::Result<()> {
 
 /// 用預設瀏覽器開啟小日子寫真館網站（固定網址，不接受其他網址）
 pub fn open_website() -> io::Result<()> {
-    open_with_system(std::ffi::OsStr::new(crate::WEBSITE))
+    open_url(crate::WEBSITE)
+}
+
+/// 用預設瀏覽器開啟網址（呼叫端只會傳入程式內建、固定的網址）
+pub fn open_url(url: &str) -> io::Result<()> {
+    open_with_system(std::ffi::OsStr::new(url))
 }
 
 fn open_with_system(target: &std::ffi::OsStr) -> io::Result<()> {

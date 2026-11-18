@@ -78,6 +78,8 @@ export const api = {
   revealItem: (session: number, id: number) => invoke<void>("reveal_item", { session, id }),
   openDir: (path: string) => invoke<void>("open_dir", { path }),
   openWebsite: () => invoke<void>("open_website"),
+  /** 開啟內建連結：website = smallday.tw、crop = 照片裁切輸出 */
+  openLink: (name: "website" | "crop") => invoke<void>("open_link", { name }),
   resolvePath: (input: string) => invoke<{ dir: string; file: string | null }>("resolve_path", { input }),
   analyze: (session: number, ids: number[]) => invoke<void>("analyze", { session, ids }),
   cacheInfo: () => invoke<[string, number]>("cache_info"),
