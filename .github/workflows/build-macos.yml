@@ -1,7 +1,7 @@
 # 用 GitHub 的 Mac 主機編譯 macOS 安裝檔（.dmg）
 #
-# - 一般推送（測試版）：Apple Silicon 與 Intel 兩台主機「同時」編譯（不跑單元測試，推送前已在開發環境測過），
-#   最後合併成一個通用版 .dmg，兩種 Mac 都能用同一個網址下載安裝
+# - 一般推送（測試版）：一台主機依序編譯 Apple Silicon 與 Intel，合併成通用版 .dmg（不跑單元測試，推送前已在開發環境測過）。
+#   不用兩台主機平行：GitHub 的 Mac 主機常常湊不齊兩台，第二台排隊超過 15 分鐘就會被取消
 # - v 開頭的標籤（正式版）：跑完整單元測試，以 tauri 直接編通用版（支援正式簽署與公證）
 #
 # - 每次推送都會編譯，並更新固定的測試版下載連結（不需登入 GitHub）：
@@ -14,8 +14,7 @@ name: Build macOS
 
 on:
   push:
-    # beta-dmg 只放安裝檔（由下方步驟自動更新），不需要編譯
-    branches: ["**", "!beta-dmg"]
+    branches: ["**"]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -111,15 +110,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" "${{ steps.dmg.outputs.path }}" --title "小日子寫真館 $GITHUB_REF_NAME" --generate-notes
 
-  # ---------------------------------------------------------------- 測試版（分支推送）：兩種晶片同時編譯
-  beta-build:
+  # ---------------------------------------------------------------- 測試版（分支推送）
+  beta:
     if: github.ref_type == 'branch'
     runs-on: macos-15
     timeout-minutes: 45
-    strategy:
-      fail-fast: true
-      matrix:
-        arch: [aarch64, x86_64]
     steps:
       - uses: actions/checkout@v4
 
@@ -130,68 +125,26 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.arch }}-apple-darwin
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: ${{ matrix.arch }}
+          key: universal
 
       - name: 安裝前端套件
         run: npm ci
 
-      - name: 編譯 ${{ matrix.arch }}
+      - name: 編譯通用版（Apple Silicon + Intel）
         env:
           BUILD_SHA: ${{ github.sha }}
-        run: npx tauri build --target ${{ matrix.arch }}-apple-darwin --bundles app
+        run: npx tauri build --target universal-apple-darwin --bundles app,dmg
 
-      - name: 打包 .app
+      - name: 整理安裝檔
         run: |
-          cd src-tauri/target/${{ matrix.arch }}-apple-darwin/release/bundle/macos
-          ls -d *.app
-          lipo -info *.app/Contents/MacOS/*
-          tar -czf "$GITHUB_WORKSPACE/app-${{ matrix.arch }}.tgz" *.app
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: app-${{ matrix.arch }}
-          path: app-${{ matrix.arch }}.tgz
-          retention-days: 3
-
-  beta-publish:
-    if: github.ref_type == 'branch'
-    needs: beta-build
-    runs-on: macos-15
-    timeout-minutes: 20
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: app-*
-
-      - name: 合併成通用版（lipo）並製作 .dmg
-        id: dmg
-        run: |
-          set -e
-          mkdir arm x86 dmgroot
-          tar -xzf app-aarch64/app-aarch64.tgz -C arm
-          tar -xzf app-x86_64/app-x86_64.tgz -C x86
-          APP=$(cd arm && ls -d *.app | head -1)
-          cp -R "arm/$APP" "dmgroot/$APP"
-          for bin in "arm/$APP/Contents/MacOS/"*; do
-            name=$(basename "$bin")
-            lipo -create "$bin" "x86/$APP/Contents/MacOS/$name" -output "dmgroot/$APP/Contents/MacOS/$name"
-          done
-          lipo -info "dmgroot/$APP/Contents/MacOS/"*
-          codesign --force --deep --sign - "dmgroot/$APP"
-          codesign --verify --deep --strict "dmgroot/$APP"
-          ln -s /Applications dmgroot/Applications
-          # hdiutil 自動估算映像檔大小時偶爾會估太小（No space left on device）→ 明確指定大小並留餘裕
-          SIZE=$(( $(du -sm dmgroot | cut -f1) * 13 / 10 + 40 ))
-          for try in 1 2 3; do
-            hdiutil create -volname "小日子寫真館" -srcfolder dmgroot -fs HFS+ -size "${SIZE}m" -ov -format UDZO Photo-Selector-mac-universal.dmg && break
-            echo "hdiutil 失敗（第 $try 次），加大後重試"; SIZE=$(( SIZE + 80 )); sleep 3
-          done
-          test -f Photo-Selector-mac-universal.dmg
+          DMG=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -1)
+          cp "$DMG" Photo-Selector-mac-universal.dmg
+          lipo -info src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app/Contents/MacOS/*
           ls -lh Photo-Selector-mac-universal.dmg
 
       - uses: actions/upload-artifact@v4
@@ -210,17 +163,3 @@ jobs:
             --target "$GITHUB_SHA" --prerelease \
             --title "小日子寫真館 測試版（最新）" \
             --notes "自動編譯的最新測試版（${GITHUB_SHA::7}，分支 ${GITHUB_REF_NAME}）。Apple Silicon + Intel 通用版，macOS 11 以上。尚未經 Apple 公證，第一次開啟請見 README「在 Mac 上安裝」。"
-
-      - name: 安裝檔另存到 beta-dmg 分支（只保留最新一份，方便自動上傳到雲端硬碟）
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -e
-          mkdir dmgbranch && cd dmgbranch
-          git init -q
-          git checkout -q -b beta-dmg
-          cp ../Photo-Selector-mac-universal.dmg .
-          printf '%s\n' "commit ${GITHUB_SHA}" "branch ${GITHUB_REF_NAME}" "built $(date -u +%Y-%m-%dT%H:%M:%SZ)" > VERSION.txt
-          git add Photo-Selector-mac-universal.dmg VERSION.txt
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "測試版安裝檔 ${GITHUB_SHA::7}"
-          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" beta-dmg
