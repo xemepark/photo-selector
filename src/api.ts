@@ -108,6 +108,9 @@ export const url = {
 export const api = {
   openFolder: (path: string) => invoke<OpenResult>("open_folder", { path }),
   setViewport: (session: number, ids: number[]) => invoke<void>("set_viewport", { session, ids }),
+  /** 旋轉 90°，存回原檔；回傳 [id, 新方向] */
+  rotate: (session: number, ids: number[], clockwise: boolean) =>
+    invoke<{ done: [number, number][]; failed: string[] }>("rotate", { session, ids, clockwise }),
   setRating: (session: number, ids: number[], rating: number) => invoke<void>("set_rating", { session, ids, rating }),
   setLabel: (session: number, ids: number[], label: string | null) => invoke<void>("set_label", { session, ids, label }),
   /** applyEdits：有調整的照片輸出「已套用調整」的檔案（移動時原檔移到垃圾桶） */

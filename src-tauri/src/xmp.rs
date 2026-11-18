@@ -19,6 +19,7 @@ fn namespace_of(prefix: &str) -> Option<&'static str> {
         "xmp" => Some(NS_XMP),
         "xmpMM" => Some(NS_XMPMM),
         "sd" => Some(NS_SD),
+        "tiff" => Some("http://ns.adobe.com/tiff/1.0/"),
         _ => None,
     }
 }
@@ -657,4 +658,99 @@ mod export_tests {
         assert!(x.contains("xmpRights:Marked=\"True\""));
         assert!(export_packet(None, "  ").is_none());
     }
+}
+
+
+// ---------------------------------------------------------------- 照片方向（旋轉）
+
+/// JPEG 的 EXIF 方向（只看檔頭）。沒有 EXIF 或沒有方向欄位時回傳 None
+pub fn jpeg_exif_orientation(d: &[u8]) -> Option<u16> {
+    let segs = segments(d)?;
+    let (pos, le) = exif_orientation_pos(d, &segs)?;
+    let v = if le { u16::from_le_bytes([d[pos], d[pos + 1]]) } else { u16::from_be_bytes([d[pos], d[pos + 1]]) };
+    (1..=8).contains(&v).then_some(v)
+}
+
+/// EXIF IFD0 方向欄位數值的位置（檔案中的位移）與位元組順序
+fn exif_orientation_pos(d: &[u8], segs: &[Seg]) -> Option<(usize, bool)> {
+    let s = segs.iter().find(|s| s.marker == 0xE1 && d[s.body..s.end].starts_with(b"Exif\0\0"))?;
+    let t = s.body + 6;
+    let le = match d.get(t..t + 2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    let r16 = |p: usize| -> Option<usize> {
+        let b = d.get(p..p + 2)?;
+        Some(if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) } as usize)
+    };
+    let r32 = |p: usize| -> Option<usize> {
+        let b = d.get(p..p + 4)?;
+        let a = [b[0], b[1], b[2], b[3]];
+        Some(if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) } as usize)
+    };
+    let ifd = t + r32(t + 4)?;
+    let n = r16(ifd)?;
+    for i in 0..n {
+        let e = ifd + 2 + i * 12;
+        if e + 12 > s.end {
+            return None;
+        }
+        if r16(e)? == 0x0112 && r16(e + 2)? == 3 {
+            return Some((e + 8, le));
+        }
+    }
+    None
+}
+
+/// 設定 JPEG 的方向，不重新壓縮影像：
+/// 有 EXIF 方向欄位 → 原地改寫 2 個位元組；沒有 EXIF → 插入只含方向的小型 EXIF 區段；
+/// 有 EXIF 但沒有方向欄位 → 寫進 XMP 的 tiff:Orientation（本程式與 Adobe 軟體都會讀）。
+/// XMP 裡原本就有 tiff:Orientation 時一併更新，避免兩邊不一致。
+pub fn set_jpeg_orientation(path: &Path, o: u16) -> io::Result<()> {
+    let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
+    let data = fs::read(path)?;
+    let segs = segments(&data).ok_or_else(|| bad("不是有效的 JPEG 檔"))?;
+    let has_xmp_orient = find_xmp(&data, &segs)
+        .map(|i| {
+            let s = &segs[i];
+            get_prop(&String::from_utf8_lossy(&data[s.body + XMP_SIG.len()..s.end]), "tiff:Orientation").is_some()
+        })
+        .unwrap_or(false);
+    let has_exif = segs.iter().any(|s| s.marker == 0xE1 && data[s.body..s.end].starts_with(b"Exif\0\0"));
+    if let Some((pos, le)) = exif_orientation_pos(&data, &segs) {
+        let bytes = if le { o.to_le_bytes() } else { o.to_be_bytes() };
+        write_at(path, pos as u64, &bytes)?;
+    } else if !has_exif {
+        // 最小的 EXIF：TIFF 檔頭 + 1 個欄位（方向）；插在 SOI / APP0 之後（在 MPF 之前，MPF 的相對位移不受影響）
+        let mut tiff = b"MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01".to_vec();
+        tiff.extend_from_slice(&o.to_be_bytes());
+        tiff.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut seg = vec![0xFF, 0xE1];
+        seg.extend_from_slice(&((2 + 6 + tiff.len()) as u16).to_be_bytes());
+        seg.extend_from_slice(b"Exif\0\0");
+        seg.extend_from_slice(&tiff);
+        let at = segs.first().filter(|s| s.marker == 0xE0).map(|s| s.end).unwrap_or(2);
+        let mut out = Vec::with_capacity(data.len() + seg.len());
+        out.extend_from_slice(&data[..at]);
+        out.extend_from_slice(&seg);
+        out.extend_from_slice(&data[at..]);
+        rewrite(path, &out)?;
+    } else {
+        return update_jpeg_with(path, |x| set_named(x, "tiff:Orientation", &o.to_string()));
+    }
+    if has_xmp_orient {
+        update_jpeg_with(path, |x| set_named(x, "tiff:Orientation", &o.to_string()))?;
+    }
+    Ok(())
+}
+
+/// 讀 JPEG 內嵌 XMP 的 tiff:Orientation
+pub fn jpeg_xmp_orientation(path: &Path) -> Option<u16> {
+    read_jpeg_xml(path).and_then(|x| get_prop(&x, "tiff:Orientation")).and_then(|v| v.trim().parse().ok()).filter(|v| (1..=8).contains(v))
+}
+
+/// 讀附屬檔的 tiff:Orientation
+pub fn sidecar_orientation(path: &Path) -> Option<u16> {
+    fs::read_to_string(path).ok().and_then(|x| get_prop(&x, "tiff:Orientation")).and_then(|v| v.trim().parse().ok()).filter(|v| (1..=8).contains(v))
 }

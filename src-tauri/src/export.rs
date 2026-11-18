@@ -131,7 +131,7 @@ pub(crate) fn load(item: &Item, formats: &[FormatOptions]) -> Result<Source> {
     let f = item.display();
     let file = File::open(&f.path)?;
     let data = unsafe { memmap2::Mmap::map(&file)? };
-    let orient = meta::orientation(f.class, &data);
+    let orient = meta::item_orientation(item, &data);
     let swap = matches!(orient, 5..=8);
     let oriented = |d: Option<(u32, u32)>| d.map(|(w, h)| if swap { (h, w) } else { (w, h) });
 

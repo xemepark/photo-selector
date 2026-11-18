@@ -210,7 +210,8 @@ pub fn read_meta(item: &Item) -> Meta {
         .unwrap_or_default();
 
     let (mut w, mut h) = (r.w, r.h);
-    if matches!(r.orientation, Some(5..=8)) {
+    // 在本程式（或 Bridge）旋轉過的方向優先
+    if matches!(xmp_orientation(item).or(r.orientation), Some(5..=8)) {
         std::mem::swap(&mut w, &mut h);
     }
     Meta {
@@ -226,6 +227,31 @@ pub fn read_meta(item: &Item) -> Meta {
         rating: rl.rating.unwrap_or(0),
         label: rl.label,
         edited: rl.edited,
+    }
+}
+
+/// 旋轉後記在 XMP 的方向：RAW / 其他格式看附屬檔；JPEG 只在沒有 EXIF 方向欄位時才看內嵌 XMP
+pub fn xmp_orientation(item: &Item) -> Option<u16> {
+    let f = item.display();
+    match f.class {
+        Class::Jpeg => {
+            let mut buf = vec![0u8; 256 * 1024];
+            let n = std::io::Read::read(&mut std::fs::File::open(&f.path).ok()?, &mut buf).ok()?;
+            if xmp::jpeg_exif_orientation(&buf[..n]).is_some() {
+                return None;
+            }
+            xmp::jpeg_xmp_orientation(&f.path)
+        }
+        _ => xmp::sidecar_orientation(&item.sidecar_path()),
+    }
+}
+
+/// 項目的顯示方向（含旋轉過的結果）。`data` 是顯示用檔案的內容（mmap）
+pub fn item_orientation(item: &Item, data: &[u8]) -> u16 {
+    let f = item.display();
+    match f.class {
+        Class::Jpeg => xmp::jpeg_exif_orientation(data).or_else(|| xmp::jpeg_xmp_orientation(&f.path)).unwrap_or(1),
+        _ => xmp::sidecar_orientation(&item.sidecar_path()).unwrap_or_else(|| orientation(f.class, data)),
     }
 }
 

@@ -10,6 +10,7 @@ mod fileinfo;
 mod icc;
 mod jpeg;
 mod meta;
+mod orient;
 mod ops;
 mod render;
 mod scan;
@@ -229,6 +230,35 @@ fn write_props(it: &scan::Item, props: &[(&str, Option<String>)]) -> Result<(), 
         xmp::update_props(&it.sidecar_path(), props).map_err(err)?;
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct RotateResult {
+    /// [id, 新方向]
+    done: Vec<(u32, u16)>,
+    failed: Vec<String>,
+}
+
+/// 旋轉 90°（clockwise = 順時針），存回原檔並丟掉舊的縮圖 / 預覽快取
+#[tauri::command]
+async fn rotate(core: CoreState<'_>, session: u64, ids: Vec<u32>, clockwise: bool) -> Result<RotateResult, String> {
+    let sess = core.session(session)?;
+    let core = core.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut res = RotateResult { done: vec![], failed: vec![] };
+        for id in ids {
+            let Some(it) = sess.items.get(id as usize) else { continue };
+            match orient::rotate_item(it, clockwise) {
+                Ok(o) => res.done.push((id, o)),
+                Err(e) => res.failed.push(format!("{}：{e}", it.name)),
+            }
+            core.forget(it);
+        }
+        res
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -928,6 +958,7 @@ pub fn run() {
             export_images,
             file_info,
             get_edit,
+            rotate,
             save_edit,
             forget_thumbs,
             export_cancel,

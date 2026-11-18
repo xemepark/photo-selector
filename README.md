@@ -164,6 +164,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 後端單元測試
   - 可「將描述檔轉換為 sRGB」（讀取原圖 ICC；相機設 Adobe RGB 卻沒嵌描述檔時依 EXIF 判斷）與「包含 ICC 描述檔」（sRGB 使用相容性最好的 ICC v2）
   - 保留 EXIF（方向改為正常，因為影像已轉正）；評等、標籤與「版權資訊」寫入 XMP
   - RAW+JPEG 使用相機 JPEG；只有 RAW 時使用 RAW 內嵌的相機預覽圖（尚未套用 Camera Raw 調整）
+- **旋轉**：縮圖或全螢幕時按 [ 逆時針、] 順時針旋轉 90°（可多選，右鍵選單也有），立即存回原檔、縮圖同步更新。JPEG 改寫 EXIF 方向（不重新壓縮、畫質不變；沒有 EXIF 時插入只含方向的 EXIF），RAW 寫入附屬檔 tiff:Orientation（與 Bridge / Camera Raw 相同）。
 - **壓縮打包**（工具列、右鍵選單或 ⇧⌘K）：選取的照片打包成一個 ZIP（預設檔名「資料夾名_日期.zip」）。有調整的照片放入套用調整後的版本（系統設定可關）；可選擇是否包含 RAW（只有 RAW 的照片一律放 RAW）；JPEG / RAW 以儲存方式放入（快、不損畫質），先寫 .part 暫存檔、完成才改名。
 - **拖曳到其他程式**：選取一張或多張縮圖後直接拖到 Finder、LINE、瀏覽器上傳欄、Photoshop 等（複製，不會移動原檔）。在多選中的某張上按下時會保留整組選取；RAW+JPEG 預設只拖出 JPEG，可在左側「動作」勾選「拖曳到其他程式時包含 RAW」。
 - **右鍵選單**：在 Finder 中顯示、重新命名（F2）、批次重新命名、複製 / 移動到…、移到垃圾桶。
@@ -232,6 +233,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # 後端單元測試
 | F2、⇧⌘R | 重新命名、批次重新命名 |
 | ⇧⌘E | 影像轉存 |
 | ⇧⌘K | 壓縮打包選取的照片 |
+| [ / ] | 逆時針 / 順時針旋轉 90° |
 | E | 調整照片（調整視窗內：← → 切換、\\ 調整前 / 後、Enter 完成、Esc 取消） |
 | Delete / Backspace（Mac 的 delete 鍵） | 把焦點或選取的照片（含配對 RAW/JPEG 與 .xmp）移到垃圾桶，停留在同一個資料夾 |
 

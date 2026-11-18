@@ -26,7 +26,7 @@ pub struct FileInfo {
     pub height: Option<u32>,
 }
 
-fn pixel_size(path: &Path, class: Class) -> Option<(u32, u32)> {
+fn pixel_size(item: &Item, path: &Path, class: Class) -> Option<(u32, u32)> {
     let file = File::open(path).ok()?;
     let data = unsafe { memmap2::Mmap::map(&file) }.ok()?;
     let (w, h) = match class {
@@ -34,7 +34,7 @@ fn pixel_size(path: &Path, class: Class) -> Option<(u32, u32)> {
         Class::Image => image::ImageReader::new(std::io::Cursor::new(&data[..])).with_guessed_format().ok()?.into_dimensions().ok()?,
         _ => return None,
     };
-    let o = crate::meta::orientation(class, &data);
+    let o = crate::meta::item_orientation(item, &data);
     Some(if matches!(o, 5..=8) { (h, w) } else { (w, h) })
 }
 
@@ -128,7 +128,7 @@ pub fn file_info(item: &Item) -> FileInfo {
             color_space = exif_color_space(&raw.path);
         }
     }
-    let size = pixel_size(&disp.path, disp.class);
+    let size = pixel_size(item, &disp.path, disp.class);
     FileInfo { parts, created, modified, color_space, width: size.map(|s| s.0), height: size.map(|s| s.1) }
 }
 

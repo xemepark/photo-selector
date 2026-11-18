@@ -99,7 +99,7 @@ pub fn decode_source(item: &Item, min_edge: u32) -> Result<DynamicImage> {
     let f = item.display();
     let file = File::open(&f.path)?;
     let data = unsafe { memmap2::Mmap::map(&file)? };
-    let orient = meta::orientation(f.class, &data);
+    let orient = meta::item_orientation(item, &data);
     let img = match f.class {
         Class::Jpeg => {
             // 相機 JPEG 內嵌的預覽圖夠大、比例也一致時，就只解碼它（快數十倍，外接硬碟上差異更大）
@@ -200,13 +200,14 @@ pub fn render(item: &Item, kind: Kind) -> Result<Vec<u8>> {
             let f = item.display();
             if adj.is_none() {
                 // 原始 JPEG 直接交給 WebView（瀏覽器自己會依 EXIF 轉正）
-                if f.class == Class::Jpeg {
+                // （方向只記在 XMP 時，瀏覽器不會轉正 → 改走下面自己轉正的路）
+                if f.class == Class::Jpeg && meta::xmp_orientation(item).is_none() {
                     return Ok(std::fs::read(&f.path)?);
                 }
                 if matches!(f.class, Class::Raw | Class::Other) {
                     let file = File::open(&f.path)?;
                     let data = unsafe { memmap2::Mmap::map(&file)? };
-                    if meta::orientation(f.class, &data) == 1 {
+                    if meta::item_orientation(item, &data) == 1 {
                         if let Some(j) = jpeg::pick(&jpeg::embedded_jpegs(&data, u32::MAX), u32::MAX) {
                             return Ok(j.bytes(&data).to_vec());
                         }

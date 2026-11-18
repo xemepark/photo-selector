@@ -1244,6 +1244,7 @@ document.addEventListener("keydown", (ev) => {
     else if (k === "ArrowLeft" || k === "ArrowUp") moveFocus(-1);
     else if (k.toLowerCase() === "z") toggleZoom();
     else if (k.toLowerCase() === "e" && !mod) openEditor();
+    else if ((k === "[" || k === "]") && !mod) void rotateTargets(k === "]");
     else if (k.toLowerCase() === "f") {
       showFaces = !showFaces;
       store("showFaces", showFaces);
@@ -1280,6 +1281,7 @@ document.addEventListener("keydown", (ev) => {
       else if (k.toLowerCase() === "c" && !mod) openCompare();
       else if (k.toLowerCase() === "p" && !mod) openSlideDialog();
       else if (k.toLowerCase() === "e" && !mod) openEditor();
+      else if ((k === "[" || k === "]") && !mod) void rotateTargets(k === "]");
       else return;
   }
   ev.preventDefault();
@@ -1694,6 +1696,8 @@ function showCellMenu(index: number, ev: MouseEvent) {
     ["reveal", isMac ? "在 Finder 中顯示" : "在檔案總管中顯示"],
     ["rename", "重新命名…", "F2"],
     ["batch", n > 1 ? `批次重新命名 ${n} 張…` : "批次重新命名…", "⇧⌘R"],
+    ["rotl", n > 1 ? `逆時針旋轉 ${n} 張` : "逆時針旋轉 90°", "["],
+    ["rotr", n > 1 ? `順時針旋轉 ${n} 張` : "順時針旋轉 90°", "]"],
     ["edit", n > 1 ? `調整 ${n} 張照片…` : "調整照片…", "E"],
     ["zip", n > 1 ? `壓縮打包 ${n} 張…` : "壓縮打包…", "⇧⌘K"],
     ["rethumb", n > 1 ? `重新產生 ${n} 張縮圖` : "重新產生縮圖"],
@@ -1726,6 +1730,8 @@ ctxMenu.addEventListener("click", (ev) => {
   else if (a === "export") openExport();
   else if (a === "rethumb") void regenerateThumbs();
   else if (a === "edit") openEditor();
+  else if (a === "rotl") void rotateTargets(false);
+  else if (a === "rotr") void rotateTargets(true);
   else if (a === "zip") void makeZip();
   else if (a === "copy") void transfer("copy");
   else if (a === "move") void transfer("move");
@@ -1859,6 +1865,34 @@ function openEditor() {
   void editor.open(list, start);
 }
 $("btn-edit").addEventListener("click", openEditor);
+
+// ---------------------------------------------------------------- 旋轉（[ 逆時針、] 順時針）
+
+let rotating = Promise.resolve();
+
+/** 旋轉焦點 / 選取的照片 90°，結果存回原檔，縮圖跟著更新（連按會依序處理） */
+function rotateTargets(clockwise: boolean) {
+  const ids: number[] = targets();
+  if (!ids.length) return;
+  rotating = rotating.then(async () => {
+    try {
+      const r = await api.rotate(S.session, ids, clockwise);
+      for (const [id, o] of r.done) {
+        const m = S.meta.get(id);
+        // 寬高對調（狀態列的長 × 寬）
+        if (m && m.width && m.height) [m.width, m.height] = [m.height, m.width];
+        void o;
+      }
+      for (const k of [...fileInfoCache.keys()]) if (ids.some((id) => k === `${S.session}:${id}`)) fileInfoCache.delete(k);
+      grid.reloadThumbs(new Set(ids));
+      if (S.loupe) showLoupe();
+      renderStatus();
+      if (r.failed.length) toast(`有 ${r.failed.length} 張無法旋轉：${r.failed[0]}`, 8000);
+    } catch (e) {
+      toast(`無法旋轉：${e}`);
+    }
+  });
+}
 
 // ---------------------------------------------------------------- 壓縮打包
 
