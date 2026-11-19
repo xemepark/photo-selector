@@ -41,7 +41,7 @@ import {
 
 // ---------------------------------------------------------------- state
 
-type FilterKey = "suggest" | "eyes" | "sharp" | "rating" | "label" | "kind" | "camera" | "lens";
+type FilterKey = "suggest" | "eyes" | "sharp" | "rating" | "label" | "edited" | "kind" | "camera" | "lens";
 
 const cull = new Cull();
 
@@ -66,6 +66,7 @@ const S = {
     sharp: new Set<string>(),
     suggest: new Set<string>(),
     eyes: new Set<string>(),
+    edited: new Set<string>(),
   } as Record<FilterKey, Set<string>>,
   /** 已刪除（移到垃圾桶）的項目：留在陣列裡維持 id = 索引，但不再顯示 */
   removed: new Set<number>(),
@@ -242,6 +243,8 @@ function facet(key: FilterKey, it: Item): string {
     }
     case "label":
       return m?.label ? (labelKey(m.label) ?? "other") : "none";
+    case "edited":
+      return m?.edited ? "yes" : "no";
     case "kind":
       return it.kind;
     case "camera":
@@ -255,7 +258,7 @@ function facet(key: FilterKey, it: Item): string {
   }
 }
 
-const FILTER_KEYS: FilterKey[] = ["suggest", "eyes", "sharp", "rating", "label", "kind", "camera", "lens"];
+const FILTER_KEYS: FilterKey[] = ["suggest", "eyes", "sharp", "rating", "label", "edited", "kind", "camera", "lens"];
 
 /** 尚未刪除的項目 */
 function live(): Item[] {
@@ -346,6 +349,7 @@ function renderFilters() {
       ["other", "其他標籤名稱"],
     ],
   ]);
+  groups.push(["edited", "調整", [["yes", "已調整"], ["no", "未調整"]]]);
   groups.push(["kind", "檔案類型", Object.entries(KIND_NAMES)]);
   groups.push(["camera", "相機", dyn("camera")]);
   groups.push(["lens", "鏡頭", dyn("lens")]);
@@ -354,7 +358,8 @@ function renderFilters() {
   for (const [key, title, rows] of groups) {
     const c = counts(key);
     const visible = rows.filter(([v]) => (c.get(v) ?? 0) > 0 || S.filters[key].has(v));
-    const always = key === "rating" || key === "suggest" || key === "eyes" || key === "sharp";
+    // 「調整」：只要有調整過的照片就顯示（即使全部都調整過）
+    const always = key === "rating" || key === "suggest" || key === "eyes" || key === "sharp" || (key === "edited" && (c.get("yes") ?? 0) > 0);
     if (!visible.length || (!always && visible.length < 2 && !S.filters[key].size)) continue;
     html += `<div class="filter-group"><h4>${title}</h4>`;
     for (const [v, label] of visible) {
@@ -1847,8 +1852,11 @@ const editor = new Editor($("editor"), {
     }
     grid.reloadThumbs(new Set(results.map(([id]) => id)));
     grid.refresh();
+    renderFilters();
   },
   closed: () => {
+    // 關閉時重新套用篩選（例如正在看「已調整」，剛重設的照片要離開清單）
+    update();
     grid.refreshViewport();
     gridEl.focus();
   },
