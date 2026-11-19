@@ -497,6 +497,8 @@ function fileInfoHtml(id: number, info: FileInfo | undefined) {
     const fmt = info.parts.map((p) => p.ext).join(" + ");
     const size = info.parts.map((p) => fmtBytes(p.size)).join(" + ");
     seg.push(`<b>${escapeHtml(fmt)}</b>`);
+    // 相機品牌與型號（讀得到 EXIF 才顯示）
+    if (m?.camera) seg.push(escapeHtml(m.camera));
     const w = m?.width || info.width;
     const h = m?.height || info.height;
     if (w && h) seg.push(`${w} × ${h}`);
@@ -504,8 +506,9 @@ function fileInfoHtml(id: number, info: FileInfo | undefined) {
     seg.push(`建立 ${fmtDateTime(info.created)}`);
     seg.push(`修改 ${fmtDateTime(info.modified)}`);
     seg.push(`色彩空間 ${escapeHtml(info.color_space ?? "未標示（視為 sRGB）")}`);
-  } else if (m?.width && m?.height) {
-    seg.push(`${m.width} × ${m.height}`);
+  } else {
+    if (m?.camera) seg.push(escapeHtml(m.camera));
+    if (m?.width && m?.height) seg.push(`${m.width} × ${m.height}`);
   }
   return seg.map((x) => `<span>${x}</span>`).join("");
 }
@@ -922,6 +925,8 @@ function applyMetaBatch(metas: [number, Meta][]) {
   }
   S.metaLoaded += metas.length;
   scheduleUpdate();
+  // 焦點那張的相機資訊剛讀到：更新最下面的檔案資訊
+  if (S.focus !== null && metas.some(([id]) => id === S.focus)) renderFileInfo();
 }
 
 function flushEarlyMeta() {
