@@ -8,7 +8,7 @@
 
 import { api, url, Item, EditParams } from "./api";
 import { CurveEditor, Pt, cleanCurve, curveLut, sameCurve } from "./curve";
-import { MAX_SPOT_POINTS, Spot, SpotMode, applySpots, cleanSpots, distToStroke, findSource, outerR } from "./heal";
+import { MAX_SPOT_POINTS, Spot, SpotMode, applySpots, autoRadius, cleanSpots, distToStroke, findSource, outerR } from "./heal";
 import { Crop, MAX_ANGLE, RATIOS, bboxFrame, bisect, fits, fitted, fromNorm, fullCrop, largestAt, toFrame, toImg, toNorm } from "./crop";
 
 type NumKey = Exclude<keyof EditParams, "curve" | "hsl" | "crop" | "spots">;
@@ -114,6 +114,8 @@ function spotIcon(m: SpotMode, color: string): HTMLImageElement {
 /** 目標調整工具圖示（仿 Camera Raw：左上十字 + 右下圓心靶） */
 const TARGET_ICON = `<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M5 1.5v6M2 4.5h6"/><circle cx="10.5" cy="10.5" r="3.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="10.5" cy="10.5" r="1.4" fill="currentColor"/></svg>`;
 const CURVE_TAT_ICON = `<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3 16C8 16 8 4 17 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="3" cy="16" r="1.6" fill="currentColor"/><circle cx="17" cy="4" r="1.6" fill="currentColor"/></svg>`;
+const TRASH_ICON = `<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.8 9.5h6.4L12 4M6.8 6.5v5M9.2 6.5v5"/></svg>`;
+const EYE_ICON = `<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.4" d="M1 8s2.6-4.5 7-4.5S15 8 15 8s-2.6 4.5-7 4.5S1 8 1 8z"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>`;
 const EYEDROPPER = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M13.6 2.4a2 2 0 0 0-2.8 0L9.3 3.9l-.7-.7-1 1 .7.7-5.5 5.5a1.6 1.6 0 0 0-.4.7l-.6 2.3a.6.6 0 0 0 .8.8l2.3-.6c.3-.1.5-.2.7-.4L11.1 8l.7.7 1-1-.7-.7 1.5-1.5a2 2 0 0 0 0-2.8zM4 12.9l-1.3.4.4-1.3L8.6 6.4l.9.9z"/></svg>`;
 const toLinJs = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
 const toSrgbJs = (c: number) => {
@@ -583,6 +585,25 @@ export class Editor {
       }
     }
     this.q("#ed-ov-show").addEventListener("change", () => this.drawOverlay());
+    this.q("#ed-patch-eye").addEventListener("click", () => {
+      this.spotsHidden = !this.spotsHidden;
+      this.q("#ed-patch-eye").classList.toggle("active", this.spotsHidden);
+      this.draw();
+    });
+    this.q("#ed-spot-del").addEventListener("click", () => this.deleteSpot());
+    this.q<HTMLSelectElement>("#ed-spot-mode").addEventListener("change", (e) => {
+      e.stopPropagation();
+      const s = this.p.spots?.[this.selSpot];
+      if (!s) return;
+      s.m = Number((e.target as HTMLSelectElement).value) as SpotMode;
+      this.refreshRank = 0;
+      this.resample(this.selSpot, 0);
+    });
+    this.q("#ed-spot-refresh").addEventListener("click", () => {
+      if (this.selSpot < 0) return;
+      this.refreshRank++;
+      this.resample(this.selSpot, this.refreshRank);
+    });
     this.q("#ed-viz").addEventListener("change", () => this.draw());
     this.q("#ed-viz-amt").addEventListener("input", (e) => {
       e.stopPropagation();
@@ -684,6 +705,7 @@ export class Editor {
         if (k === "patch") {
           this.p.spots = [];
           this.selSpot = -1;
+          this.syncSpotSel();
         }
         if (k === "crop") {
           if (this.cropping) {
@@ -780,13 +802,19 @@ export class Editor {
           <input type="range" data-brush="${k}" min="${min}" max="${max}" step="1" />
         </div>`;
     const patch = `<div class="ed-patch">
-        <div class="ed-patch-tools">${SPOT_TOOLS.map((t) => `<button class="ed-ptool" data-ptool="${t.m}" title="${t.tip}">${t.icon}<span>${t.label}</span></button>`).join("")}</div>
+        <div class="ed-patch-tools">${SPOT_TOOLS.map((t) => `<button class="ed-ptool" data-ptool="${t.m}" title="${t.label}：${t.tip.split("：")[1] ?? t.tip}">${t.icon}</button>`).join("")}<span id="ed-ptool-name" class="ed-ptool-name"></span></div>
         ${brushRow("size", "大小", 1, 200)}
-        ${brushRow("feather", "羽化", 0, 100)}
-        ${brushRow("opacity", "不透明度", 1, 100)}
-        <label class="check small"><input type="checkbox" id="ed-ov-show" checked /> 顯示疊加（修補範圍與來源）</label>
+        <div class="ed-feather-row">${brushRow("feather", "羽化", 0, 100)}</div>
+        <div id="ed-spot-sel" class="ed-spot-sel hidden">
+          <div class="ed-spot-sel-head"><span>已選取</span><button id="ed-spot-del" class="ed-ib" title="刪除這筆修補（Delete）">${TRASH_ICON}</button></div>
+          <div class="ed-crop-row"><label>填滿</label><select id="ed-spot-mode">${SPOT_TOOLS.map((t) => `<option value="${t.m}">${t.label}</option>`).join("")}</select></div>
+          ${brushRow("opacity", "不透明", 1, 100)}
+          <div class="ed-spot-refresh"><button id="ed-spot-refresh" title="換一個取樣的地方重新填補">⟳ 重新整理</button></div>
+        </div>
+        <div class="muted small ed-crop-tip">ⓘ ⌘ + 在相片上拖曳可選取自訂來源</div>
         <div class="ed-crop-row"><label class="check small"><input type="checkbox" id="ed-viz" /> 顯現汙點</label><input type="range" id="ed-viz-amt" min="1" max="100" value="40" /></div>
-        <div class="muted small ed-crop-tip">B 開始修補 · 在照片上塗抹要處理的地方 · 拖曳白色範圍移動、修復 / 仿製可拖曳黃色來源換位置 · Delete 刪除選取 · ⌘Z 復原 · [ ] 調整大小</div>
+        <label class="check small"><input type="checkbox" id="ed-ov-show" checked /> 顯示覆蓋</label>
+        <div class="muted small ed-crop-tip">B 開始修補 · 點一下或塗抹要去掉的地方 · Delete 刪除選取 · ⌘Z 復原 · [ 變小 ] 變大</div>
       </div>`;
     const crop = `<div class="ed-crop">
         <div class="ed-crop-row">
@@ -845,7 +873,7 @@ export class Editor {
           <section class="ed-sec" data-sec="patch">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
               <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">修補</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
-              <button class="ed-ib" data-sec-reset="patch" title="清除所有修補">${RESET_ICON}</button>
+              <button id="ed-patch-eye" class="ed-ib" title="暫時隱藏修補效果（比較修補前後）">${EYE_ICON}</button><button class="ed-ib" data-sec-reset="patch" title="清除所有修補">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">${patch}</div>
           </section>
@@ -1077,6 +1105,9 @@ export class Editor {
     if (this.cropping) this.leaveCrop();
     this.selSpot = -1;
     this.pdrag = null;
+    this.spotsHidden = false;
+    this.q("#ed-patch-eye").classList.remove("active");
+    this.q("#ed-spot-sel").classList.add("hidden");
     this.setBefore(false);
     this.q("#ed-syncbox").classList.add("hidden");
     try {
@@ -1849,10 +1880,14 @@ export class Editor {
   private phover: { x: number; y: number } | null = null;
   private pdrag:
     | { kind: "paint"; pts: [number, number][] }
-    | { kind: "src" | "dest"; i: number; x: number; y: number; d0: [number, number]; p0: [number, number][] }
+    | { kind: "src" | "dest" | "custom"; i: number; x: number; y: number; d0: [number, number]; p0: [number, number][] }
     | null = null;
   private lastPtool: SpotMode = 0;
   private ovTmp: HTMLCanvasElement | null = null;
+  /** 修補標題的眼睛：暫時不套用修補（比較前後） */
+  private spotsHidden = false;
+  /** 「重新整理」換到第幾好的來源 */
+  private refreshRank = 0;
   private hoverSpot = -1;
 
   private vizOn() {
@@ -1864,7 +1899,7 @@ export class Editor {
     const gl = this.gl;
     const base = this.baseOrig;
     if (!gl || !base) return;
-    const spots = this.p.spots ?? [];
+    const spots = this.spotsHidden ? [] : (this.p.spots ?? []);
     const key = JSON.stringify(spots);
     if (key === this.baseKey) return;
     this.baseKey = key;
@@ -1891,6 +1926,10 @@ export class Editor {
     this.pdrag = null;
     if (m === null) this.selSpot = -1;
     this.el.querySelectorAll<HTMLElement>("[data-ptool]").forEach((b) => b.classList.toggle("active", Number(b.dataset.ptool) === m));
+    const shown = m ?? this.lastPtool;
+    this.q(".ed-feather-row").classList.toggle("hidden", shown === 0);
+    this.q("#ed-ptool-name").textContent = SPOT_TOOLS[shown].label;
+    this.syncSpotSel();
     this.overlay.classList.toggle("on", m !== null || this.cropping);
     this.overlay.style.cursor = m !== null ? "none" : "";
     if (m !== null) {
@@ -1956,6 +1995,7 @@ export class Editor {
     } else {
       for (let i = spots.length - 1; i >= 0; i--) {
         if (hitSpot(i, false)) {
+          if (this.selSpot !== i) this.refreshRank = 0;
           this.selSpot = i;
           this.syncBrushFromSpot(spots[i]);
           const s = spots[i];
@@ -1964,11 +2004,17 @@ export class Editor {
         }
       }
     }
+    // ⌘ + 拖曳：替選取的修補指定自訂來源（移除也可以）
+    if (!drag && (e.metaKey || e.ctrlKey) && this.selSpot >= 0 && spots[this.selSpot]) {
+      const s = spots[this.selSpot];
+      drag = { kind: "custom", i: this.selSpot, x, y, d0: [...s.d], p0: s.p.map((q) => [...q] as [number, number]) };
+    }
     if (!drag) {
       this.selSpot = -1;
       drag = { kind: "paint", pts: [[x, y]] };
     }
     this.pdrag = drag;
+    this.syncSpotSel();
     this.overlay.setPointerCapture(e.pointerId);
     this.drawOverlay();
   }
@@ -1976,9 +2022,10 @@ export class Editor {
   /** 選取某筆修補時，滑桿顯示它的設定 */
   private syncBrushFromSpot(s: Spot) {
     const vals = { size: Math.round(s.r * 2000), feather: Math.round(s.f * 100), opacity: Math.round(s.o * 100) };
-    for (const k of ["size", "feather", "opacity"] as const) {
+    for (const k of ["size", "feather"] as const) {
       for (const sel of [`[data-brush="${k}"]`, `[data-brush-num="${k}"]`]) this.q<HTMLInputElement>(sel).value = String(vals[k]);
     }
+    void vals.opacity;
   }
 
   private patchMove(e: PointerEvent) {
@@ -1999,7 +2046,14 @@ export class Editor {
     const dx = (x - g.x) / W;
     const dy = (y - g.y) / H;
     if (g.kind === "src") s.d = [g.d0[0] + dx, g.d0[1] + dy];
-    else {
+    else if (g.kind === "custom") {
+      // 來源中心跟著滑鼠：offset = 滑鼠位置 − 修補範圍中心
+      const xs = s.p.map((q) => q[0]);
+      const ys = s.p.map((q) => q[1]);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+      const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+      s.d = [x / W - cx, y / H - cy];
+    } else {
       // 移動修補範圍，來源留在原地
       s.p = g.p0.map(([px, py]) => [px + dx, py + dy] as [number, number]);
       s.d = [g.d0[0] - dx, g.d0[1] - dy];
@@ -2023,19 +2077,47 @@ export class Editor {
       const spot: Spot = {
         m: this.ptool,
         r: this.brush.size / 2000,
-        f: this.brush.feather / 100,
-        o: this.brush.opacity / 100,
+        // 移除沒有羽化設定（與 Camera Raw 相同），固定柔和邊緣
+        f: this.ptool === 0 ? 0.3 : this.brush.feather / 100,
+        o: 1,
         d: [0, 0],
         p: g.pts.map(([x, y]) => [Math.round((x / W) * 100000) / 100000, Math.round((y / H) * 100000) / 100000] as [number, number]),
       };
       this.uploadBase();
+      // 移除：自動擴大到蓋住整個物體（花瓣、灰塵常比筆刷大一點）
+      if (this.baseWork && spot.m === 0) spot.r = Math.round(autoRadius(this.baseWork, spot) * 100000) / 100000;
       // 自動找來源（移除：在周圍找最吻合的區域，不顯示；修復 / 仿製：之後可拖曳換位置）
       if (this.baseWork) spot.d = findSource(this.baseWork, spot);
       this.p.spots = [...(this.p.spots ?? []), spot];
       this.selSpot = this.p.spots.length - 1;
+      this.refreshRank = 0;
       this.markChanged();
+      this.syncSpotSel();
     }
     this.draw();
+  }
+
+  /** 重新替第 i 筆找來源（rank = 第幾好的；「重新整理」每按一次換下一個） */
+  private resample(i: number, rank: number) {
+    const s = this.p.spots?.[i];
+    const base = this.baseOrig;
+    if (!s || !base) return;
+    // 用「這一筆之前的修補都做完」的影像來找
+    const img = new ImageData(new Uint8ClampedArray(base.data), base.width, base.height);
+    applySpots(img, this.p.spots.slice(0, i));
+    s.d = findSource(img, s, rank);
+    this.markChanged();
+    this.syncSpotSel();
+    this.draw();
+  }
+
+  /** 「已選取」區塊：有選取的修補才顯示，內容是那一筆的填滿方式與不透明度 */
+  private syncSpotSel() {
+    const s = this.p.spots?.[this.selSpot];
+    this.q("#ed-spot-sel").classList.toggle("hidden", !s);
+    if (!s) return;
+    this.q<HTMLSelectElement>("#ed-spot-mode").value = String(s.m);
+    for (const sel of ['[data-brush="opacity"]', '[data-brush-num="opacity"]']) this.q<HTMLInputElement>(sel).value = String(Math.round(s.o * 100));
   }
 
   deleteSpot() {
@@ -2043,6 +2125,7 @@ export class Editor {
     this.p.spots = this.p.spots.filter((_, i) => i !== this.selSpot);
     this.selSpot = -1;
     this.markChanged();
+    this.syncSpotSel();
     this.draw();
   }
 
@@ -2051,6 +2134,7 @@ export class Editor {
     this.p.spots = this.p.spots.slice(0, -1);
     this.selSpot = -1;
     this.markChanged();
+    this.syncSpotSel();
     this.draw();
   }
 
@@ -2104,24 +2188,26 @@ export class Editor {
       g.drawImage(tmp, 0, 0);
       return sp;
     };
-    // 標記：小圓章裡畫工具圖示（移除 = 橡皮擦、修復 = OK 繃、仿製 = 印章）
+    // 標記（仿 Camera Raw）：直接畫工具圖示，選取中的是藍色，其他是白色；加深色陰影在亮處也看得到
     const pin = (x: number, y: number, m: SpotMode, active: boolean) => {
-      const rr = 8.5 * dpr;
-      g.beginPath();
-      g.arc(x, y, rr, 0, Math.PI * 2);
-      g.fillStyle = active ? "#f5b33a" : "rgba(30,30,34,0.85)";
-      g.fill();
-      g.lineWidth = 1.2 * dpr;
-      g.strokeStyle = "#fff";
-      g.stroke();
-      const img = spotIcon(m, active ? "#1a1a1a" : "#fff");
-      if (img.complete) g.drawImage(img, x - 6 * dpr, y - 6 * dpr, 12 * dpr, 12 * dpr);
-      else img.onload = () => this.drawOverlay();
+      const img = spotIcon(m, active ? "#3d8bfd" : "#ffffff");
+      if (!img.complete) {
+        img.onload = () => this.drawOverlay();
+        return;
+      }
+      const z = 18 * dpr;
+      g.save();
+      g.shadowColor = "rgba(0,0,0,0.75)";
+      g.shadowBlur = 3 * dpr;
+      g.shadowOffsetY = 0.5 * dpr;
+      g.drawImage(img, x - z / 2, y - z / 2, z, z);
+      g.restore();
     };
-    /** 標記放在筆刷路徑起點的右上方 */
-    const pinAt = (sp: [number, number][], r: number): [number, number] => {
-      const rw = r * v.s * dpr;
-      return [sp[0][0] + rw * 0.7, sp[0][1] - rw * 0.7];
+    /** 標記放在修補範圍的中心 */
+    const pinAt = (sp: [number, number][]): [number, number] => {
+      const xs = sp.map((q) => q[0]);
+      const ys = sp.map((q) => q[1]);
+      return [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
     };
     const show = this.q<HTMLInputElement>("#ed-ov-show").checked;
     // 滑鼠下的修補（顯示外框）
@@ -2146,7 +2232,7 @@ export class Editor {
       const dst = this.spotPx(s, false);
       const sp = dst.pts.map(([x, y]) => toS(x, y));
       if (sel || i === hover) outline(dst.pts, dst.r, "#fff");
-      if (sel && s.m !== 0) {
+      if (sel && (s.m !== 0 || this.pdrag?.kind === "custom")) {
         // 修復 / 仿製：來源外框（黃）與連線
         const src = this.spotPx(s, true);
         const ss = outline(src.pts, src.r, "#f5b33a");
@@ -2159,7 +2245,7 @@ export class Editor {
         g.stroke();
         g.setLineDash([]);
       }
-      const [px, py] = pinAt(sp, dst.r);
+      const [px, py] = pinAt(sp);
       pin(px, py, s.m, sel);
     });
     const d = this.pdrag;
@@ -2180,9 +2266,29 @@ export class Editor {
       g.beginPath();
       g.arc(cx, cy, rw + 1.5 * dpr, 0, Math.PI * 2);
       g.stroke();
-      // 羽化：內圈（開始變淡）與外圈（完全透明）
+      // 仿 Camera Raw：圓上四個短刻度 + 中心十字
+      g.lineWidth = 1.5 * dpr;
+      g.strokeStyle = "#fff";
+      g.beginPath();
+      const tk = Math.min(6 * dpr, rw * 0.5);
+      for (const [ux, uy] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ]) {
+        g.moveTo(cx + ux * (rw - tk), cy + uy * (rw - tk));
+        g.lineTo(cx + ux * (rw + tk), cy + uy * (rw + tk));
+      }
+      const cp = 4 * dpr;
+      g.moveTo(cx - cp, cy);
+      g.lineTo(cx + cp, cy);
+      g.moveTo(cx, cy - cp);
+      g.lineTo(cx, cy + cp);
+      g.stroke();
+      // 修復 / 仿製：羽化範圍（內圈開始變淡、外圈完全透明）
       const fe = this.brush.feather / 100;
-      if (fe > 0.01) {
+      if (this.ptool !== 0 && fe > 0.01) {
         g.setLineDash([3 * dpr, 3 * dpr]);
         g.strokeStyle = "#ffffffaa";
         for (const rr of [rw * (1 - fe), outerR(rw, fe)]) {

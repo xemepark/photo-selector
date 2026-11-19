@@ -334,7 +334,7 @@ function correction(dst: Float32Array, src: Float32Array, alpha: Float32Array, b
  * 自動找來源：在筆刷周圍試不同方向與距離，比較外圍一圈像素與來源對應位置的差異，挑最像的。
  * 移除找得比較廣（4 種距離 × 16 方向），修復 / 仿製只在旁邊找（8 方向）。回傳相對值 offset
  */
-export function findSource(img: ImageData, s: Spot): [number, number] {
+export function findSource(img: ImageData, s: Spot, rank = 0): [number, number] {
   const W = img.width;
   const H = img.height;
   const px = toPx({ ...s, d: [0, 0] }, W, H);
@@ -356,8 +356,7 @@ export function findSource(img: ImageData, s: Spot): [number, number] {
   const dirs = s.m === 0 ? 16 : 8;
   // 來源不能壓到要修補的地方（否則會把瑕疵本身複製過來）
   const overlaps = (ox: number, oy: number) => px.pts.some(([x, y]) => distToStroke(px.pts, x + ox, y + oy) < near - 1);
-  let best: [number, number] = [0, 0];
-  let bestScore = Infinity;
+  const found: { o: [number, number]; score: number }[] = [];
   const data = img.data;
   for (const dd of dists) {
     for (let a = 0; a < dirs; a++) {
@@ -383,14 +382,15 @@ export function findSource(img: ImageData, s: Spot): [number, number] {
       }
       // 距離越遠稍微扣分（同樣像時取近的）；移除時左右優先於上下
       const score = sc / Math.max(1, n) + (dd / Math.max(1, px.r)) * 2 + (s.m === 0 ? Math.abs(Math.sin(ang)) * 6 : 0);
-      if (score < bestScore) {
-        bestScore = score;
-        best = [ox, oy];
-      }
+      found.push({ o: [ox, oy], score });
     }
   }
-  if (!Number.isFinite(bestScore) && s.m === 0) return [0, 0];
-  if (!Number.isFinite(bestScore)) {
+  // 「重新整理」：依分數排序，rank = 第幾好的來源（輪流換）
+  found.sort((a, b) => a.score - b.score);
+  let best: [number, number] = [0, 0];
+  if (found.length) best = found[rank % found.length].o;
+  else if (s.m === 0) return [0, 0];
+  else {
     // 都放不下（筆刷太大）：往圖中央的方向移
     const cx = (x0 + x1) / 2;
     const cy = (y0 + y1) / 2;
@@ -441,4 +441,80 @@ export function cleanSpots(v: unknown): Spot[] {
     });
   }
   return out;
+}
+
+/**
+ * 移除時自動擴大範圍（仿 Camera Raw）：點在花瓣、灰塵上時，筆刷常常沒有完全蓋住。
+ * 從筆刷半徑往外試，直到那一圈的顏色和更外圍的背景差不多為止（最多擴大到 2 倍），回傳新的半徑（相對長邊）
+ */
+export function autoRadius(img: ImageData, s: Spot): number {
+  const W = img.width;
+  const H = img.height;
+  const L = Math.max(W, H);
+  const r0 = s.r * L;
+  if (r0 < 1) return s.r;
+  const pts = s.p.map(([x, y]) => [x * W, y * H] as [number, number]);
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const [x, y] of pts) {
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x);
+    y1 = Math.max(y1, y);
+  }
+  const reach = r0 * 2.8 + 3;
+  const bx0 = Math.max(0, Math.floor(x0 - reach));
+  const by0 = Math.max(0, Math.floor(y0 - reach));
+  const bx1 = Math.min(W, Math.ceil(x1 + reach));
+  const by1 = Math.min(H, Math.ceil(y1 + reach));
+  const step = Math.max(1, Math.floor(Math.sqrt(((bx1 - bx0) * (by1 - by0)) / 40000)));
+  // 每個取樣點：到筆刷路徑的距離與顏色
+  const ds: number[] = [];
+  const cs: number[] = [];
+  for (let y = by0; y < by1; y += step) {
+    for (let x = bx0; x < bx1; x += step) {
+      const d = distToStroke(pts, x + 0.5, y + 0.5);
+      if (d > reach) continue;
+      const k = (y * W + x) * 4;
+      ds.push(d);
+      cs.push(img.data[k], img.data[k + 1], img.data[k + 2]);
+    }
+  }
+  const ringMean = (a: number, b: number) => {
+    const m = [0, 0, 0];
+    let n = 0;
+    for (let i = 0; i < ds.length; i++) {
+      if (ds[i] < a || ds[i] >= b) continue;
+      m[0] += cs[i * 3];
+      m[1] += cs[i * 3 + 1];
+      m[2] += cs[i * 3 + 2];
+      n++;
+    }
+    return n ? m.map((v) => v / n) : null;
+  };
+  const bg = ringMean(r0 * 2.3, r0 * 2.8 + 3);
+  if (!bg) return s.r;
+  const band = Math.max(1.5, r0 * 0.12);
+  // 這一圈裡「和背景差很多」的點佔多少（細長的花瓣尖端只佔一小部分，用比例而不是平均才抓得到）
+  const off = (a: number, b: number) => {
+    let n = 0;
+    let bad = 0;
+    for (let i = 0; i < ds.length; i++) {
+      if (ds[i] < a || ds[i] >= b) continue;
+      n++;
+      if (Math.hypot(cs[i * 3] - bg[0], cs[i * 3 + 1] - bg[1], cs[i * 3 + 2] - bg[2]) > 38) bad++;
+    }
+    return n ? bad / n : 0;
+  };
+  // 背景本身的雜訊程度（顆粒多的背景，門檻跟著放寬）
+  const noise = off(r0 * 2.3, r0 * 2.8 + 3);
+  const clean = (a: number, b: number) => off(a, b) <= noise + 0.02;
+  // 移除固定羽化 0.3：物體要完全落在不透明的內圈裡 → 半徑 = 物體半徑 / 0.7
+  const fit = (R: number) => Math.min(0.5, Math.min(r0 * 2.6, Math.max(r0, (R + band) / 0.7)) / L);
+  for (let R = r0 * 0.6; R <= r0 * 2; R += band) {
+    if (clean(R, R + band) && clean(R + band, R + band * 2)) return fit(R);
+  }
+  return fit(r0 * 2);
 }
