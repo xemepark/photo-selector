@@ -556,6 +556,51 @@ export class Editor {
       b.addEventListener("click", () => this.setHslTab(Number(b.dataset.hslTab))),
     );
     this.setHslTab(loadHslTab());
+    // 右側面板寬度可拖曳調整（記住寬度）
+    {
+      const panel = this.q(".ed-panel");
+      const DEF = 272;
+      const clampW = (w: number) => Math.round(Math.max(220, Math.min(480, w)));
+      let w0 = DEF;
+      try {
+        w0 = clampW(Number(localStorage.getItem("editPanelW")) || DEF);
+      } catch {
+        /* ignore */
+      }
+      panel.style.width = `${w0}px`;
+      const handle = this.q("#ed-resizer");
+      handle.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        handle.setPointerCapture(e.pointerId);
+        const x0 = e.clientX;
+        const start = panel.getBoundingClientRect().width;
+        const move = (ev: PointerEvent) => {
+          panel.style.width = `${clampW(start + (x0 - ev.clientX))}px`;
+          this.draw();
+        };
+        const up = () => {
+          handle.removeEventListener("pointermove", move);
+          handle.removeEventListener("pointerup", up);
+          try {
+            localStorage.setItem("editPanelW", String(Math.round(panel.getBoundingClientRect().width)));
+          } catch {
+            /* ignore */
+          }
+          this.draw();
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", up);
+      });
+      handle.addEventListener("dblclick", () => {
+        panel.style.width = `${DEF}px`;
+        try {
+          localStorage.setItem("editPanelW", String(DEF));
+        } catch {
+          /* ignore */
+        }
+        this.draw();
+      });
+    }
     this.overlay = this.q<HTMLCanvasElement>("#ed-overlay");
     this.overlay.addEventListener("pointerdown", (e) => (this.cropping ? this.cropDown(e) : this.patchDown(e)));
     this.overlay.addEventListener("pointermove", (e) => (this.cropping ? this.cropMove(e) : this.patchMove(e)));
@@ -868,7 +913,7 @@ export class Editor {
         <div id="ed-stage" class="ed-stage"><canvas id="ed-canvas"></canvas><div id="ed-msg" class="ed-msg"></div><div id="ed-badge" class="ed-badge hidden">原圖</div><canvas id="ed-overlay" class="ed-overlay"></canvas><div id="ed-tat" class="ed-tat hidden"><span class="ed-tat-grip" title="拖曳移動"></span><button data-tat="curve" title="曲線目標調整">${CURVE_TAT_ICON}</button><button data-tat="hsl" title="HSL 目標調整"><span class="ed-wheel"></span></button><span class="ed-tat-sep"></span><div class="ed-tat-tabs">${HSL_TABS.map((t, i) => `<button data-tat-tab="${i}">${t === "明亮度" ? "明度" : t}</button>`).join("")}</div><button class="ed-tat-x" title="結束目標調整（Esc）">✕</button></div><div id="ed-tool-hint" class="ed-tool-hint hidden"></div></div>
         <div id="ed-strip" class="ed-strip"></div>
       </div>
-      <aside class="ed-panel">
+      <aside class="ed-panel"><div id="ed-resizer" class="ed-resizer" title="拖曳調整寬度（雙擊恢復預設）"></div>
         <div class="ed-histo-wrap">
           <canvas id="ed-histo" class="ed-histo"></canvas>
           <div id="ed-histo-tip" class="ed-histo-tip"></div>
@@ -879,19 +924,16 @@ export class Editor {
           <button id="ed-next" title="下一張（→）">›</button>
         </div>
         <div class="ed-scroll">
-          <section class="ed-sec" data-sec="crop">
+          <section class="ed-sec" data-sec="curve">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
-              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">裁切</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
-              <button id="ed-crop-tool" class="ed-ib" title="裁切（C）">${CROP_ICON}</button><button id="ed-level-tool" class="ed-ib" title="拉直工具：在照片上沿著應該水平或垂直的線拖曳">${LEVEL_ICON}</button><button class="ed-ib" data-sec-reset="crop" title="重設裁切">${RESET_ICON}</button>
+              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">曲線</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button id="ed-curve-pick" class="ed-ib" title="曲線目標調整：在照片上按住某個亮度的地方，往上拖變亮、往下拖變暗">${TARGET_ICON}</button>
+              <button class="ed-ib" data-sec-reset="curve" title="重設曲線">${RESET_ICON}</button>
             </div>
-            <div class="ed-sec-body">${crop}</div>
-          </section>
-          <section class="ed-sec" data-sec="patch">
-            <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
-              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">修補</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
-              <button id="ed-patch-eye" class="ed-ib" title="暫時隱藏修補效果（比較修補前後）">${EYE_ICON}</button><button class="ed-ib" data-sec-reset="patch" title="清除所有修補">${RESET_ICON}</button>
+            <div class="ed-sec-body">
+              <canvas id="ed-curve" class="ed-curve"></canvas>
+              <div id="ed-curve-info" class="muted small ed-curve-info"></div>
             </div>
-            <div class="ed-sec-body">${patch}</div>
           </section>
           <section class="ed-sec" data-sec="basic">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
@@ -914,16 +956,19 @@ export class Editor {
             </div>
             <div class="ed-sec-body">${hsl}</div>
           </section>
-          <section class="ed-sec" data-sec="curve">
+          <section class="ed-sec" data-sec="patch">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
-              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">曲線</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
-              <button id="ed-curve-pick" class="ed-ib" title="曲線目標調整：在照片上按住某個亮度的地方，往上拖變亮、往下拖變暗">${TARGET_ICON}</button>
-              <button class="ed-ib" data-sec-reset="curve" title="重設曲線">${RESET_ICON}</button>
+              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">修補</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button id="ed-patch-eye" class="ed-ib" title="暫時隱藏修補效果（比較修補前後）">${EYE_ICON}</button><button class="ed-ib" data-sec-reset="patch" title="清除所有修補">${RESET_ICON}</button>
             </div>
-            <div class="ed-sec-body">
-              <canvas id="ed-curve" class="ed-curve"></canvas>
-              <div id="ed-curve-info" class="muted small ed-curve-info"></div>
+            <div class="ed-sec-body">${patch}</div>
+          </section>
+          <section class="ed-sec" data-sec="crop">
+            <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
+              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">裁切</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button id="ed-crop-tool" class="ed-ib" title="裁切（C）">${CROP_ICON}</button><button id="ed-level-tool" class="ed-ib" title="拉直工具：在照片上沿著應該水平或垂直的線拖曳">${LEVEL_ICON}</button><button class="ed-ib" data-sec-reset="crop" title="重設裁切">${RESET_ICON}</button>
             </div>
+            <div class="ed-sec-body">${crop}</div>
           </section>
           <div class="ed-tools">
             <button id="ed-before" title="按 \\ 切換調整前 / 調整後">調整前 / 後（\\）</button>
