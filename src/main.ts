@@ -2230,8 +2230,11 @@ const editor = new Editor($("editor"), {
 /** 調整：選取多張時逐張調整選取的照片，否則可在目前顯示的所有照片間切換 */
 function openEditor() {
   if (S.focus === null || slideshow.active || S.compare.length) return;
+  // 只把選取的照片帶進調整視窗；只選一張（或沒選）時就只開焦點那一張
   const sel = S.view.filter((it) => S.selected.has(it.id));
-  const list = sel.length > 1 ? sel : S.view;
+  const focusItem = S.view.find((it) => it.id === S.focus);
+  const list = sel.length > 1 ? sel : focusItem ? [focusItem] : [];
+  if (!list.length) return;
   const start = Math.max(0, list.findIndex((it) => it.id === S.focus));
   const wasLoupe = S.loupe;
   if (wasLoupe) closeLoupe();
