@@ -904,6 +904,7 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
         "檔案",
         true,
         &[
+            &MenuItem::with_id(app, "new-tab", "新增分頁", true, Some("CmdOrCtrl+T"))?,
             &MenuItem::with_id(app, "open", "開啟資料夾…", true, Some("CmdOrCtrl+O"))?,
             &MenuItem::with_id(app, "up", "上一層資料夾", true, Some("CmdOrCtrl+Up"))?,
             &P::separator(app)?,
@@ -916,7 +917,9 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
             &MenuItem::with_id(app, "refresh", "重新整理", true, Some("CmdOrCtrl+R"))?,
             &MenuItem::with_id(app, "rethumb", "重新產生選取照片的縮圖", true, None::<&str>)?,
             &P::separator(app)?,
-            &P::close_window(app, Some("關閉視窗"))?,
+            // ⌘W 關閉分頁（與瀏覽器 / Finder 相同）；關閉整個視窗改成 ⇧⌘W
+            &MenuItem::with_id(app, "close-tab", "關閉分頁", true, Some("CmdOrCtrl+W"))?,
+            &MenuItem::with_id(app, "close-window", "關閉視窗", true, Some("CmdOrCtrl+Shift+W"))?,
         ],
     )?;
     let edit = Submenu::with_items(
@@ -934,7 +937,13 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
         app,
         "視窗",
         true,
-        &[&P::minimize(app, Some("縮到最小"))?, &P::fullscreen(app, Some("進入全螢幕"))?],
+        &[
+            &MenuItem::with_id(app, "prev-tab", "上一個分頁", true, Some("CmdOrCtrl+Shift+["))?,
+            &MenuItem::with_id(app, "next-tab", "下一個分頁", true, Some("CmdOrCtrl+Shift+]"))?,
+            &P::separator(app)?,
+            &P::minimize(app, Some("縮到最小"))?,
+            &P::fullscreen(app, Some("進入全螢幕"))?,
+        ],
     )?;
     Menu::with_items(app, &[&app_menu, &file, &edit, &window])
 }
@@ -944,6 +953,12 @@ pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
     let builder = builder.menu(mac_menu).on_menu_event(|app, ev| {
+        if ev.id().0 == "close-window" {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.close();
+            }
+            return;
+        }
         let _ = app.emit("menu", ev.id().0.clone());
     });
     builder

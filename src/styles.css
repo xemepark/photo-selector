@@ -98,7 +98,7 @@ h3 {
 
 /* ---------- grid ---------- */
 #center { position: relative; min-width: 0; min-height: 0; }
-#grid { position: absolute; inset: 0; overflow-y: auto; outline: none; }
+#grid { position: absolute; inset: 33px 0 0 0; overflow-y: auto; outline: none; }
 #grid-spacer { position: relative; width: 100%; }
 .cell {
   position: absolute; top: 0; left: 0;
@@ -125,7 +125,7 @@ h3 {
 }
 .badge.warn { background: #c9372ccc; color: #fff; }
 
-.empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.empty { position: absolute; inset: 33px 0 0 0; display: flex; align-items: center; justify-content: center; }
 .empty-inner { text-align: center; }
 .empty h2 { margin: 0 0 4px; font-size: 22px; }
 .empty p { color: var(--muted); margin: 0 0 16px; }
@@ -498,3 +498,16 @@ body.resizing { cursor: col-resize; user-select: none; }
 .drop-overlay.hidden { display: none; }
 .drop-box { border: 3px dashed var(--accent); border-radius: 16px; padding: 36px 56px; background: #1d1d22ee; text-align: center; font-size: 18px; display: flex; flex-direction: column; gap: 8px; }
 .drop-icon { font-size: 44px; }
+
+/* 分頁列 */
+.tabbar { position: absolute; top: 0; left: 0; right: 0; height: 33px; box-sizing: border-box; display: flex; align-items: stretch; gap: 2px; padding: 4px 8px 0; background: var(--panel); border-bottom: 1px solid var(--line); overflow-x: auto; flex: none; min-height: 32px; scrollbar-width: none; }
+.tabbar::-webkit-scrollbar { display: none; }
+.tab { display: flex; align-items: center; gap: 6px; max-width: 220px; min-width: 90px; padding: 0 6px 0 12px; border-radius: 6px 6px 0 0; background: transparent; color: var(--muted); cursor: default; user-select: none; font-size: 12px; border: 1px solid transparent; border-bottom: none; }
+.tab:hover { background: #ffffff0d; color: var(--text); }
+.tab.active { background: var(--bg); color: var(--text); border-color: var(--line); font-weight: 600; }
+.tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-x { border: none; background: transparent; color: var(--muted); padding: 0 4px; font-size: 11px; border-radius: 4px; opacity: 0; }
+.tab:hover .tab-x, .tab.active .tab-x { opacity: 1; }
+.tab-x:hover { background: #ffffff1f; color: var(--text); }
+.tab-new { border: none; background: transparent; color: var(--muted); font-size: 16px; padding: 0 10px; border-radius: 6px; }
+.tab-new:hover { background: #ffffff14; color: var(--text); }

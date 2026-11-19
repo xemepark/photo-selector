@@ -57,7 +57,7 @@ export class FolderTree {
 
   constructor(
     private el: HTMLElement,
-    private onOpen: (path: string) => void,
+    private onOpen: (path: string, ev?: MouseEvent) => void,
   ) {
     el.addEventListener("click", (ev) => this.onClick(ev));
   }
@@ -177,8 +177,8 @@ export class FolderTree {
       n.open = !n.open && !!n.hasChildren;
       return this.render();
     }
-    // 點名稱：開啟資料夾（樹維持原狀）
-    this.onOpen(n.path);
+    // 點名稱：開啟資料夾（樹維持原狀）；⌘ + 點 = 新分頁
+    this.onOpen(n.path, ev);
   }
 
   private nodeHtml(n: Node, depth: number): string {

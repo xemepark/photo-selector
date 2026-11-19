@@ -544,6 +544,7 @@ async function openFolder(path: string) {
   const recent = [res.dir, ...storage<string[]>("recent", []).filter((p) => p !== res.dir)].slice(0, 8);
   store("recent", recent);
   store("last", res.dir);
+  syncTabDir(res.dir);
 
   pathInput.value = res.dir;
   pathInput.scrollLeft = pathInput.scrollWidth;
@@ -587,6 +588,174 @@ async function doRefreshFolder() {
   toast("已重新整理");
 }
 
+// ---------------------------------------------------------------- 分頁（多個資料夾）
+// 每個分頁記住自己的資料夾、選取、焦點、篩選、排序與捲動位置；切換分頁時重新開啟那個資料夾並還原
+// （縮圖與預覽都在快取裡，切換很快）。分頁清單存在本機，下次開啟沿用。
+
+interface TabState {
+  dir: string;
+  sel?: string[];
+  focus?: string | null;
+  anchor?: string | null;
+  filters?: Partial<Record<FilterKey, string[]>>;
+  sort?: string;
+  sortDesc?: boolean;
+  scroll?: number;
+}
+
+const IS_MAC_UI = /Mac/.test(navigator.platform) || navigator.userAgent.includes("Mac OS X");
+let tabs: TabState[] = storage<TabState[]>("tabs", []).filter((t) => t && typeof t.dir === "string" && t.dir);
+let activeTab = Math.min(Math.max(0, storage<number>("activeTab", 0)), Math.max(0, tabs.length - 1));
+let switchingTab = false;
+
+function saveTabs() {
+  store("tabs", tabs);
+  store("activeTab", activeTab);
+}
+
+/** 目前畫面的狀態 → 分頁記錄 */
+function captureTab(): TabState {
+  const name = (id: number | null) => (id !== null ? (S.items[id]?.name ?? null) : null);
+  return {
+    dir: S.dir,
+    sel: [...S.selected].map((id) => S.items[id]?.name).filter((n): n is string => !!n),
+    focus: name(S.focus),
+    anchor: name(S.anchor),
+    filters: Object.fromEntries(FILTER_KEYS.filter((k) => S.filters[k].size).map((k) => [k, [...S.filters[k]]])),
+    sort: S.sort,
+    sortDesc: S.sortDesc,
+    scroll: gridEl.scrollTop,
+  };
+}
+
+/** 開完資料夾後，還原分頁記住的選取、篩選、排序與捲動 */
+function restoreTab(t: TabState) {
+  const byName = new Map(S.items.map((it) => [it.name, it.id]));
+  for (const k of FILTER_KEYS) S.filters[k] = new Set(t.filters?.[k] ?? []);
+  if (t.sort) {
+    S.sort = t.sort;
+    $<HTMLSelectElement>("sort").value = t.sort;
+  }
+  if (typeof t.sortDesc === "boolean") {
+    S.sortDesc = t.sortDesc;
+    $("sort-dir").textContent = S.sortDesc ? "↑" : "↓";
+  }
+  const sel = (t.sel ?? []).map((n) => byName.get(n)).filter((id): id is number => id !== undefined);
+  if (sel.length) S.selected = new Set(sel);
+  const f = t.focus ? byName.get(t.focus) : undefined;
+  if (f !== undefined) S.focus = f;
+  const a = t.anchor ? byName.get(t.anchor) : undefined;
+  S.anchor = a ?? S.focus;
+  renderFilters();
+  update({ resetGrid: true });
+  const top = t.scroll ?? 0;
+  requestAnimationFrame(() => {
+    gridEl.scrollTop = top;
+    grid.refreshViewport();
+  });
+}
+
+/** 開資料夾後：目前分頁改成這個資料夾（沒有分頁時建立第一個） */
+function syncTabDir(dir: string) {
+  if (!tabs.length) {
+    tabs = [{ dir }];
+    activeTab = 0;
+  } else if (!switchingTab) tabs[activeTab] = { ...tabs[activeTab], dir };
+  saveTabs();
+  renderTabs();
+}
+
+function canSwitchTab() {
+  if (editor.isOpen) return toast("請先關閉調整視窗"), false;
+  if (slideshow.active) return toast("請先結束幻燈片"), false;
+  if (S.loupe) closeLoupe();
+  if (S.compare.length) closeCompare();
+  return true;
+}
+
+async function switchTab(i: number) {
+  if (i === activeTab || i < 0 || i >= tabs.length || !canSwitchTab()) return;
+  if (S.dir) tabs[activeTab] = captureTab();
+  activeTab = i;
+  await openTab(tabs[i]);
+}
+
+async function openTab(t: TabState) {
+  switchingTab = true;
+  try {
+    renderTabs();
+    await openFolder(t.dir);
+    if (S.dir) restoreTab(t);
+  } finally {
+    switchingTab = false;
+  }
+  saveTabs();
+  renderTabs();
+}
+
+/** 開新分頁（預設開同一個資料夾，之後在新分頁裡換資料夾即可） */
+async function newTab(dir?: string) {
+  if (!canSwitchTab()) return;
+  const target = dir ?? S.dir;
+  if (!target) return pickFolder();
+  if (S.dir && tabs.length) tabs[activeTab] = captureTab();
+  tabs.push({ dir: target });
+  activeTab = tabs.length - 1;
+  await openTab(tabs[activeTab]);
+}
+
+async function closeTab(i: number) {
+  if (tabs.length <= 1) return toast("至少要保留一個分頁");
+  if (i === activeTab && !canSwitchTab()) return;
+  tabs.splice(i, 1);
+  if (i < activeTab) {
+    activeTab--;
+    saveTabs();
+    return renderTabs();
+  }
+  if (i > activeTab) {
+    saveTabs();
+    return renderTabs();
+  }
+  activeTab = Math.min(i, tabs.length - 1);
+  await openTab(tabs[activeTab]);
+}
+
+function tabName(dir: string) {
+  const parts = dir.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? dir;
+}
+
+function renderTabs() {
+  const bar = $("tabbar");
+  bar.innerHTML =
+    tabs
+      .map(
+        (t, i) =>
+          `<div class="tab${i === activeTab ? " active" : ""}" data-tab="${i}" title="${escapeHtml(t.dir)}${i < 9 ? `（⌘${i + 1}）` : ""}"><span class="tab-name">${escapeHtml(tabName(t.dir))}</span>${tabs.length > 1 ? `<button class="tab-x" data-close="${i}" title="關閉分頁（⌘W）">✕</button>` : ""}</div>`,
+      )
+      .join("") + `<button id="tab-new" class="tab-new" title="新增分頁（⌘T）">＋</button>`;
+}
+
+$("tabbar").addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  const x = t.closest<HTMLElement>("[data-close]");
+  if (x) return void closeTab(Number(x.dataset.close));
+  if (t.closest("#tab-new")) return void newTab();
+  const tab = t.closest<HTMLElement>("[data-tab]");
+  if (tab) void switchTab(Number(tab.dataset.tab));
+});
+// 中鍵點分頁 = 關閉（與瀏覽器相同）
+$("tabbar").addEventListener("auxclick", (e) => {
+  if (e.button !== 1) return;
+  const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]");
+  if (tab) void closeTab(Number(tab.dataset.tab));
+});
+// 雙擊分頁列空白處 = 新分頁
+$("tabbar").addEventListener("dblclick", (e) => {
+  if (e.target === $("tabbar")) void newTab();
+});
+
 /** 重新產生選取照片的縮圖（刪掉快取重新讀取原檔） */
 async function regenerateThumbs() {
   const ids = [...S.selected];
@@ -605,7 +774,9 @@ async function pickFolder() {
   if (typeof dir === "string") openFolder(dir);
 }
 
-const folderTree = new FolderTree($("folder-tree"), (path) => {
+const folderTree = new FolderTree($("folder-tree"), (path, ev) => {
+  // ⌘ / Ctrl + 點資料夾：在新分頁開啟
+  if (ev && (ev.metaKey || ev.ctrlKey)) return void newTab(path);
   if (path !== S.dir) void openFolder(path);
 });
 $("tree-refresh").addEventListener("click", () => void folderTree.refresh());
@@ -1163,6 +1334,17 @@ document.addEventListener("keydown", (ev) => {
   if (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA") return;
   const mod = ev.ctrlKey || ev.metaKey;
   const k = ev.key;
+  // 分頁：⌘1–9 切換、⌃Tab / ⌃⇧Tab 下一個 / 上一個、⌘T 新增、⌘W 關閉（macOS 由選單處理 ⌘T / ⌘W）
+  if (mod && !ev.altKey && /^[1-9]$/.test(k) && tabs.length > 1) {
+    ev.preventDefault();
+    return void switchTab(Math.min(tabs.length, Number(k)) - 1);
+  }
+  if (ev.ctrlKey && k === "Tab" && tabs.length > 1) {
+    ev.preventDefault();
+    return void switchTab((activeTab + (ev.shiftKey ? tabs.length - 1 : 1)) % tabs.length);
+  }
+  if (mod && !ev.shiftKey && (k === "t" || k === "T") && !IS_MAC_UI) return ev.preventDefault(), void newTab();
+  if (mod && !ev.shiftKey && (k === "w" || k === "W") && !IS_MAC_UI) return ev.preventDefault(), void closeTab(activeTab);
 
   // 對話框開著時，鍵盤只用來關閉它（不要誤評分背景的照片）
   if (!ctxMenu.classList.contains("hidden") && k === "Escape") return ev.preventDefault(), hideMenu();
@@ -1609,6 +1791,18 @@ on<string>("menu", (e) => {
     case "refresh":
       void refreshFolder();
       break;
+    case "new-tab":
+      void newTab();
+      break;
+    case "close-tab":
+      void closeTab(activeTab);
+      break;
+    case "next-tab":
+      if (tabs.length > 1) void switchTab((activeTab + 1) % tabs.length);
+      break;
+    case "prev-tab":
+      if (tabs.length > 1) void switchTab((activeTab - 1 + tabs.length) % tabs.length);
+      break;
     case "rethumb":
       void regenerateThumbs();
       break;
@@ -1679,7 +1873,7 @@ async function openPath(text: string): Promise<boolean> {
     const p = ev.payload;
     if (p.type === "enter") {
       if (own() || !p.paths.length) return;
-      $("drop-text").textContent = p.paths.length > 1 ? "放開以開啟第一個資料夾" : "放開以開啟這個資料夾";
+      $("drop-text").textContent = p.paths.length > 1 ? `放開以分頁開啟這 ${p.paths.length} 個資料夾` : "放開以開啟這個資料夾";
       overlay.classList.remove("hidden");
     } else if (p.type === "leave") {
       overlay.classList.add("hidden");
@@ -1688,7 +1882,18 @@ async function openPath(text: string): Promise<boolean> {
       if (own() || !p.paths.length) return;
       if (editor.isOpen || slideshow.active) return toast("請先關閉調整視窗或幻燈片，再拖入資料夾");
       if (S.loupe) closeLoupe();
-      void openPath(p.paths[0]);
+      void (async () => {
+        // 拖入多個資料夾：第一個在目前分頁開啟，其他各開一個新分頁
+        if (!(await openPath(p.paths[0]))) return;
+        for (const extra of p.paths.slice(1)) {
+          try {
+            const r = await api.resolvePath(extra);
+            await newTab(r.dir);
+          } catch {
+            /* 不是資料夾或無法讀取：略過 */
+          }
+        }
+      })();
     }
   });
 }
@@ -2123,6 +2328,17 @@ setSideWidth(storage("sideWidth", SIDE_DEFAULT));
   await Promise.all(listeners);
   await folderTree.init();
   await restoreMusic();
-  const start = (await api.initialFolder().catch(() => null)) ?? storage<string | null>("last", null);
-  if (start) await openFolder(start);
+  const initial = await api.initialFolder().catch(() => null);
+  renderTabs();
+  if (tabs.length) {
+    // 還原上次的分頁；啟動時指定了資料夾就另開一個分頁
+    if (initial && !tabs.some((t) => t.dir === initial)) {
+      tabs.push({ dir: initial });
+      activeTab = tabs.length - 1;
+    }
+    await openTab(tabs[activeTab]);
+  } else {
+    const start = initial ?? storage<string | null>("last", null);
+    if (start) await openFolder(start);
+  }
 })();
