@@ -111,6 +111,9 @@ function spotIcon(m: SpotMode, color: string): HTMLImageElement {
   }
   return img;
 }
+/** 目標調整工具圖示（仿 Camera Raw：左上十字 + 右下圓心靶） */
+const TARGET_ICON = `<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M5 1.5v6M2 4.5h6"/><circle cx="10.5" cy="10.5" r="3.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="10.5" cy="10.5" r="1.4" fill="currentColor"/></svg>`;
+const CURVE_TAT_ICON = `<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3 16C8 16 8 4 17 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="3" cy="16" r="1.6" fill="currentColor"/><circle cx="17" cy="4" r="1.6" fill="currentColor"/></svg>`;
 const EYEDROPPER = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M13.6 2.4a2 2 0 0 0-2.8 0L9.3 3.9l-.7-.7-1 1 .7.7-5.5 5.5a1.6 1.6 0 0 0-.4.7l-.6 2.3a.6.6 0 0 0 .8.8l2.3-.6c.3-.1.5-.2.7-.4L11.1 8l.7.7 1-1-.7-.7 1.5-1.5a2 2 0 0 0 0-2.8zM4 12.9l-1.3.4.4-1.3L8.6 6.4l.9.9z"/></svg>`;
 const toLinJs = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
 const toSrgbJs = (c: number) => {
@@ -633,6 +636,40 @@ export class Editor {
     this.q("#ed-wb-pick").addEventListener("click", () => this.setTool("wb"));
     this.q("#ed-hsl-pick").addEventListener("click", () => this.setTool("hsl"));
     this.q("#ed-curve-pick").addEventListener("click", () => this.setTool("curve"));
+    // 目標調整浮動工具列（仿 Camera Raw）：切換曲線 / HSL、色相 / 飽和度 / 明度、關閉；左邊握把可拖曳
+    const tat = this.q("#ed-tat");
+    tat.querySelectorAll<HTMLElement>("[data-tat]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const t = b.dataset.tat as "curve" | "hsl";
+        if (this.tool !== t) this.setTool(t);
+      }),
+    );
+    tat.querySelectorAll<HTMLElement>("[data-tat-tab]").forEach((b) =>
+      b.addEventListener("click", () => this.setHslTab(Number(b.dataset.tatTab))),
+    );
+    tat.querySelector(".ed-tat-x")!.addEventListener("click", () => this.setTool(null));
+    const grip = tat.querySelector<HTMLElement>(".ed-tat-grip")!;
+    grip.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      const stage = this.q("#ed-stage").getBoundingClientRect();
+      const r0 = tat.getBoundingClientRect();
+      const ox = e.clientX - r0.left;
+      const oy = e.clientY - r0.top;
+      grip.setPointerCapture(e.pointerId);
+      const move = (ev: PointerEvent) => {
+        const x = Math.max(0, Math.min(stage.width - r0.width, ev.clientX - stage.left - ox));
+        const y = Math.max(0, Math.min(stage.height - r0.height, ev.clientY - stage.top - oy));
+        tat.style.left = `${x}px`;
+        tat.style.top = `${y}px`;
+        tat.style.bottom = "auto";
+      };
+      const up = () => {
+        grip.removeEventListener("pointermove", move);
+        grip.removeEventListener("pointerup", up);
+      };
+      grip.addEventListener("pointermove", move);
+      grip.addEventListener("pointerup", up);
+    });
     this.canvas.addEventListener("pointerdown", (e) => this.toolDown(e));
     this.canvas.addEventListener("pointermove", (e) => this.toolMove(e));
     this.canvas.addEventListener("pointerup", (e) => this.toolUp(e));
@@ -784,7 +821,7 @@ export class Editor {
     ).join("");
     return `
       <div class="ed-main">
-        <div id="ed-stage" class="ed-stage"><canvas id="ed-canvas"></canvas><div id="ed-msg" class="ed-msg"></div><div id="ed-badge" class="ed-badge hidden">原圖</div><canvas id="ed-overlay" class="ed-overlay"></canvas><div id="ed-tool-hint" class="ed-tool-hint hidden"></div></div>
+        <div id="ed-stage" class="ed-stage"><canvas id="ed-canvas"></canvas><div id="ed-msg" class="ed-msg"></div><div id="ed-badge" class="ed-badge hidden">原圖</div><canvas id="ed-overlay" class="ed-overlay"></canvas><div id="ed-tat" class="ed-tat hidden"><span class="ed-tat-grip" title="拖曳移動"></span><button data-tat="curve" title="曲線目標調整">${CURVE_TAT_ICON}</button><button data-tat="hsl" title="HSL 目標調整"><span class="ed-wheel"></span></button><span class="ed-tat-sep"></span><div class="ed-tat-tabs">${HSL_TABS.map((t, i) => `<button data-tat-tab="${i}">${t === "明亮度" ? "明度" : t}</button>`).join("")}</div><button class="ed-tat-x" title="結束目標調整（Esc）">✕</button></div><div id="ed-tool-hint" class="ed-tool-hint hidden"></div></div>
         <div id="ed-strip" class="ed-strip"></div>
       </div>
       <aside class="ed-panel">
@@ -800,43 +837,43 @@ export class Editor {
         <div class="ed-scroll">
           <section class="ed-sec" data-sec="crop">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
-              <span class="ed-chev">▾</span><span class="ed-sec-title">裁切</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">裁切</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
               <button id="ed-crop-tool" class="ed-ib" title="裁切（C）">${CROP_ICON}</button><button id="ed-level-tool" class="ed-ib" title="拉直工具：在照片上沿著應該水平或垂直的線拖曳">${LEVEL_ICON}</button><button class="ed-ib" data-sec-reset="crop" title="重設裁切">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">${crop}</div>
           </section>
           <section class="ed-sec" data-sec="patch">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
-              <span class="ed-chev">▾</span><span class="ed-sec-title">修補</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">修補</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
               <button class="ed-ib" data-sec-reset="patch" title="清除所有修補">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">${patch}</div>
           </section>
           <section class="ed-sec" data-sec="basic">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
-              <span class="ed-chev">▾</span><span class="ed-sec-title">亮度</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">亮度</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
               <button class="ed-ib" data-sec-reset="basic" title="重設亮度">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">${light}</div>
           </section>
           <section class="ed-sec" data-sec="color">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
-              <span class="ed-chev">▾</span><span class="ed-sec-title">顏色</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">顏色</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
               <button id="ed-wb-pick" class="ed-ib" title="白平衡滴管（I）：點選照片中應該是白色或灰色的地方，自動設定色溫與色調">${EYEDROPPER}</button><button class="ed-ib" data-sec-reset="color" title="重設顏色">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">${color}</div>
           </section>
           <section class="ed-sec" data-sec="hsl">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
-              <span class="ed-chev">▾</span><span class="ed-sec-title">HSL</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
-              <button id="ed-hsl-pick" class="ed-ib" title="目標調整滴管（T）：在照片上按住某個顏色上下拖曳，調整目前分頁中那個顏色">${EYEDROPPER}</button><button class="ed-ib" data-sec-reset="hsl" title="重設HSL">${RESET_ICON}</button>
+              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">HSL</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button id="ed-hsl-pick" class="ed-ib" title="目標調整滴管（T）：在照片上按住某個顏色上下拖曳，調整目前分頁中那個顏色">${TARGET_ICON}</button><button class="ed-ib" data-sec-reset="hsl" title="重設HSL">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">${hsl}</div>
           </section>
           <section class="ed-sec" data-sec="curve">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
-              <span class="ed-chev">▾</span><span class="ed-sec-title">曲線</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
-              <button id="ed-curve-pick" class="ed-ib" title="曲線目標調整：在照片上按住某個亮度的地方，往上拖變亮、往下拖變暗">${EYEDROPPER}</button>
+              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">曲線</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button id="ed-curve-pick" class="ed-ib" title="曲線目標調整：在照片上按住某個亮度的地方，往上拖變亮、往下拖變暗">${TARGET_ICON}</button>
               <button class="ed-ib" data-sec-reset="curve" title="重設曲線">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">
@@ -2169,6 +2206,7 @@ export class Editor {
     this.q("#ed-wb-pick").classList.toggle("active", this.tool === "wb");
     this.q("#ed-hsl-pick").classList.toggle("active", this.tool === "hsl");
     this.q("#ed-curve-pick").classList.toggle("active", this.tool === "curve");
+    this.syncTat();
     this.canvas.style.cursor = this.toolCursor();
     if (this.tool) {
       // 確認對應的區塊是展開的，看得到數值變化
@@ -2184,6 +2222,18 @@ export class Editor {
             ? "曲線目標調整：在照片上按住某個地方，往上拖變亮、往下拖變暗（Esc 結束）"
             : "",
     );
+  }
+
+  /** 浮動工具列：曲線 / HSL 目標調整時顯示，HSL 時才有色相 / 飽和度 / 明度分頁 */
+  private syncTat() {
+    const tat = this.q("#ed-tat");
+    const on = this.tool === "curve" || this.tool === "hsl";
+    tat.classList.toggle("hidden", !on);
+    this.q("#ed-stage").classList.toggle("tat-on", on);
+    tat.querySelectorAll<HTMLElement>("[data-tat]").forEach((b) => b.classList.toggle("active", b.dataset.tat === this.tool));
+    tat.querySelector<HTMLElement>(".ed-tat-tabs")!.classList.toggle("hidden", this.tool !== "hsl");
+    tat.querySelector<HTMLElement>(".ed-tat-sep")!.classList.toggle("hidden", this.tool !== "hsl");
+    tat.querySelectorAll<HTMLElement>("[data-tat-tab]").forEach((b) => b.classList.toggle("active", Number(b.dataset.tatTab) === this.hslTab));
   }
 
   private hint(text: string) {
@@ -2358,6 +2408,7 @@ export class Editor {
             : `linear-gradient(90deg, hsl(${hue} 70% 18%), hsl(${hue} 70% 50%), hsl(${hue} 70% 82%))`;
     });
     this.syncInputs();
+    if (this.tool) this.syncTat();
     if (this.tool === "hsl") this.hint(`目標調整（${HSL_TABS[t]}）：在照片上按住某個顏色，往右拖增加、往左拖減少（Esc 結束）`);
   }
 
