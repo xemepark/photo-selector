@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog, ask, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
@@ -1642,19 +1643,54 @@ function focusPath() {
 async function gotoPath() {
   const text = pathInput.value;
   if (!text.trim() || text.trim() === S.dir) return gridEl.focus();
+  if (!(await openPath(text))) pathInput.select();
+}
+
+/** 開啟一個路徑：資料夾 → 開啟；照片檔 → 開啟所在資料夾並選取那張。成功回傳 true */
+async function openPath(text: string): Promise<boolean> {
   try {
     const r = await api.resolvePath(text);
     await openFolder(r.dir);
     if (r.file) {
-      // 貼上的是照片的路徑 → 開啟所在資料夾並選取那張照片
-      const it = S.items.find((i) => i.files.some((f) => f.toLowerCase() === r.file!.toLowerCase()));
+      const want = r.file.toLowerCase();
+      const base = (p: string) => (p.split(/[\\/]/).pop() ?? p).toLowerCase();
+      const it = S.items.find((i) => i.files.some((f) => f.toLowerCase() === want || base(f) === want));
       if (it && S.viewIndex.has(it.id)) setFocus(it.id, false);
     }
     gridEl.focus();
+    return true;
   } catch (e) {
     toast(String(e), 4000);
-    pathInput.select();
+    return false;
   }
+}
+
+// ---------------------------------------------------------------- 從 Finder 拖資料夾 / 照片進來
+
+{
+  const overlay = $("drop-overlay");
+  let lastOwnDrag = 0;
+  const own = () => dragging || Date.now() - lastOwnDrag < 1500;
+  // 自己的縮圖拖出去又放回視窗時不要當成「開啟」
+  setInterval(() => {
+    if (dragging) lastOwnDrag = Date.now();
+  }, 200);
+  void getCurrentWebview().onDragDropEvent((ev) => {
+    const p = ev.payload;
+    if (p.type === "enter") {
+      if (own() || !p.paths.length) return;
+      $("drop-text").textContent = p.paths.length > 1 ? "放開以開啟第一個資料夾" : "放開以開啟這個資料夾";
+      overlay.classList.remove("hidden");
+    } else if (p.type === "leave") {
+      overlay.classList.add("hidden");
+    } else if (p.type === "drop") {
+      overlay.classList.add("hidden");
+      if (own() || !p.paths.length) return;
+      if (editor.isOpen || slideshow.active) return toast("請先關閉調整視窗或幻燈片，再拖入資料夾");
+      if (S.loupe) closeLoupe();
+      void openPath(p.paths[0]);
+    }
+  });
 }
 
 pathInput.addEventListener("keydown", (ev) => {
