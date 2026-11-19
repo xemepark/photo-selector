@@ -56,6 +56,29 @@ function normHsl(h: unknown): number[] {
   return v;
 }
 const hslActive = (h: number[]) => h.some((x) => Math.abs(x) > 1e-4);
+const EYEDROPPER = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M13.6 2.4a2 2 0 0 0-2.8 0L9.3 3.9l-.7-.7-1 1 .7.7-5.5 5.5a1.6 1.6 0 0 0-.4.7l-.6 2.3a.6.6 0 0 0 .8.8l2.3-.6c.3-.1.5-.2.7-.4L11.1 8l.7.7 1-1-.7-.7 1.5-1.5a2 2 0 0 0 0-2.8zM4 12.9l-1.3.4.4-1.3L8.6 6.4l.9.9z"/></svg>`;
+const toLinJs = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+const toSrgbJs = (c: number) => {
+  c = Math.min(1, Math.max(0, c));
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055;
+};
+/** sRGB 數值 → HSV 色相（度）與飽和度；與 shader / edit.rs 相同 */
+function hueOf(o: [number, number, number]): { hue: number; sat: number } {
+  const mx = Math.max(...o);
+  const mn = Math.min(...o);
+  const c = mx - mn;
+  if (c < 1e-5 || mx < 1e-6) return { hue: 0, sat: 0 };
+  let hue = mx === o[0] ? 60 * ((o[1] - o[2]) / c) : mx === o[1] ? 60 * ((o[2] - o[0]) / c + 2) : 60 * ((o[0] - o[1]) / c + 4);
+  if (hue < 0) hue += 360;
+  return { hue, sat: c / mx };
+}
+/** 色相落在哪兩個 HSL 區段之間（i、j 與 j 的權重 t） */
+function bandsOf(hue: number): { i: number; j: number; t: number } {
+  const C = [...BANDS.map((b) => b.hue), 360];
+  let i = 0;
+  while (i < 7 && hue >= C[i + 1]) i++;
+  return { i, j: (i + 1) % 8, t: Math.min(1, Math.max(0, (hue - C[i]) / (C[i + 1] - C[i]))) };
+}
 
 export const ZERO: EditParams = {
   temp: 0,
@@ -279,10 +302,14 @@ void main() {
   gl_FragColor = vec4(o, 1.0);
 }`;
 
+/** 色溫 −1…1 → 紅藍各自的增益（EV）；與 edit.rs wb_gains 相同 */
+const tempStops = (k: number) => 0.35 * k + 0.4 * k * k * k;
+
 function wbGains(p: EditParams): [number, number, number] {
   const k = p.temp / 100;
   const t = p.tint / 100;
-  const g = [2 ** (0.35 * k + 0.1 * t), 2 ** (-0.2 * t), 2 ** (-0.35 * k + 0.1 * t)];
+  const kk = tempStops(k);
+  const g = [2 ** (kk + 0.1 * t), 2 ** (-0.2 * t), 2 ** (-kk + 0.1 * t)];
   const l = g[0] * 0.2126 + g[1] * 0.7152 + g[2] * 0.0722;
   return [g[0] / l, g[1] / l, g[2] / l];
 }
@@ -394,6 +421,12 @@ export class Editor {
       b.addEventListener("click", () => this.setHslTab(Number(b.dataset.hslTab))),
     );
     this.setHslTab(loadHslTab());
+    this.q("#ed-wb-pick").addEventListener("click", () => this.setTool("wb"));
+    this.q("#ed-hsl-pick").addEventListener("click", () => this.setTool("hsl"));
+    this.canvas.addEventListener("pointerdown", (e) => this.toolDown(e));
+    this.canvas.addEventListener("pointermove", (e) => this.toolMove(e));
+    this.canvas.addEventListener("pointerup", (e) => this.toolUp(e));
+    this.canvas.addEventListener("pointercancel", (e) => this.toolUp(e));
     this.q("#ed-hsl-reset").addEventListener("click", () => {
       this.p.hsl = zeroHsl();
       this.syncInputs();
@@ -480,9 +513,9 @@ export class Editor {
         )
         .join("")}</div>`;
     const light = rowsOf(GROUPS[0]);
-    const color = rowsOf(GROUPS[1]);
+    const color = `<div class="ed-pickrow"><button id="ed-wb-pick" class="ed-pick" title="白平衡滴管（I）：點選照片中應該是白色或灰色的地方，自動設定色溫與色調">${EYEDROPPER} 白平衡滴管</button></div>${rowsOf(GROUPS[1])}`;
     const hsl = `<div class="ed-hsl">
-        <div class="ed-hsl-head"><span>HSL</span><button id="ed-hsl-reset" class="link" title="HSL 全部恢復為 0">重設 HSL</button></div>
+        <div class="ed-hsl-head"><span>HSL</span><button id="ed-hsl-pick" class="ed-pick" title="目標調整滴管（T）：在照片上按住某個顏色上下拖曳，調整目前分頁中那個顏色">${EYEDROPPER} 目標調整</button><button id="ed-hsl-reset" class="link" title="HSL 全部恢復為 0">重設 HSL</button></div>
         <div class="ed-tabs">${HSL_TABS.map((t, i) => `<button data-hsl-tab="${i}">${t}</button>`).join("")}</div>
         ${BANDS.map(
           (b, i) => `<div class="ed-row">
@@ -502,7 +535,7 @@ export class Editor {
     ).join("");
     return `
       <div class="ed-main">
-        <div id="ed-stage" class="ed-stage"><canvas id="ed-canvas"></canvas><div id="ed-msg" class="ed-msg"></div><div id="ed-badge" class="ed-badge hidden">原圖</div></div>
+        <div id="ed-stage" class="ed-stage"><canvas id="ed-canvas"></canvas><div id="ed-msg" class="ed-msg"></div><div id="ed-badge" class="ed-badge hidden">原圖</div><div id="ed-tool-hint" class="ed-tool-hint hidden"></div></div>
         <div id="ed-strip" class="ed-strip"></div>
       </div>
       <aside class="ed-panel">
@@ -763,6 +796,18 @@ export class Editor {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, bmp);
       this.imgW = bmp.width;
       this.imgH = bmp.height;
+      // 滴管取色用的縮小原圖
+      try {
+        const sc = Math.min(1, 1024 / Math.max(bmp.width, bmp.height));
+        const cv = document.createElement("canvas");
+        cv.width = Math.max(1, Math.round(bmp.width * sc));
+        cv.height = Math.max(1, Math.round(bmp.height * sc));
+        const g2 = cv.getContext("2d", { willReadFrequently: true })!;
+        g2.drawImage(bmp, 0, 0, cv.width, cv.height);
+        this.sample = g2.getImageData(0, 0, cv.width, cv.height);
+      } catch {
+        this.sample = null;
+      }
       bmp.close();
       msg.textContent = "";
       this.draw();
@@ -979,6 +1024,154 @@ export class Editor {
   // ---------------------------------------------------------------- 滑桿
 
   private hslTab = 0;
+  /** 滴管工具：wb = 白平衡、hsl = HSL 目標調整 */
+  private tool: "wb" | "hsl" | null = null;
+  /** 縮小的原始影像（滴管取色用） */
+  private sample: ImageData | null = null;
+  private tdrag: { y: number; i: number; j: number; t: number; start: number[] } | null = null;
+
+  /** 開關滴管（再按一次同一個 = 關閉） */
+  setTool(t: "wb" | "hsl" | null) {
+    this.tool = this.tool === t ? null : t;
+    this.tdrag = null;
+    this.q("#ed-wb-pick").classList.toggle("active", this.tool === "wb");
+    this.q("#ed-hsl-pick").classList.toggle("active", this.tool === "hsl");
+    this.canvas.style.cursor = this.tool ? "crosshair" : "";
+    if (this.tool) {
+      // 確認「顏色」區塊是展開的，看得到數值變化
+      const sec = this.q('[data-sec="color"]');
+      if (sec.classList.contains("collapsed")) (sec.querySelector(".ed-sec-head") as HTMLElement).click();
+    }
+    this.hint(
+      this.tool === "wb"
+        ? "白平衡滴管：點選照片中應該是白色或灰色的地方（Esc 結束）"
+        : this.tool === "hsl"
+          ? `目標調整（${HSL_TABS[this.hslTab]}）：在照片上按住某個顏色，往上拖增加、往下拖減少（Esc 結束）`
+          : "",
+    );
+  }
+
+  private hint(text: string) {
+    const h = this.q("#ed-tool-hint");
+    h.textContent = text;
+    h.classList.toggle("hidden", !text);
+  }
+
+  /** 滑鼠位置 → 原始影像上的顏色（約 5×5 平均，0–1 sRGB）；不在照片上回傳 null */
+  private pick(e: PointerEvent): [number, number, number] | null {
+    const d = this.sample;
+    if (!d || !this.imgW) return null;
+    const stage = this.q("#ed-stage");
+    const r = stage.getBoundingClientRect();
+    const pad = 16;
+    const s = Math.min((r.width - pad * 2) / this.imgW, (r.height - pad * 2) / this.imgH);
+    const w = this.imgW * s;
+    const h = this.imgH * s;
+    const u = (e.clientX - r.left - (r.width - w) / 2) / w;
+    const v = (e.clientY - r.top - (r.height - h) / 2) / h;
+    if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+    const cx = Math.min(d.width - 1, Math.floor(u * d.width));
+    const cy = Math.min(d.height - 1, Math.floor(v * d.height));
+    const sum = [0, 0, 0];
+    let n = 0;
+    for (let y = Math.max(0, cy - 2); y <= Math.min(d.height - 1, cy + 2); y++)
+      for (let x = Math.max(0, cx - 2); x <= Math.min(d.width - 1, cx + 2); x++) {
+        const k = (y * d.width + x) * 4;
+        sum[0] += d.data[k];
+        sum[1] += d.data[k + 1];
+        sum[2] += d.data[k + 2];
+        n++;
+      }
+    return [sum[0] / n / 255, sum[1] / n / 255, sum[2] / n / 255];
+  }
+
+  /** 原始顏色套上目前白平衡後的 sRGB 值（HSL 是在白平衡之後作用） */
+  private afterWb(c: [number, number, number]): [number, number, number] {
+    const g = wbGains(this.p);
+    return [toSrgbJs(toLinJs(c[0]) * g[0]), toSrgbJs(toLinJs(c[1]) * g[1]), toSrgbJs(toLinJs(c[2]) * g[2])];
+  }
+
+  /** 白平衡：讓點到的顏色變成中性灰。增益比例 R:G:B 拉平 → 解出色溫 / 色調（與 wbGains 的公式對應） */
+  private pickWb(c: [number, number, number]) {
+    const lin = c.map((v) => Math.max(1e-4, toLinJs(v)));
+    const [lr, lg, lb] = lin.map(Math.log2);
+    if (Math.max(...c) < 0.02) return this.hint("這裡太暗了，請點選亮一點的白色或灰色區域");
+    if (Math.min(...c) > 0.995) return this.hint("這裡已經過曝成純白，請點選有細節的白色或灰色區域");
+    // 紅藍拉平：2·tempStops(k) = lb − lr（單調遞增，用二分法解）
+    const want = (lb - lr) / 2;
+    let lo = -2;
+    let hi = 2;
+    for (let n = 0; n < 50; n++) {
+      const mid = (lo + hi) / 2;
+      if (tempStops(mid) < want) lo = mid;
+      else hi = mid;
+    }
+    const k = (lo + hi) / 2;
+    // 綠與紅藍平均拉平（紅藍各 +0.1t、綠 −0.2t）
+    const t = (lg - (lr + lb) / 2) / 0.3;
+    const clamp = (x: number) => Math.round(Math.max(-100, Math.min(100, x * 100)));
+    this.p.temp = clamp(k);
+    this.p.tint = clamp(t);
+    this.syncInputs();
+    if (this.bypass) this.setBefore(false);
+    this.draw();
+    const capped = Math.abs(k) > 1 || Math.abs(t) > 1;
+    this.hint(`色溫 ${this.p.temp} · 色調 ${this.p.tint}${capped ? "（已達調整上限）" : ""}　可以再點其他地方，Esc 結束`);
+  }
+
+  private toolDown(e: PointerEvent) {
+    if (!this.tool || e.button !== 0) return;
+    const c = this.pick(e);
+    if (!c) return;
+    e.preventDefault();
+    if (this.tool === "wb") return this.pickWb(c);
+    const { hue, sat } = hueOf(this.afterWb(c));
+    if (sat < 0.08) return this.hint("這裡幾乎沒有顏色，請按住有顏色的地方拖曳");
+    const b = bandsOf(hue);
+    this.tdrag = { y: e.clientY, ...b, start: normHsl(this.p.hsl) };
+    this.canvas.setPointerCapture(e.pointerId);
+    this.canvas.style.cursor = "ns-resize";
+    this.toolMove(e);
+  }
+
+  private toolMove(e: PointerEvent) {
+    if (this.tool !== "hsl") return;
+    const d = this.tdrag;
+    if (!d) {
+      // 滑過時顯示這裡是哪個顏色
+      const c = this.pick(e);
+      if (!c) return;
+      const { hue, sat } = hueOf(this.afterWb(c));
+      if (sat < 0.08) return this.hint(`目標調整（${HSL_TABS[this.hslTab]}）：這裡幾乎沒有顏色`);
+      const b = bandsOf(hue);
+      const names = b.t < 0.15 ? BANDS[b.i].label : b.t > 0.85 ? BANDS[b.j].label : `${BANDS[b.i].label} / ${BANDS[b.j].label}`;
+      return this.hint(`目標調整（${HSL_TABS[this.hslTab]}）：${names}　按住上下拖曳`);
+    }
+    const delta = (d.y - e.clientY) * 0.5;
+    const h = [...d.start];
+    const base = this.hslTab * 8;
+    const clamp = (x: number) => Math.round(Math.max(-100, Math.min(100, x)));
+    h[base + d.i] = clamp(d.start[base + d.i] + delta * (1 - d.t));
+    h[base + d.j] = clamp(d.start[base + d.j] + delta * d.t);
+    this.p.hsl = h;
+    this.syncInputs();
+    if (this.bypass) this.setBefore(false);
+    this.draw();
+    const show = (k: number) => `${BANDS[k].label} ${h[base + k] > 0 ? "+" : ""}${h[base + k]}`;
+    const parts = [d.t < 0.95 ? show(d.i) : "", d.t > 0.05 ? show(d.j) : ""].filter(Boolean);
+    this.hint(`${HSL_TABS[this.hslTab]}：${parts.join(" · ")}`);
+  }
+
+  private toolUp(e: PointerEvent) {
+    if (!this.tdrag) return;
+    this.tdrag = null;
+    try {
+      this.canvas.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    this.canvas.style.cursor = this.tool ? "crosshair" : "";
+  }
 
   /** 切換 HSL 分頁（色相 / 飽和度 / 明亮度）：滑桿換成該分頁的 8 個值與對應的色條 */
   private setHslTab(t: number) {
@@ -995,6 +1188,7 @@ export class Editor {
             : `linear-gradient(90deg, hsl(${hue} 70% 18%), hsl(${hue} 70% 50%), hsl(${hue} 70% 82%))`;
     });
     this.syncInputs();
+    if (this.tool === "hsl") this.hint(`目標調整（${HSL_TABS[t]}）：在照片上按住某個顏色，往上拖增加、往下拖減少（Esc 結束）`);
   }
 
   private setHsl(i: number, v: number, from?: HTMLInputElement) {
@@ -1175,6 +1369,7 @@ export class Editor {
         return;
       }
     }
+    if (this.tool) this.setTool(null);
     this.loadSeq++;
     this.el.classList.add("hidden");
     this.stripObs?.disconnect();
@@ -1196,6 +1391,7 @@ export class Editor {
     const t = ev.target as HTMLElement;
     // 焦點在滑桿或數字欄時，方向鍵用來微調數值
     const typing = t.tagName === "INPUT";
+    if (ev.key === "Escape" && this.tool) return this.setTool(null), true;
     if (ev.key === "Escape") {
       const box = this.q("#ed-syncbox");
       if (!box.classList.contains("hidden")) return box.classList.add("hidden"), true;
@@ -1204,6 +1400,8 @@ export class Editor {
     if (ev.key === "Enter" && !typing) return void this.close(true), true;
     if (typing) return false;
     if (ev.key === "\\") return this.toggleBefore(), true;
+    if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "i") return this.setTool("wb"), true;
+    if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "t") return this.setTool("hsl"), true;
     if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "a") return this.selectAllStrip(), true;
     if (ev.key === "ArrowLeft") return void this.goto(this.pos - 1), true;
     if (ev.key === "ArrowRight") return void this.goto(this.pos + 1), true;

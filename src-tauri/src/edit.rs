@@ -298,7 +298,9 @@ fn linear_to_srgb(c: f32) -> f32 {
 fn wb_gains(p: &Params) -> [f32; 3] {
     let k = p.temp / 100.0;
     let t = p.tint / 100.0;
-    let g = [(0.35 * k + 0.1 * t).exp2(), (-0.2 * t).exp2(), (-0.35 * k + 0.1 * t).exp2()];
+    // 色溫：中間段與原本相近，兩端加大（±100 時紅藍各 ±0.75 EV，可修正鎢絲燈等強烈色偏）
+    let kk = 0.35 * k + 0.4 * k * k * k;
+    let g = [(kk + 0.1 * t).exp2(), (-0.2 * t).exp2(), (-kk + 0.1 * t).exp2()];
     let l = g[0] * LUM[0] + g[1] * LUM[1] + g[2] * LUM[2];
     [g[0] / l, g[1] / l, g[2] / l]
 }
