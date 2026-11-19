@@ -597,10 +597,26 @@ export class Editor {
       if (!s) return;
       s.m = Number((e.target as HTMLSelectElement).value) as SpotMode;
       this.refreshRank = 0;
+      if (s.m === 0) {
+        // 改成移除：用內容感知合成（不需要來源）
+        s.d = [0, 0];
+        this.markChanged();
+        this.syncSpotSel();
+        this.draw();
+        return;
+      }
       this.resample(this.selSpot, 0);
     });
     this.q("#ed-spot-refresh").addEventListener("click", () => {
-      if (this.selSpot < 0) return;
+      const s = this.p.spots?.[this.selSpot];
+      if (!s) return;
+      if (s.m === 0 && s.d[0] === 0 && s.d[1] === 0) {
+        // 移除：換一個亂數種子重新合成
+        s.k = (s.k ?? 0) + 1;
+        this.markChanged();
+        this.draw();
+        return;
+      }
       this.refreshRank++;
       this.resample(this.selSpot, this.refreshRank);
     });
@@ -1148,6 +1164,7 @@ export class Editor {
         g2.drawImage(bmp, 0, 0);
         this.baseOrig = g2.getImageData(0, 0, bmp.width, bmp.height);
         this.baseKey = "";
+        this.healCache.clear();
         this.uploadBase();
       }
       // 滴管取色用的縮小原圖
@@ -1884,6 +1901,8 @@ export class Editor {
     | null = null;
   private lastPtool: SpotMode = 0;
   private ovTmp: HTMLCanvasElement | null = null;
+  /** 修補結果快取（換照片時清掉） */
+  private healCache = new Map<string, { b: [number, number, number, number]; px: Uint8ClampedArray }>();
   /** 修補標題的眼睛：暫時不套用修補（比較前後） */
   private spotsHidden = false;
   /** 「重新整理」換到第幾好的來源 */
@@ -1906,7 +1925,7 @@ export class Editor {
     let img = base;
     if (spots.length) {
       img = new ImageData(new Uint8ClampedArray(base.data), base.width, base.height);
-      applySpots(img, spots);
+      applySpots(img, spots, this.healCache);
     }
     this.baseWork = img;
     gl.activeTexture(gl.TEXTURE0);
@@ -2086,8 +2105,8 @@ export class Editor {
       this.uploadBase();
       // 移除：自動擴大到蓋住整個物體（花瓣、灰塵常比筆刷大一點）
       if (this.baseWork && spot.m === 0) spot.r = Math.round(autoRadius(this.baseWork, spot) * 100000) / 100000;
-      // 自動找來源（移除：在周圍找最吻合的區域，不顯示；修復 / 仿製：之後可拖曳換位置）
-      if (this.baseWork) spot.d = findSource(this.baseWork, spot);
+      // 修復 / 仿製：自動找來源（之後可拖曳換位置）；移除：內容感知合成，不需要來源
+      if (this.baseWork && spot.m !== 0) spot.d = findSource(this.baseWork, spot);
       this.p.spots = [...(this.p.spots ?? []), spot];
       this.selSpot = this.p.spots.length - 1;
       this.refreshRank = 0;

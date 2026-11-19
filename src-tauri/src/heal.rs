@@ -21,6 +21,13 @@ pub struct Spot {
     pub d: [f32; 2],
     /// 筆刷路徑（相對寬高）
     pub p: Vec<[f32; 2]>,
+    /// 移除的合成亂數種子（「重新整理」+1）
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub k: u32,
+}
+
+fn is_zero(k: &u32) -> bool {
+    *k == 0
 }
 
 /// 整理：去掉無效的、數值限制在合理範圍（與 heal.ts cleanSpots 相同）
@@ -42,6 +49,7 @@ pub fn clean_spots(v: &[Spot]) -> Vec<Spot> {
                 o: num(s.o, 0.0, 1.0, 1.0),
                 d: [num(s.d[0], -2.0, 2.0, 0.0), num(s.d[1], -2.0, 2.0, 0.0)],
                 p,
+                k: s.k.min(1_000_000),
             })
         })
         .collect()
@@ -53,7 +61,8 @@ pub fn to_text(v: &[Spot]) -> String {
     v.iter()
         .map(|s| {
             let pts = s.p.iter().map(|q| format!("{},{}", n(q[0]), n(q[1]))).collect::<Vec<_>>().join(";");
-            format!("{},{},{},{},{},{}:{}", s.m, n(s.r), n(s.f), n(s.o), n(s.d[0]), n(s.d[1]), pts)
+            let k = if s.k > 0 { format!(",{}", s.k) } else { String::new() };
+            format!("{},{},{},{},{},{}{}:{}", s.m, n(s.r), n(s.f), n(s.o), n(s.d[0]), n(s.d[1]), k, pts)
         })
         .collect::<Vec<_>>()
         .join("|")
@@ -65,7 +74,7 @@ pub fn from_text(t: &str) -> Vec<Spot> {
         .filter_map(|one| {
             let (head, pts) = one.split_once(':')?;
             let h: Vec<f32> = head.split(',').map(|x| x.trim().parse().unwrap_or(f32::NAN)).collect();
-            if h.len() != 6 {
+            if h.len() != 6 && h.len() != 7 {
                 return None;
             }
             let p = pts
@@ -75,7 +84,8 @@ pub fn from_text(t: &str) -> Vec<Spot> {
                     Some([a.trim().parse().ok()?, b.trim().parse().ok()?])
                 })
                 .collect();
-            Some(Spot { m: h[0] as u8, r: h[1], f: h[2], o: h[3], d: [h[4], h[5]], p })
+            let k = h.get(6).filter(|v| v.is_finite() && **v > 0.0).map(|v| *v as u32).unwrap_or(0);
+            Some(Spot { m: h[0] as u8, r: h[1], f: h[2], o: h[3], d: [h[4], h[5]], p, k })
         })
         .collect();
     clean_spots(&v)
@@ -119,6 +129,17 @@ fn outer_r(r: f32, f: f32) -> f32 {
     r * (1.0 + 0.5 * f)
 }
 
+fn fade_out(d: f32, r: f32, ro: f32) -> f32 {
+    if d <= r {
+        return 1.0;
+    }
+    if d >= ro {
+        return 0.0;
+    }
+    let t = (d - r) / (ro - r);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
+
 fn alpha_of(d: f32, r: f32, f: f32) -> f32 {
     let inner = r * (1.0 - f);
     let outer = outer_r(r, f);
@@ -146,6 +167,8 @@ fn apply_spot(img: &mut RgbImage, s: &Spot) {
     }
     let mg = margin(px.r);
     let ro = outer_r(px.r, s.f);
+    // 移除（內容感知合成）需要比較大的周圍範圍當素材
+    let synth = s.m == 0 && px.ox == 0 && px.oy == 0;
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     for q in &px.pts {
         x0 = x0.min(q[0]);
@@ -153,7 +176,7 @@ fn apply_spot(img: &mut RgbImage, s: &Spot) {
         x1 = x1.max(q[0]);
         y1 = y1.max(q[1]);
     }
-    let m = ro + mg;
+    let m = ro + if synth { context_margin(ro) } else { mg };
     let bx0 = ((x0 - m).floor() as i64).max(0);
     let by0 = ((y0 - m).floor() as i64).max(0);
     let bx1 = ((x1 + m).ceil() as i64 + 1).min(w);
@@ -192,7 +215,8 @@ fn apply_spot(img: &mut RgbImage, s: &Spot) {
             }
         }
     }
-    let alpha: Vec<f32> = dist.iter().map(|d| alpha_of(*d, px.r, s.f)).collect();
+    // 移除（合成）：筆刷內完全替換，只在筆刷外圍漸變
+    let alpha: Vec<f32> = dist.iter().map(|d| if synth { fade_out(*d, px.r, ro) } else { alpha_of(*d, px.r, s.f) }).collect();
     let mut dst = vec![0f32; bwu * bhu * 3];
     let mut src = vec![0f32; bwu * bhu * 3];
     for y in 0..bh {
@@ -208,12 +232,19 @@ fn apply_spot(img: &mut RgbImage, s: &Spot) {
             }
         }
     }
-    // 移除：平常和修復一樣（自動來源 + 融合）；offset 為 0（找不到來源）時從兩側鏡射補
-    let mirror = s.m == 0 && px.ox == 0 && px.oy == 0;
-    if mirror {
-        mirror_fill(img, &alpha, (bx0, by0, bwu, bhu), &mut src, &dst);
+    // 移除：內容感知合成；有自訂來源時改成取樣 + 融合；周圍沒有素材時從兩側鏡射補
+    if synth {
+        let hole: Vec<u8> = alpha.iter().map(|a| u8::from(*a > 0.0)).collect();
+        match inpaint(&dst, &hole, bwu, bhu, s.k) {
+            Some(fill) => {
+                for (o, v) in src.iter_mut().zip(fill) {
+                    *o = v as f32;
+                }
+            }
+            None => mirror_fill(img, &alpha, (bx0, by0, bwu, bhu), &mut src, &dst),
+        }
     }
-    let corr = if s.m != 2 && !mirror { Some(Correction::new(&dst, &src, &alpha, bwu, bhu)) } else { None };
+    let corr = if s.m != 2 && !synth { Some(Correction::new(&dst, &src, &alpha, bwu, bhu)) } else { None };
     for y in 0..bhu {
         for x in 0..bwu {
             let j = y * bwu + x;
@@ -418,12 +449,398 @@ impl Correction {
     }
 }
 
+// ---------------------------------------------------------------- 內容感知合成（PatchMatch）
+// 與 src/heal.ts 的 inpaint 逐步相同（同樣的亂數、同樣的運算順序、f64）。
+// 金字塔由粗到細：洞裡每個 7×7 小區塊在周圍找最像的小區塊（鄰居傳遞 + 隨機搜尋），再投票出顏色，反覆修正。
+
+const PH: i64 = 3;
+
+/// 合成用的周圍素材範圍：洞外圍再加這麼多像素（與 heal.ts contextMargin 相同）
+fn context_margin(ro: f32) -> f32 {
+    (ro * 2.5).round().max(18.0)
+}
+
+struct XorShift(u32);
+
+impl XorShift {
+    fn new(seed: u32) -> Self {
+        let mut st = (seed.wrapping_add(1).wrapping_mul(2654435761)) ^ 0x9e37_79b9;
+        if st == 0 {
+            st = 1;
+        }
+        XorShift(st)
+    }
+    fn next(&mut self) -> u32 {
+        let mut s = self.0;
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        self.0 = s;
+        s
+    }
+}
+
+struct Lv {
+    w: usize,
+    h: usize,
+    img: Vec<f64>,
+    hole: Vec<u8>,
+}
+
+struct LvInfo {
+    is_valid: Vec<u8>,
+    is_target: Vec<u8>,
+    valid: Vec<usize>,
+    targets: Vec<usize>,
+}
+
+fn level_info(lv: &Lv) -> LvInfo {
+    let (w, h) = (lv.w, lv.h);
+    let mut ii = vec![0i64; (w + 1) * (h + 1)];
+    for y in 0..h {
+        let mut row = 0i64;
+        for x in 0..w {
+            row += lv.hole[y * w + x] as i64;
+            ii[(y + 1) * (w + 1) + x + 1] = ii[y * (w + 1) + x + 1] + row;
+        }
+    }
+    let count = |xa: i64, ya: i64, xb: i64, yb: i64| -> i64 {
+        let (xa, ya) = (xa.max(0), ya.max(0));
+        let (xb, yb) = (xb.min(w as i64 - 1), yb.min(h as i64 - 1));
+        if xa > xb || ya > yb {
+            return 0;
+        }
+        let (xa, ya, xb, yb) = (xa as usize, ya as usize, xb as usize, yb as usize);
+        ii[(yb + 1) * (w + 1) + xb + 1] - ii[ya * (w + 1) + xb + 1] - ii[(yb + 1) * (w + 1) + xa] + ii[ya * (w + 1) + xa]
+    };
+    let mut info = LvInfo { is_valid: vec![0; w * h], is_target: vec![0; w * h], valid: vec![], targets: vec![] };
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let p = (y as usize) * w + x as usize;
+            if count(x - PH, y - PH, x + PH, y + PH) > 0 {
+                info.is_target[p] = 1;
+                info.targets.push(p);
+            } else if x >= PH && y >= PH && x < w as i64 - PH && y < h as i64 - PH {
+                info.is_valid[p] = 1;
+                info.valid.push(p);
+            }
+        }
+    }
+    info
+}
+
+fn patch_dist(lv: &Lv, p: usize, s: usize, cutoff: f64) -> f64 {
+    let w = lv.w as i64;
+    let (px, py) = ((p % lv.w) as i64, (p / lv.w) as i64);
+    let (sx, sy) = ((s % lv.w) as i64, (s / lv.w) as i64);
+    let img = &lv.img;
+    let mut acc = 0f64;
+    for dy in -PH..=PH {
+        let ty = py + dy;
+        if ty < 0 || ty >= lv.h as i64 {
+            continue;
+        }
+        for dx in -PH..=PH {
+            let tx = px + dx;
+            if tx < 0 || tx >= w {
+                continue;
+            }
+            let t = ((ty * w + tx) * 3) as usize;
+            let u = (((sy + dy) * w + sx + dx) * 3) as usize;
+            let d0 = img[t] - img[u];
+            let d1 = img[t + 1] - img[u + 1];
+            let d2 = img[t + 2] - img[u + 2];
+            acc += d0 * d0 + d1 * d1 + d2 * d2;
+        }
+        if acc >= cutoff {
+            return acc;
+        }
+    }
+    acc
+}
+
+fn vote(lv: &mut Lv, targets: &[usize], ns: &[i64], nd: Option<&[f64]>) {
+    let (w, h) = (lv.w as i64, lv.h as i64);
+    let n = lv.w * lv.h;
+    let mut acc = vec![0f64; n * 3];
+    let mut wt = vec![0f64; n];
+    // 權重：越像的小區塊說話越大聲（1 / (1 + 差異 / 中位數)）
+    let mut med = 0f64;
+    if let Some(nd) = nd {
+        if !targets.is_empty() {
+            let mut arr: Vec<f64> = targets.iter().map(|p| nd[*p]).collect();
+            arr.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            med = arr[arr.len() >> 1];
+        }
+    }
+    for &p in targets {
+        let s = ns[p] as usize;
+        let wp = match nd {
+            Some(nd) if med > 0.0 => 1.0 / (1.0 + nd[p] / med),
+            _ => 1.0,
+        };
+        let (px, py) = ((p % lv.w) as i64, (p / lv.w) as i64);
+        let (sx, sy) = ((s % lv.w) as i64, (s / lv.w) as i64);
+        for dy in -PH..=PH {
+            let ty = py + dy;
+            if ty < 0 || ty >= h {
+                continue;
+            }
+            for dx in -PH..=PH {
+                let tx = px + dx;
+                if tx < 0 || tx >= w {
+                    continue;
+                }
+                let t = (ty * w + tx) as usize;
+                if lv.hole[t] == 0 {
+                    continue;
+                }
+                let u = (((sy + dy) * w + sx + dx) * 3) as usize;
+                acc[t * 3] += lv.img[u] * wp;
+                acc[t * 3 + 1] += lv.img[u + 1] * wp;
+                acc[t * 3 + 2] += lv.img[u + 2] * wp;
+                wt[t] += wp;
+            }
+        }
+    }
+    for t in 0..n {
+        if lv.hole[t] == 0 || wt[t] <= 0.0 {
+            continue;
+        }
+        for k in 0..3 {
+            lv.img[t * 3 + k] = acc[t * 3 + k] / wt[t];
+        }
+    }
+}
+
+fn diffuse_init(lv: &mut Lv) {
+    let (w, h) = (lv.w, lv.h);
+    let mut mean = [0f64; 3];
+    let mut n = 0f64;
+    for i in 0..w * h {
+        if lv.hole[i] != 0 {
+            continue;
+        }
+        for (k, m) in mean.iter_mut().enumerate() {
+            *m += lv.img[i * 3 + k];
+        }
+        n += 1.0;
+    }
+    for m in mean.iter_mut() {
+        *m /= n.max(1.0);
+    }
+    for i in 0..w * h {
+        if lv.hole[i] != 0 {
+            lv.img[i * 3..i * 3 + 3].copy_from_slice(&mean);
+        }
+    }
+    for _ in 0..60 {
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if lv.hole[i] == 0 {
+                    continue;
+                }
+                for k in 0..3 {
+                    let (mut sum, mut m) = (0f64, 0f64);
+                    if x > 0 {
+                        sum += lv.img[(i - 1) * 3 + k];
+                        m += 1.0;
+                    }
+                    if x < w - 1 {
+                        sum += lv.img[(i + 1) * 3 + k];
+                        m += 1.0;
+                    }
+                    if y > 0 {
+                        sum += lv.img[(i - w) * 3 + k];
+                        m += 1.0;
+                    }
+                    if y < h - 1 {
+                        sum += lv.img[(i + w) * 3 + k];
+                        m += 1.0;
+                    }
+                    lv.img[i * 3 + k] = sum / m;
+                }
+            }
+        }
+    }
+}
+
+/// 回傳填好的影像（RGB，與 dst 同大小）；周圍沒有可用素材時回傳 None
+fn inpaint(dst: &[f32], hole0: &[u8], bw: usize, bh: usize, seed: u32) -> Option<Vec<f64>> {
+    if !hole0.iter().any(|h| *h != 0) {
+        return None;
+    }
+    let side = (2 * PH + 1) as usize;
+    let mut lvs = vec![Lv { w: bw, h: bh, img: dst.iter().map(|v| *v as f64).collect(), hole: hole0.to_vec() }];
+    while lvs.len() < 6 {
+        let c = lvs.last().unwrap();
+        if c.w.max(c.h) <= 40 || c.w.min(c.h) < 4 * side {
+            break;
+        }
+        let (w, h) = (c.w.div_ceil(2), c.h.div_ceil(2));
+        let mut img = vec![0f64; w * h * 3];
+        let mut hole = vec![0u8; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let mut n = 0f64;
+                let mut sum = [0f64; 3];
+                let mut ho = 0u8;
+                for j in 0..2 {
+                    for i in 0..2 {
+                        let (xx, yy) = (x * 2 + i, y * 2 + j);
+                        if xx >= c.w || yy >= c.h {
+                            continue;
+                        }
+                        let q = yy * c.w + xx;
+                        for (k, sv) in sum.iter_mut().enumerate() {
+                            *sv += c.img[q * 3 + k];
+                        }
+                        if c.hole[q] != 0 {
+                            ho = 1;
+                        }
+                        n += 1.0;
+                    }
+                }
+                let p = y * w + x;
+                for k in 0..3 {
+                    img[p * 3 + k] = sum[k] / n;
+                }
+                hole[p] = ho;
+            }
+        }
+        lvs.push(Lv { w, h, img, hole });
+    }
+    let info: Vec<LvInfo> = lvs.iter().map(level_info).collect();
+    let mut top = lvs.len() as i64 - 1;
+    while top >= 0 && info[top as usize].valid.is_empty() {
+        top -= 1;
+    }
+    if top < 0 {
+        return None;
+    }
+    let top = top as usize;
+    let mut rnd = XorShift::new(seed);
+    let mut ns: Option<Vec<i64>> = None;
+    for l in (0..=top).rev() {
+        let (lw, lh) = (lvs[l].w, lvs[l].h);
+        let inf = &info[l];
+        let n = lw * lh;
+        let mut next = vec![-1i64; n];
+        match &ns {
+            None => {
+                for &p in &inf.targets {
+                    next[p] = inf.valid[(rnd.next() % inf.valid.len() as u32) as usize] as i64;
+                }
+                diffuse_init(&mut lvs[l]);
+            }
+            Some(prev) => {
+                let (cw, ch) = (lvs[l + 1].w, lvs[l + 1].h);
+                for &p in &inf.targets {
+                    let (px, py) = ((p % lw) as i64, (p / lw) as i64);
+                    let cx = (px >> 1).min(cw as i64 - 1);
+                    let cy = (py >> 1).min(ch as i64 - 1);
+                    let cs = prev[(cy as usize) * cw + cx as usize];
+                    let mut cand = -1i64;
+                    if cs >= 0 {
+                        let sx = px + ((cs % cw as i64) - cx) * 2;
+                        let sy = py + ((cs / cw as i64) - cy) * 2;
+                        if sx >= 0 && sy >= 0 && sx < lw as i64 && sy < lh as i64 && inf.is_valid[(sy as usize) * lw + sx as usize] != 0 {
+                            cand = sy * lw as i64 + sx;
+                        }
+                    }
+                    next[p] = if cand >= 0 { cand } else { inf.valid[(rnd.next() % inf.valid.len() as u32) as usize] as i64 };
+                }
+                vote(&mut lvs[l], &inf.targets, &next, None);
+            }
+        }
+        let em = if l == top { 6 } else if l == 0 { 3 } else { 4 };
+        let pmi = if l == top { 4 } else { 3 };
+        let mut nd = vec![0f64; n];
+        for _ in 0..em {
+            for &p in &inf.targets {
+                nd[p] = patch_dist(&lvs[l], p, next[p] as usize, f64::INFINITY);
+            }
+            for it in 0..pmi {
+                let fwd = it % 2 == 0;
+                let t_len = inf.targets.len();
+                for ti in 0..t_len {
+                    let p = inf.targets[if fwd { ti } else { t_len - 1 - ti }];
+                    let (px, py) = ((p % lw) as i64, (p / lw) as i64);
+                    for pass in 0..2 {
+                        let dx: i64 = if pass == 0 { if fwd { -1 } else { 1 } } else { 0 };
+                        let dy: i64 = if pass == 1 { if fwd { -1 } else { 1 } } else { 0 };
+                        let (qx, qy) = (px + dx, py + dy);
+                        if qx < 0 || qy < 0 || qx >= lw as i64 || qy >= lh as i64 {
+                            continue;
+                        }
+                        let q = (qy as usize) * lw + qx as usize;
+                        if inf.is_target[q] == 0 {
+                            continue;
+                        }
+                        let sq = next[q];
+                        let sx = (sq % lw as i64) - dx;
+                        let sy = (sq / lw as i64) - dy;
+                        if sx < 0 || sy < 0 || sx >= lw as i64 || sy >= lh as i64 {
+                            continue;
+                        }
+                        let cand = sy * lw as i64 + sx;
+                        if inf.is_valid[cand as usize] == 0 || cand == next[p] {
+                            continue;
+                        }
+                        let d = patch_dist(&lvs[l], p, cand as usize, nd[p]);
+                        if d < nd[p] {
+                            nd[p] = d;
+                            next[p] = cand;
+                        }
+                    }
+                    let mut rad = lw.max(lh) as i64;
+                    while rad >= 1 {
+                        let bx = next[p] % lw as i64;
+                        let by = next[p] / lw as i64;
+                        let span = (2 * rad + 1) as u32;
+                        let sx = bx + (rnd.next() % span) as i64 - rad;
+                        let sy = by + (rnd.next() % span) as i64 - rad;
+                        if sx >= 0 && sy >= 0 && sx < lw as i64 && sy < lh as i64 {
+                            let cand = sy * lw as i64 + sx;
+                            if inf.is_valid[cand as usize] != 0 && cand != next[p] {
+                                let d = patch_dist(&lvs[l], p, cand as usize, nd[p]);
+                                if d < nd[p] {
+                                    nd[p] = d;
+                                    next[p] = cand;
+                                }
+                            }
+                        }
+                        rad /= 2;
+                    }
+                }
+            }
+            vote(&mut lvs[l], &inf.targets, &next, Some(&nd));
+        }
+        if l == 0 {
+            // 最後一步：每個像素直接取最像的小區塊中心的顏色（不平均），保留顆粒與細節
+            let lv = &mut lvs[0];
+            for &q in &inf.targets {
+                if lv.hole[q] == 0 {
+                    continue;
+                }
+                let src = next[q] as usize;
+                for k in 0..3 {
+                    lv.img[q * 3 + k] = lv.img[src * 3 + k];
+                }
+            }
+        }
+        ns = Some(next);
+    }
+    Some(lvs.swap_remove(0).img)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn spot(m: u8) -> Spot {
-        Spot { m, r: 0.05, f: 0.3, o: 1.0, d: [0.3, 0.0], p: vec![[0.3, 0.5]] }
+        Spot { m, r: 0.05, f: 0.3, o: 1.0, d: [0.3, 0.0], p: vec![[0.3, 0.5]], k: 0 }
     }
 
     #[test]
@@ -455,7 +872,7 @@ mod tests {
 
     #[test]
     fn remove_fills_from_both_sides() {
-        // 左邊紅、右邊藍，中間一條黑色直線 → 移除後中線附近是紅藍之間的顏色，不再是黑色
+        // 左邊紅、右邊藍，中間一條黑色直線 → 移除後黑線消失：中線處變成紅或藍（交界延續），兩側維持原色
         let mut img = RgbImage::from_fn(200, 100, |x, _| {
             if (98..=102).contains(&x) {
                 image::Rgb([0, 0, 0])
@@ -465,17 +882,54 @@ mod tests {
                 image::Rgb([0, 0, 200])
             }
         });
-        let s = Spot { m: 0, r: 0.02, f: 0.0, o: 1.0, d: [0.0, 0.0], p: vec![[0.5, 0.1], [0.5, 0.9]] };
+        let s = Spot { m: 0, r: 0.02, f: 0.0, o: 1.0, d: [0.0, 0.0], p: vec![[0.5, 0.1], [0.5, 0.9]], k: 0 };
         apply_spots(&mut img, &[s]);
-        let c = img.get_pixel(100, 50);
-        assert!(c[0] > 50 && c[2] > 50, "{c:?}");
-        let l = img.get_pixel(97, 50);
+        for y in 20..80 {
+            let c = img.get_pixel(100, y);
+            assert!(c[0].max(c[2]) > 150, "y={y} {c:?}");
+        }
+        let l = img.get_pixel(94, 50);
         assert!(l[0] > 150 && l[2] < 60, "{l:?}");
+        let r = img.get_pixel(106, 50);
+        assert!(r[2] > 150 && r[0] < 60, "{r:?}");
+    }
+
+    /// 與前端比對：HEAL_CMP_DIR=資料夾 cargo test heal_cmp -- --ignored（讀 in.rgb、spots.json，寫 rs.rgb）
+    #[test]
+    #[ignore]
+    fn heal_cmp() {
+        let dir = std::path::PathBuf::from(std::env::var("HEAL_CMP_DIR").unwrap());
+        let raw = std::fs::read(dir.join("in.rgb")).unwrap();
+        let mut img = RgbImage::from_raw(300, 200, raw).unwrap();
+        let spots: Vec<Spot> = serde_json::from_str(&std::fs::read_to_string(dir.join("spots.json")).unwrap()).unwrap();
+        apply_spots(&mut img, &spots);
+        std::fs::write(dir.join("rs.rgb"), img.as_raw()).unwrap();
+    }
+
+    #[test]
+    fn synth_continues_stripes() {
+        // 直條紋背景上的一個黑點 → 合成後中心附近仍是條紋（不是平均灰色），而且沒有黑色
+        let mut img = RgbImage::from_fn(240, 160, |x, y| {
+            if (x as i32 - 120).pow(2) + (y as i32 - 80).pow(2) < 64 {
+                image::Rgb([0, 0, 0])
+            } else if (x / 6) % 2 == 0 {
+                image::Rgb([220, 220, 220])
+            } else {
+                image::Rgb([60, 60, 60])
+            }
+        });
+        let s = Spot { m: 0, r: 0.05, f: 0.2, o: 1.0, d: [0.0, 0.0], p: vec![[0.5, 0.5]], k: 0 };
+        apply_spots(&mut img, &[s]);
+        let row: Vec<u8> = (108..132).map(|x| img.get_pixel(x, 80)[0]).collect();
+        let hi = row.iter().filter(|v| **v > 170).count();
+        let lo = row.iter().filter(|v| **v < 110).count();
+        assert!(hi >= 6 && lo >= 6, "{row:?}");
+        assert!(row.iter().all(|v| *v > 25), "{row:?}");
     }
 
     #[test]
     fn text_roundtrip_and_rotate() {
-        let v = vec![Spot { m: 0, r: 0.0123, f: 0.5, o: 0.8, d: [0.1, -0.05], p: vec![[0.2, 0.3], [0.25, 0.35]] }, spot(2)];
+        let v = vec![Spot { m: 0, r: 0.0123, f: 0.5, o: 0.8, d: [0.1, -0.05], p: vec![[0.2, 0.3], [0.25, 0.35]], k: 3 }, spot(2)];
         let back = from_text(&to_text(&v));
         assert_eq!(back.len(), 2);
         assert!((back[0].p[1][1] - 0.35).abs() < 1e-6 && back[0].m == 0 && back[1].m == 2);

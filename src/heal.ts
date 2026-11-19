@@ -21,6 +21,8 @@ export interface Spot {
   d: [number, number];
   /** 筆刷路徑（相對寬高） */
   p: [number, number][];
+  /** 移除的合成亂數種子（「重新整理」每按一次 +1，換一種合成結果） */
+  k?: number;
 }
 
 export const MAX_SPOT_POINTS = 400;
@@ -101,6 +103,13 @@ function distances(px: Px, b: [number, number, number, number]): Float32Array {
   return dist;
 }
 
+function fadeOut(d: number, r: number, ro: number): number {
+  if (d <= r) return 1;
+  if (d >= ro) return 0;
+  const t = (d - r) / (ro - r);
+  return 1 - t * t * (3 - 2 * t);
+}
+
 function alphaOf(d: number, r: number, f: number): number {
   const inner = r * (1 - f);
   const outer = outerR(r, f);
@@ -111,25 +120,67 @@ function alphaOf(d: number, r: number, f: number): number {
 }
 
 /** 在 RGBA 影像上依序套用所有修補（就地修改） */
-export function applySpots(img: ImageData, spots: Spot[]) {
-  for (const s of spots) applySpot(img, s);
+export function applySpots(img: ImageData, spots: Spot[], cache?: Map<string, { b: [number, number, number, number]; px: Uint8ClampedArray }>) {
+  // 快取：同一張圖、前面的修補都一樣時，這一筆的結果不必重算（內容感知合成比較花時間）
+  let key = `${img.width}x${img.height}`;
+  for (const s of spots) {
+    key = hashStr(key + JSON.stringify(s));
+    const hit = cache?.get(key);
+    if (hit) {
+      pasteRegion(img, hit.b, hit.px);
+      continue;
+    }
+    const b = applySpot(img, s);
+    if (cache && b) {
+      if (cache.size > 300) cache.clear();
+      cache.set(key, { b, px: copyRegion(img, b) });
+    }
+  }
 }
 
-function applySpot(img: ImageData, s: Spot) {
+function hashStr(t: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+    h2 = Math.imul(h2 ^ c, 2246822519) >>> 0;
+  }
+  return h1.toString(36) + h2.toString(36);
+}
+
+function copyRegion(img: ImageData, b: [number, number, number, number]): Uint8ClampedArray {
+  const [x0, y0, x1, y1] = b;
+  const w = x1 - x0;
+  const out = new Uint8ClampedArray(w * (y1 - y0) * 4);
+  for (let y = y0; y < y1; y++) out.set(img.data.subarray((y * img.width + x0) * 4, (y * img.width + x1) * 4), (y - y0) * w * 4);
+  return out;
+}
+
+function pasteRegion(img: ImageData, b: [number, number, number, number], px: Uint8ClampedArray) {
+  const [x0, y0, x1, y1] = b;
+  const w = x1 - x0;
+  for (let y = y0; y < y1; y++) img.data.set(px.subarray((y - y0) * w * 4, (y - y0 + 1) * w * 4), (y * img.width + x0) * 4);
+}
+
+function applySpot(img: ImageData, s: Spot): [number, number, number, number] | null {
   const W = img.width;
   const H = img.height;
   const px = toPx(s, W, H);
-  if (px.r < 0.5 || !px.pts.length) return;
+  if (px.r < 0.5 || !px.pts.length) return null;
   const mg = margin(px.r);
-  const b = bounds(px, W, H, mg);
+  // 移除（內容感知合成）需要比較大的周圍範圍當素材
+  const synth = s.m === 0 && px.ox === 0 && px.oy === 0;
+  const b = bounds(px, W, H, synth ? contextMargin(px.ro) : mg);
   const [x0, y0, x1, y1] = b;
   const bw = x1 - x0;
   const bh = y1 - y0;
-  if (bw <= 0 || bh <= 0) return;
+  if (bw <= 0 || bh <= 0) return null;
   const data = img.data;
   const dist = distances(px, b);
   const alpha = new Float32Array(bw * bh);
-  for (let i = 0; i < alpha.length; i++) alpha[i] = alphaOf(dist[i], px.r, s.f);
+  // 移除（合成）：筆刷內完全替換，只在筆刷外圍漸變（物體邊緣才不會殘留）
+  for (let i = 0; i < alpha.length; i++) alpha[i] = synth ? fadeOut(dist[i], px.r, px.ro) : alphaOf(dist[i], px.r, s.f);
   // 先複製來源與目的地（來源可能與目的地重疊）
   const dst = new Float32Array(bw * bh * 3);
   const src = new Float32Array(bw * bh * 3);
@@ -146,11 +197,16 @@ function applySpot(img: ImageData, s: Spot) {
       }
     }
   }
-  // 移除：平常和修復一樣（自動找到的來源 + 融合，只是不顯示來源）；
-  // 找不到可用的來源時 offset 為 0，改用兩側鏡射補
-  const mirror = s.m === 0 && px.ox === 0 && px.oy === 0;
-  if (mirror) mirrorFill(data, W, H, alpha, b, src, dst);
-  const corr = s.m !== 2 && !mirror ? correction(dst, src, alpha, bw, bh) : null;
+  // 移除：內容感知合成（從周圍許多小區塊拼出與四周最融合的圖樣）；
+  // 指定了自訂來源（⌘ + 拖曳）時改成從那裡取樣 + 融合；合成失敗（周圍沒有素材）時從兩側鏡射補
+  if (synth) {
+    const hole = new Uint8Array(bw * bh);
+    for (let i = 0; i < hole.length; i++) hole[i] = alpha[i] > 0 ? 1 : 0;
+    const fill = inpaint(dst, hole, bw, bh, s.k ?? 0);
+    if (fill) for (let i = 0; i < src.length; i++) src[i] = fill[i];
+    else mirrorFill(data, W, H, alpha, b, src, dst);
+  }
+  const corr = s.m !== 2 && !synth ? correction(dst, src, alpha, bw, bh) : null;
   for (let y = 0; y < bh; y++) {
     for (let x = 0; x < bw; x++) {
       const j = y * bw + x;
@@ -166,6 +222,7 @@ function applySpot(img: ImageData, s: Spot) {
       }
     }
   }
+  return b;
 }
 
 /**
@@ -438,6 +495,7 @@ export function cleanSpots(v: unknown): Spot[] {
       o: num(s.o, 0, 1, 1),
       d: [num(s.d[0], -2, 2, 0), num(s.d[1], -2, 2, 0)],
       p,
+      ...(Number.isFinite(s.k) && s.k > 0 ? { k: Math.min(1_000_000, Math.floor(s.k)) } : {}),
     });
   }
   return out;
@@ -512,9 +570,323 @@ export function autoRadius(img: ImageData, s: Spot): number {
   const noise = off(r0 * 2.3, r0 * 2.8 + 3);
   const clean = (a: number, b: number) => off(a, b) <= noise + 0.02;
   // 移除固定羽化 0.3：物體要完全落在不透明的內圈裡 → 半徑 = 物體半徑 / 0.7
-  const fit = (R: number) => Math.min(0.5, Math.min(r0 * 2.6, Math.max(r0, (R + band) / 0.7)) / L);
+  // 移除時筆刷內完全替換、外圍才漸變 → 半徑 = 物體半徑 + 一點餘裕
+  const fit = (R: number) => Math.min(0.5, Math.min(r0 * 2.6, Math.max(r0, R + band * 1.5)) / L);
   for (let R = r0 * 0.6; R <= r0 * 2; R += band) {
     if (clean(R, R + band) && clean(R + band, R + band * 2)) return fit(R);
   }
   return fit(r0 * 2);
+}
+
+// ---------------------------------------------------------------- 內容感知合成（PatchMatch）
+// 與 src-tauri/src/heal.rs 的 inpaint 逐步相同（同樣的亂數、同樣的運算順序）。
+// 做法：把範圍縮成多層金字塔，從最粗的一層開始，為洞裡每個 7×7 小區塊在周圍找最像的小區塊（PatchMatch：
+// 鄰居傳遞 + 隨機搜尋），再用這些小區塊「投票」出洞裡每個像素的顏色；反覆幾次後放大到下一層繼續修，
+// 最後在原解析度得到與四周圖樣最融合的內容。
+
+const PH = 3; // 小區塊半徑（7×7）
+
+/** 合成用的周圍素材範圍：洞外圍再加這麼多像素 */
+export function contextMargin(ro: number) {
+  return Math.max(18, Math.round(ro * 2.5));
+}
+
+function xorshift(seed: number) {
+  let st = (Math.imul(seed + 1, 2654435761) ^ 0x9e3779b9) >>> 0;
+  if (st === 0) st = 1;
+  return () => {
+    st ^= st << 13;
+    st >>>= 0;
+    st ^= st >>> 17;
+    st ^= st << 5;
+    st >>>= 0;
+    return st;
+  };
+}
+
+interface Lv {
+  w: number;
+  h: number;
+  img: Float64Array;
+  hole: Uint8Array;
+}
+
+/** 回傳填好的影像（RGB，與 dst 同大小）；周圍沒有可用素材時回傳 null */
+export function inpaint(dst: Float32Array, hole0: Uint8Array, bw: number, bh: number, seed: number): Float64Array | null {
+  let any = false;
+  for (let i = 0; i < hole0.length; i++) if (hole0[i]) any = true;
+  if (!any) return null;
+  // 金字塔
+  const lvs: Lv[] = [{ w: bw, h: bh, img: Float64Array.from(dst), hole: hole0 }];
+  while (lvs.length < 6) {
+    const c = lvs[lvs.length - 1];
+    if (Math.max(c.w, c.h) <= 40 || Math.min(c.w, c.h) < 4 * (2 * PH + 1)) break;
+    const w = Math.ceil(c.w / 2);
+    const h = Math.ceil(c.h / 2);
+    const img = new Float64Array(w * h * 3);
+    const hole = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let n = 0;
+        const sum = [0, 0, 0];
+        let ho = 0;
+        for (let j = 0; j < 2; j++) {
+          for (let i = 0; i < 2; i++) {
+            const xx = x * 2 + i;
+            const yy = y * 2 + j;
+            if (xx >= c.w || yy >= c.h) continue;
+            const q = yy * c.w + xx;
+            for (let k = 0; k < 3; k++) sum[k] += c.img[q * 3 + k];
+            if (c.hole[q]) ho = 1;
+            n++;
+          }
+        }
+        const p = y * w + x;
+        for (let k = 0; k < 3; k++) img[p * 3 + k] = sum[k] / n;
+        hole[p] = ho;
+      }
+    }
+    lvs.push({ w, h, img, hole });
+  }
+  const info = lvs.map(levelInfo);
+  // 從最粗、且有素材的那一層開始
+  let top = lvs.length - 1;
+  while (top >= 0 && info[top].valid.length === 0) top--;
+  if (top < 0) return null;
+  const rnd = xorshift(seed);
+  let ns: Int32Array | null = null;
+  for (let l = top; l >= 0; l--) {
+    const lv = lvs[l];
+    const inf = info[l];
+    const n = lv.w * lv.h;
+    const next = new Int32Array(n).fill(-1);
+    if (!ns) {
+      for (const p of inf.targets) next[p] = inf.valid[rnd() % inf.valid.length];
+      diffuseInit(lv);
+    } else {
+      const c = lvs[l + 1];
+      for (const p of inf.targets) {
+        const px = p % lv.w;
+        const py = (p - px) / lv.w;
+        const cx = Math.min(px >> 1, c.w - 1);
+        const cy = Math.min(py >> 1, c.h - 1);
+        const cs = ns[cy * c.w + cx];
+        let cand = -1;
+        if (cs >= 0) {
+          const sx = px + ((cs % c.w) - cx) * 2;
+          const sy = py + (Math.floor(cs / c.w) - cy) * 2;
+          if (sx >= 0 && sy >= 0 && sx < lv.w && sy < lv.h && inf.isValid[sy * lv.w + sx]) cand = sy * lv.w + sx;
+        }
+        next[p] = cand >= 0 ? cand : inf.valid[rnd() % inf.valid.length];
+      }
+      vote(lv, inf.targets, next);
+    }
+    ns = next;
+    const em = l === top ? 6 : l === 0 ? 3 : 4;
+    const pmi = l === top ? 4 : 3;
+    const nd = new Float64Array(n);
+    for (let e = 0; e < em; e++) {
+      for (const p of inf.targets) nd[p] = patchDist(lv, p, ns[p], Infinity);
+      for (let it = 0; it < pmi; it++) {
+        const fwd = it % 2 === 0;
+        const T = inf.targets.length;
+        for (let ti = 0; ti < T; ti++) {
+          const p = inf.targets[fwd ? ti : T - 1 - ti];
+          const px = p % lv.w;
+          const py = (p - px) / lv.w;
+          // 鄰居傳遞
+          for (let pass = 0; pass < 2; pass++) {
+            const dx = pass === 0 ? (fwd ? -1 : 1) : 0;
+            const dy = pass === 1 ? (fwd ? -1 : 1) : 0;
+            const qx = px + dx;
+            const qy = py + dy;
+            if (qx < 0 || qy < 0 || qx >= lv.w || qy >= lv.h) continue;
+            const q = qy * lv.w + qx;
+            if (!inf.isTarget[q]) continue;
+            const sq = ns[q];
+            const sx = (sq % lv.w) - dx;
+            const sy = Math.floor(sq / lv.w) - dy;
+            if (sx < 0 || sy < 0 || sx >= lv.w || sy >= lv.h) continue;
+            const cand = sy * lv.w + sx;
+            if (!inf.isValid[cand] || cand === ns[p]) continue;
+            const d = patchDist(lv, p, cand, nd[p]);
+            if (d < nd[p]) {
+              nd[p] = d;
+              ns[p] = cand;
+            }
+          }
+          // 隨機搜尋（半徑每次減半）
+          let rad = Math.max(lv.w, lv.h);
+          while (rad >= 1) {
+            const bx = ns[p] % lv.w;
+            const by = Math.floor(ns[p] / lv.w);
+            const sx = bx + (rnd() % (2 * rad + 1)) - rad;
+            const sy = by + (rnd() % (2 * rad + 1)) - rad;
+            if (sx >= 0 && sy >= 0 && sx < lv.w && sy < lv.h) {
+              const cand = sy * lv.w + sx;
+              if (inf.isValid[cand] && cand !== ns[p]) {
+                const d = patchDist(lv, p, cand, nd[p]);
+                if (d < nd[p]) {
+                  nd[p] = d;
+                  ns[p] = cand;
+                }
+              }
+            }
+            rad = Math.floor(rad / 2);
+          }
+        }
+      }
+      vote(lv, inf.targets, ns, nd);
+    }
+    if (l === 0) {
+      // 最後一步：每個像素直接取最像的小區塊中心的顏色（不平均），保留原解析度的顆粒與細節
+      const { img, hole } = lv;
+      for (const q of inf.targets) {
+        if (!hole[q]) continue;
+        const src = ns[q];
+        for (let k = 0; k < 3; k++) img[q * 3 + k] = img[src * 3 + k];
+      }
+    }
+  }
+  return lvs[0].img;
+}
+
+/** 每層的：可當素材的小區塊中心（整塊在範圍內且不碰到洞）、要填的小區塊中心（碰到洞的） */
+function levelInfo(lv: Lv) {
+  const { w, h, hole } = lv;
+  // 洞的積分圖
+  const ii = new Int32Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) {
+      row += hole[y * w + x];
+      ii[(y + 1) * (w + 1) + x + 1] = ii[y * (w + 1) + x + 1] + row;
+    }
+  }
+  const count = (xa: number, ya: number, xb: number, yb: number) => {
+    xa = Math.max(0, xa);
+    ya = Math.max(0, ya);
+    xb = Math.min(w - 1, xb);
+    yb = Math.min(h - 1, yb);
+    if (xa > xb || ya > yb) return 0;
+    return ii[(yb + 1) * (w + 1) + xb + 1] - ii[ya * (w + 1) + xb + 1] - ii[(yb + 1) * (w + 1) + xa] + ii[ya * (w + 1) + xa];
+  };
+  const isValid = new Uint8Array(w * h);
+  const isTarget = new Uint8Array(w * h);
+  const valid: number[] = [];
+  const targets: number[] = [];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      const c = count(x - PH, y - PH, x + PH, y + PH);
+      if (c > 0) {
+        isTarget[p] = 1;
+        targets.push(p);
+      } else if (x >= PH && y >= PH && x < w - PH && y < h - PH) {
+        isValid[p] = 1;
+        valid.push(p);
+      }
+    }
+  }
+  return { isValid, isTarget, valid, targets };
+}
+
+/** 兩個 7×7 小區塊的差異（平方和）；超過 cutoff 就提早停 */
+function patchDist(lv: Lv, p: number, s: number, cutoff: number): number {
+  const w = lv.w;
+  const px = p % w;
+  const py = (p - px) / w;
+  const sx = s % w;
+  const sy = (s - sx) / w;
+  const img = lv.img;
+  let acc = 0;
+  for (let dy = -PH; dy <= PH; dy++) {
+    const ty = py + dy;
+    if (ty < 0 || ty >= lv.h) continue;
+    for (let dx = -PH; dx <= PH; dx++) {
+      const tx = px + dx;
+      if (tx < 0 || tx >= w) continue;
+      const t = (ty * w + tx) * 3;
+      const u = ((sy + dy) * w + sx + dx) * 3;
+      const d0 = img[t] - img[u];
+      const d1 = img[t + 1] - img[u + 1];
+      const d2 = img[t + 2] - img[u + 2];
+      acc += d0 * d0 + d1 * d1 + d2 * d2;
+    }
+    if (acc >= cutoff) return acc;
+  }
+  return acc;
+}
+
+/** 投票：洞裡每個像素 = 所有蓋到它的小區塊、對應位置顏色的平均 */
+function vote(lv: Lv, targets: number[], ns: Int32Array, nd?: Float64Array) {
+  const { w, h, img, hole } = lv;
+  const acc = new Float64Array(w * h * 3);
+  const wt = new Float64Array(w * h);
+  // 權重：越像的小區塊說話越大聲（1 / (1 + 差異 / 中位數)），避免不像的區塊把結果平均糊掉
+  let med = 0;
+  if (nd && targets.length) {
+    const arr = new Float64Array(targets.length);
+    targets.forEach((p, i) => (arr[i] = nd[p]));
+    arr.sort();
+    med = arr[arr.length >> 1];
+  }
+  for (const p of targets) {
+    const s = ns[p];
+    const wp = nd && med > 0 ? 1 / (1 + nd[p] / med) : 1;
+    const px = p % w;
+    const py = (p - px) / w;
+    const sx = s % w;
+    const sy = (s - sx) / w;
+    for (let dy = -PH; dy <= PH; dy++) {
+      const ty = py + dy;
+      if (ty < 0 || ty >= h) continue;
+      for (let dx = -PH; dx <= PH; dx++) {
+        const tx = px + dx;
+        if (tx < 0 || tx >= w) continue;
+        const t = ty * w + tx;
+        if (!hole[t]) continue;
+        const u = ((sy + dy) * w + sx + dx) * 3;
+        acc[t * 3] += img[u] * wp;
+        acc[t * 3 + 1] += img[u + 1] * wp;
+        acc[t * 3 + 2] += img[u + 2] * wp;
+        wt[t] += wp;
+      }
+    }
+  }
+  for (let t = 0; t < w * h; t++) {
+    if (!hole[t] || wt[t] <= 0) continue;
+    for (let k = 0; k < 3; k++) img[t * 3 + k] = acc[t * 3 + k] / wt[t];
+  }
+}
+
+/** 最粗一層的起始值：洞先填周圍平均色，再往內擴散幾十次（平滑的底色） */
+function diffuseInit(lv: Lv) {
+  const { w, h, img, hole } = lv;
+  const mean = [0, 0, 0];
+  let n = 0;
+  for (let i = 0; i < w * h; i++) {
+    if (hole[i]) continue;
+    for (let k = 0; k < 3; k++) mean[k] += img[i * 3 + k];
+    n++;
+  }
+  for (let k = 0; k < 3; k++) mean[k] /= Math.max(1, n);
+  for (let i = 0; i < w * h; i++) if (hole[i]) for (let k = 0; k < 3; k++) img[i * 3 + k] = mean[k];
+  for (let it = 0; it < 60; it++) {
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (!hole[i]) continue;
+        for (let k = 0; k < 3; k++) {
+          let sum = 0;
+          let m = 0;
+          if (x > 0) (sum += img[(i - 1) * 3 + k]), m++;
+          if (x < w - 1) (sum += img[(i + 1) * 3 + k]), m++;
+          if (y > 0) (sum += img[(i - w) * 3 + k]), m++;
+          if (y < h - 1) (sum += img[(i + w) * 3 + k]), m++;
+          img[i * 3 + k] = sum / m;
+        }
+      }
+    }
+  }
 }
