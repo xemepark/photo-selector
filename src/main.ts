@@ -762,7 +762,8 @@ function renderTabs() {
 /** 視窗座標（實體像素）下的分頁索引；不在分頁上回傳 -1 */
 function tabAt(pos: { x: number; y: number } | undefined): number {
   if (!pos) return -1;
-  const dpr = window.devicePixelRatio || 1;
+  // macOS 回報的拖放座標已經是點（邏輯像素），其他系統是實體像素
+  const dpr = IS_MAC_UI ? 1 : window.devicePixelRatio || 1;
   const el = document.elementFromPoint(pos.x / dpr, pos.y / dpr) as HTMLElement | null;
   const t = el?.closest<HTMLElement>("[data-tab]");
   return t ? Number(t.dataset.tab) : -1;
