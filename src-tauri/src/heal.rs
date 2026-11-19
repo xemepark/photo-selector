@@ -712,6 +712,11 @@ fn inpaint(dst: &[f32], hole0: &[u8], bw: usize, bh: usize, seed: u32) -> Option
         lvs.push(Lv { w, h, img, hole });
     }
     let info: Vec<LvInfo> = lvs.iter().map(level_info).collect();
+    // 洞很大時只做到「要填的小區塊數 ≤ MAX_TARGETS」的那一層，再放大回原尺寸（與 heal.ts 相同）
+    let mut bottom = 0usize;
+    while bottom < lvs.len() - 1 && info[bottom].targets.len() > MAX_TARGETS {
+        bottom += 1;
+    }
     let mut top = lvs.len() as i64 - 1;
     while top >= 0 && info[top as usize].valid.is_empty() {
         top -= 1;
@@ -722,7 +727,10 @@ fn inpaint(dst: &[f32], hole0: &[u8], bw: usize, bh: usize, seed: u32) -> Option
     let top = top as usize;
     let mut rnd = XorShift::new(seed);
     let mut ns: Option<Vec<i64>> = None;
-    for l in (0..=top).rev() {
+    if bottom > top {
+        bottom = top;
+    }
+    for l in (bottom..=top).rev() {
         let (lw, lh) = (lvs[l].w, lvs[l].h);
         let inf = &info[l];
         let n = lw * lh;
@@ -754,7 +762,7 @@ fn inpaint(dst: &[f32], hole0: &[u8], bw: usize, bh: usize, seed: u32) -> Option
                 vote(&mut lvs[l], &inf.targets, &next, None);
             }
         }
-        let em = if l == top { 6 } else if l == 0 { 3 } else { 4 };
+        let em = if l == top { 6 } else if l == bottom { 3 } else { 4 };
         let pmi = if l == top { 4 } else { 3 };
         let mut nd = vec![0f64; n];
         for _ in 0..em {
@@ -817,7 +825,7 @@ fn inpaint(dst: &[f32], hole0: &[u8], bw: usize, bh: usize, seed: u32) -> Option
             }
             vote(&mut lvs[l], &inf.targets, &next, Some(&nd));
         }
-        if l == 0 {
+        if l == 0 && bottom == 0 {
             // 最後一步：每個像素直接取最像的小區塊中心的顏色（不平均），保留顆粒與細節
             let lv = &mut lvs[0];
             for &q in &inf.targets {
@@ -832,7 +840,35 @@ fn inpaint(dst: &[f32], hole0: &[u8], bw: usize, bh: usize, seed: u32) -> Option
         }
         ns = Some(next);
     }
+    if bottom > 0 {
+        let src = lvs.remove(bottom);
+        upsample_into(&mut lvs[0], &src, bottom);
+    }
     Some(lvs.swap_remove(0).img)
+}
+
+const MAX_TARGETS: usize = 40000;
+
+fn upsample_into(dst: &mut Lv, src: &Lv, levels: usize) {
+    let f = (1u32 << levels) as f64;
+    for y in 0..dst.h {
+        for x in 0..dst.w {
+            let q = y * dst.w + x;
+            if dst.hole[q] == 0 {
+                continue;
+            }
+            let fx = ((x as f64 + 0.5) / f - 0.5).clamp(0.0, (src.w - 1) as f64);
+            let fy = ((y as f64 + 0.5) / f - 0.5).clamp(0.0, (src.h - 1) as f64);
+            let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+            let (x1, y1) = ((x0 + 1).min(src.w - 1), (y0 + 1).min(src.h - 1));
+            let (tx, ty) = (fx - x0 as f64, fy - y0 as f64);
+            for k in 0..3 {
+                let a = src.img[(y0 * src.w + x0) * 3 + k] * (1.0 - tx) + src.img[(y0 * src.w + x1) * 3 + k] * tx;
+                let b = src.img[(y1 * src.w + x0) * 3 + k] * (1.0 - tx) + src.img[(y1 * src.w + x1) * 3 + k] * tx;
+                dst.img[q * 3 + k] = a * (1.0 - ty) + b * ty;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

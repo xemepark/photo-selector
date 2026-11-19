@@ -649,13 +649,17 @@ export function inpaint(dst: Float32Array, hole0: Uint8Array, bw: number, bh: nu
     lvs.push({ w, h, img, hole });
   }
   const info = lvs.map(levelInfo);
+  // 洞很大時不在原解析度合成（太慢）：只做到「要填的小區塊數 ≤ MAX_TARGETS」的那一層，再放大回原尺寸
+  let bottom = 0;
+  while (bottom < lvs.length - 1 && info[bottom].targets.length > MAX_TARGETS) bottom++;
   // 從最粗、且有素材的那一層開始
   let top = lvs.length - 1;
   while (top >= 0 && info[top].valid.length === 0) top--;
   if (top < 0) return null;
   const rnd = xorshift(seed);
   let ns: Int32Array | null = null;
-  for (let l = top; l >= 0; l--) {
+  if (bottom > top) bottom = top;
+  for (let l = top; l >= bottom; l--) {
     const lv = lvs[l];
     const inf = info[l];
     const n = lv.w * lv.h;
@@ -682,7 +686,7 @@ export function inpaint(dst: Float32Array, hole0: Uint8Array, bw: number, bh: nu
       vote(lv, inf.targets, next);
     }
     ns = next;
-    const em = l === top ? 6 : l === 0 ? 3 : 4;
+    const em = l === top ? 6 : l === bottom ? 3 : 4;
     const pmi = l === top ? 4 : 3;
     const nd = new Float64Array(n);
     for (let e = 0; e < em; e++) {
@@ -738,7 +742,7 @@ export function inpaint(dst: Float32Array, hole0: Uint8Array, bw: number, bh: nu
       }
       vote(lv, inf.targets, ns, nd);
     }
-    if (l === 0) {
+    if (l === 0 && bottom === 0) {
       // 最後一步：每個像素直接取最像的小區塊中心的顏色（不平均），保留原解析度的顆粒與細節
       const { img, hole } = lv;
       for (const q of inf.targets) {
@@ -748,7 +752,34 @@ export function inpaint(dst: Float32Array, hole0: Uint8Array, bw: number, bh: nu
       }
     }
   }
+  if (bottom > 0) upsampleInto(lvs[0], lvs[bottom], bottom);
   return lvs[0].img;
+}
+
+const MAX_TARGETS = 40000;
+
+/** 用粗層的合成結果（雙線性放大）填原尺寸的洞 */
+function upsampleInto(dst: Lv, src: Lv, levels: number) {
+  const f = 2 ** levels;
+  for (let y = 0; y < dst.h; y++) {
+    for (let x = 0; x < dst.w; x++) {
+      const q = y * dst.w + x;
+      if (!dst.hole[q]) continue;
+      const fx = Math.min(src.w - 1, Math.max(0, (x + 0.5) / f - 0.5));
+      const fy = Math.min(src.h - 1, Math.max(0, (y + 0.5) / f - 0.5));
+      const x0 = Math.floor(fx);
+      const y0 = Math.floor(fy);
+      const x1 = Math.min(src.w - 1, x0 + 1);
+      const y1 = Math.min(src.h - 1, y0 + 1);
+      const tx = fx - x0;
+      const ty = fy - y0;
+      for (let k = 0; k < 3; k++) {
+        const a = src.img[(y0 * src.w + x0) * 3 + k] * (1 - tx) + src.img[(y0 * src.w + x1) * 3 + k] * tx;
+        const b = src.img[(y1 * src.w + x0) * 3 + k] * (1 - tx) + src.img[(y1 * src.w + x1) * 3 + k] * tx;
+        dst.img[q * 3 + k] = a * (1 - ty) + b * ty;
+      }
+    }
+  }
 }
 
 /** 每層的：可當素材的小區塊中心（整塊在範圍內且不碰到洞）、要填的小區塊中心（碰到洞的） */

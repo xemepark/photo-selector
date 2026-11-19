@@ -511,3 +511,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 .tab-x:hover { background: #ffffff1f; color: var(--text); }
 .tab-new { border: none; background: transparent; color: var(--muted); font-size: 16px; padding: 0 10px; border-radius: 6px; }
 .tab-new:hover { background: #ffffff14; color: var(--text); }
+.tab.drop-target { background: var(--accent); color: #1a1a1a; border-color: var(--accent); }
+.tab-drop-menu { position: fixed; z-index: 60; min-width: 210px; background: #2b2b30; border: 1px solid #ffffff26; border-radius: 8px; box-shadow: 0 8px 24px #000a; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.tab-drop-title { font-size: 12px; color: var(--muted); padding: 4px 8px 6px; border-bottom: 1px solid #ffffff1a; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tab-drop-menu button { text-align: left; border: none; background: transparent; padding: 6px 10px; border-radius: 5px; font-size: 13px; }
+.tab-drop-menu button:hover { background: var(--accent); color: #1a1a1a; }

@@ -203,8 +203,14 @@ impl Core {
             }
         }
 
+        // 解碼 / 套用調整時萬一 panic：回傳預留圖，不要讓請求永遠沒有回應（畫面會一直「載入中」）
+        let guard = |f: &dyn Fn() -> anyhow::Result<Vec<u8>>| -> anyhow::Result<Vec<u8>> {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err(anyhow::anyhow!("render panicked")))
+        };
         if job.kind == Kind::Medium {
-            return match render::render_medium(item) {
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render::render_medium(item)))
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("render panicked")));
+            return match r {
                 Ok((bytes, is_full)) => {
                     let arc = Arc::new(bytes.clone());
                     self.mem_medium.lock().put(key.clone(), arc.clone());
@@ -219,7 +225,7 @@ impl Core {
                 }
             };
         }
-        match render::render(item, job.kind) {
+        match guard(&|| render::render(item, job.kind)) {
             Ok(bytes) => {
                 match job.kind {
                     Kind::Thumb => {

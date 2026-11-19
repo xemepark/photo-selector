@@ -737,6 +737,63 @@ function renderTabs() {
       .join("") + `<button id="tab-new" class="tab-new" title="新增分頁（⌘T）">＋</button>`;
 }
 
+// ---- 把照片拖到其他分頁 = 複製 / 移動到那個分頁的資料夾
+// 縮圖拖曳是系統原生拖曳（也能拖到 Finder 等其他程式），所以在視窗的 drop 事件裡判斷放在哪個分頁上
+
+/** 視窗座標（實體像素）下的分頁索引；不在分頁上回傳 -1 */
+function tabAt(pos: { x: number; y: number } | undefined): number {
+  if (!pos) return -1;
+  const dpr = window.devicePixelRatio || 1;
+  const el = document.elementFromPoint(pos.x / dpr, pos.y / dpr) as HTMLElement | null;
+  const t = el?.closest<HTMLElement>("[data-tab]");
+  return t ? Number(t.dataset.tab) : -1;
+}
+
+function markDropTab(i: number) {
+  document.querySelectorAll<HTMLElement>("#tabbar [data-tab]").forEach((t) => t.classList.toggle("drop-target", Number(t.dataset.tab) === i && i !== activeTab));
+}
+
+/** 放到分頁上：問要複製還是移動（仿 Finder 的右鍵拖曳選單） */
+function dropOnTab(i: number, ids: number[]) {
+  const t = tabs[i];
+  if (!t || i === activeTab || !ids.length) return;
+  if (t.dir === S.dir) return toast("這個分頁和目前是同一個資料夾");
+  const tabEl = document.querySelector<HTMLElement>(`#tabbar [data-tab="${i}"]`);
+  const r = tabEl?.getBoundingClientRect();
+  const menu = $("tab-drop-menu");
+  $("tab-drop-title").textContent = `${ids.length} 個項目 → 「${tabName(t.dir)}」`;
+  menu.style.left = `${Math.max(8, Math.min(window.innerWidth - 230, r ? r.left : 100))}px`;
+  menu.style.top = `${r ? r.bottom + 4 : 80}px`;
+  menu.classList.remove("hidden");
+  const done = (mode: "copy" | "move" | null) => {
+    menu.classList.add("hidden");
+    menu.onclick = null;
+    document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("pointerdown", onAway, true);
+    if (mode) void transferIds(ids, t.dir, mode, false);
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") e.preventDefault(), e.stopPropagation(), done(null);
+    if (e.key === "Enter") e.preventDefault(), e.stopPropagation(), done("copy");
+  };
+  const onAway = (e: PointerEvent) => {
+    if (!menu.contains(e.target as Node)) done(null);
+  };
+  menu.onclick = (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>("[data-drop]");
+    if (b) done(b.dataset.drop === "cancel" ? null : (b.dataset.drop as "copy" | "move"));
+  };
+  setTimeout(() => {
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onAway, true);
+  }, 0);
+}
+
+/** 拖曳開始時的照片（放下時選取可能已改變）與拖出去的檔案路徑（用來認出「自己的拖曳」） */
+let dragIds: number[] = [];
+let dragFiles = new Set<string>();
+let dragAt = 0;
+
 $("tabbar").addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
   const x = t.closest<HTMLElement>("[data-close]");
@@ -922,12 +979,15 @@ async function onCellDrag(index: number) {
   const ids = S.view.filter((it) => S.selected.has(it.id)).map((it) => it.id);
   if (!ids.length) return;
   dragging = true;
+  dragIds = ids;
   try {
     const edited = dragBake.checked && ids.some((id) => S.meta.get(id)?.edited);
     if (edited) document.body.style.cursor = "progress";
     const { files, icon } = await api.dragPrepare(S.session, ids, dragRaw.checked, dragBake.checked).finally(() => {
       document.body.style.cursor = "";
     });
+    dragFiles = new Set(files);
+    dragAt = Date.now();
     await startDrag({ item: files, icon, mode: "copy" });
   } catch (e) {
     console.warn("drag failed", e);
@@ -1267,11 +1327,17 @@ async function transfer(mode: "copy" | "move") {
   if (!ids.length) return toast("沒有選取任何照片");
   const dest = await openDialog({ directory: true, title: mode === "copy" ? "複製到…" : "移動到…" });
   if (typeof dest !== "string") return;
+  await transferIds(ids, dest, mode);
+}
+
+/** 複製 / 移動指定的照片到 dest（含配對 RAW/JPEG 與 .xmp；依設定套用調整） */
+async function transferIds(ids: number[], dest: string, mode: "copy" | "move", confirmMove = true) {
+  if (dest === S.dir) return toast("目的地就是目前的資料夾");
   const editedCount = transferBake.checked ? ids.filter((id) => S.meta.get(id)?.edited).length : 0;
   const bakeNote = editedCount
     ? `\n\n其中 ${editedCount} 張有調整過：會在目的地輸出套用調整後的照片${mode === "move" ? "，原本未調整的原檔移到垃圾桶" : ""}。`
     : "";
-  if (mode === "move" && !(await ask(`確定要把 ${ids.length} 個項目（含配對的 RAW/JPEG 與 .xmp）移動到\n${dest}？${bakeNote}`, { title: "移動檔案", okLabel: "確定", cancelLabel: "取消" })))
+  if (mode === "move" && confirmMove && !(await ask(`確定要把 ${ids.length} 個項目（含配對的 RAW/JPEG 與 .xmp）移動到\n${dest}？${bakeNote}`, { title: "移動檔案", okLabel: "確定", cancelLabel: "取消" })))
     return;
   if (editedCount) toast(`正在輸出 ${editedCount} 張套用調整後的照片…`, 60000);
   try {
@@ -1864,22 +1930,45 @@ async function openPath(text: string): Promise<boolean> {
 {
   const overlay = $("drop-overlay");
   let lastOwnDrag = 0;
-  const own = () => dragging || Date.now() - lastOwnDrag < 1500;
+  // 自己的拖曳：拖曳進行中，或放下的檔案正是剛剛拖出去的那些（有些系統 startDrag 會提早結束）
+  const own = (paths?: string[]) =>
+    dragging ||
+    Date.now() - lastOwnDrag < 1500 ||
+    (!!paths?.length && Date.now() - dragAt < 120000 && paths.every((x) => dragFiles.has(x)));
   // 自己的縮圖拖出去又放回視窗時不要當成「開啟」
   setInterval(() => {
     if (dragging) lastOwnDrag = Date.now();
   }, 200);
+  let ownDrop = false;
   void getCurrentWebview().onDragDropEvent((ev) => {
     const p = ev.payload;
+    // 自己的縮圖拖到分頁上：反白那個分頁；放下 = 複製 / 移動到那個分頁的資料夾
+    const ps = "paths" in p ? (p as { paths: string[] }).paths : undefined;
+    if (p.type === "enter" || p.type === "drop") ownDrop = own(ps);
+    if (ownDrop && tabs.length > 1) {
+      if (p.type === "over" || p.type === "enter") markDropTab(tabAt(p.position));
+      else if (p.type === "leave") markDropTab(-1);
+      else if (p.type === "drop") {
+        markDropTab(-1);
+        ownDrop = false;
+        const i = tabAt(p.position);
+        if (i >= 0) dropOnTab(i, dragIds);
+      }
+      return;
+    }
+    if (ownDrop && (p.type === "over" || p.type === "leave")) return;
     if (p.type === "enter") {
-      if (own() || !p.paths.length) return;
+      if (ownDrop || !p.paths.length) return;
       $("drop-text").textContent = p.paths.length > 1 ? `放開以分頁開啟這 ${p.paths.length} 個資料夾` : "放開以開啟這個資料夾";
       overlay.classList.remove("hidden");
     } else if (p.type === "leave") {
       overlay.classList.add("hidden");
     } else if (p.type === "drop") {
       overlay.classList.add("hidden");
-      if (own() || !p.paths.length) return;
+      if (ownDrop || !p.paths.length) {
+        ownDrop = false;
+        return;
+      }
       if (editor.isOpen || slideshow.active) return toast("請先關閉調整視窗或幻燈片，再拖入資料夾");
       if (S.loupe) closeLoupe();
       void (async () => {

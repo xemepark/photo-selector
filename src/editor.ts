@@ -1146,7 +1146,10 @@ export class Editor {
     const msg = this.q("#ed-msg");
     msg.textContent = "載入中…";
     try {
-      const res = await fetch(url.base(this.host.session(), this.item.id));
+      // 最多等 60 秒（避免後端出錯時一直顯示「載入中」）
+      const ctl = new AbortController();
+      const timer = window.setTimeout(() => ctl.abort(), 60000);
+      const res = await fetch(url.base(this.host.session(), this.item.id), { signal: ctl.signal }).finally(() => clearTimeout(timer));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const bmp = await createImageBitmap(await res.blob());
       if (seq !== this.loadSeq || !this.gl) return bmp.close();
@@ -1165,6 +1168,8 @@ export class Editor {
         this.baseOrig = g2.getImageData(0, 0, bmp.width, bmp.height);
         this.baseKey = "";
         this.healCache.clear();
+        // 先顯示原圖，修補稍後再套（修補多時要算一下，畫面不會卡在「載入中」）
+        this.healPending = (this.p.spots ?? []).length > 0;
         this.uploadBase();
       }
       // 滴管取色用的縮小原圖
@@ -1182,8 +1187,22 @@ export class Editor {
       bmp.close();
       msg.textContent = "";
       this.draw();
+      if (this.healPending) {
+        msg.textContent = "套用修補中…";
+        window.setTimeout(() => {
+          if (seq !== this.loadSeq) return;
+          this.healPending = false;
+          try {
+            this.uploadBase();
+          } finally {
+            if (seq === this.loadSeq) msg.textContent = "";
+          }
+          this.draw();
+        }, 40);
+      }
     } catch (e) {
-      if (seq === this.loadSeq) msg.textContent = `無法載入照片：${e}`;
+      if (seq === this.loadSeq)
+        msg.textContent = (e as Error)?.name === "AbortError" ? "載入照片逾時，請按 ← → 換一張再回來，或關閉後重新開啟" : `無法載入照片：${e}`;
     }
   }
 
@@ -1902,6 +1921,8 @@ export class Editor {
   private lastPtool: SpotMode = 0;
   private ovTmp: HTMLCanvasElement | null = null;
   /** 修補結果快取（換照片時清掉） */
+  /** 剛載入照片、修補還沒套用（先顯示原圖） */
+  private healPending = false;
   private healCache = new Map<string, { b: [number, number, number, number]; px: Uint8ClampedArray }>();
   /** 修補標題的眼睛：暫時不套用修補（比較前後） */
   private spotsHidden = false;
@@ -1918,7 +1939,7 @@ export class Editor {
     const gl = this.gl;
     const base = this.baseOrig;
     if (!gl || !base) return;
-    const spots = this.spotsHidden ? [] : (this.p.spots ?? []);
+    const spots = this.spotsHidden || this.healPending ? [] : (this.p.spots ?? []);
     const key = JSON.stringify(spots);
     if (key === this.baseKey) return;
     this.baseKey = key;
