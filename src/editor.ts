@@ -1040,6 +1040,13 @@ export class Editor {
 
   private markStrip() {
     this.stripSel.add(this.pos);
+    // 多選時先載入其他照片的小圖，第一次拖曳就能即時更新它們的縮圖
+    if (this.stripSel.size > 1 && this.gl) {
+      for (const pos of this.stripSel) {
+        const id = this.list[pos]?.id;
+        if (pos !== this.pos && id !== undefined && !this.others.has(id)) void this.loadOther(id);
+      }
+    }
     const strip = this.q("#ed-strip");
     strip.querySelectorAll<HTMLElement>(".ed-thumb").forEach((d) => {
       const i = Number(d.dataset.pos);
@@ -1080,6 +1087,125 @@ export class Editor {
   private multiTimer = 0;
   /** 其他照片在這次調整前的設定（取消時還原） */
   private multiOrig = new Map<number, EditParams>();
+  /** 這張照片開啟後、多選時動過的所有項目（其他照片的即時縮圖用） */
+  private multiTouched = new Set<string>();
+  /** 其他選取照片的未調整小圖（GPU 貼圖）與各自原本的設定，用來即時畫它們的縮圖 */
+  private others = new Map<number, { tex: WebGLTexture; w: number; h: number; params: EditParams } | "loading">();
+  private othersRaf = 0;
+
+  private scheduleOthers() {
+    if (this.othersRaf) return;
+    this.othersRaf = requestAnimationFrame(() => {
+      this.othersRaf = 0;
+      void this.renderOthers();
+    });
+  }
+
+  /** 其他選取照片的設定 = 各自原本的設定，動過的項目換成目前這張的值 */
+  private mergedFor(base: EditParams): EditParams {
+    const m = clone(base);
+    const p = this.p;
+    for (const f of this.multiTouched) {
+      if ((NUM_KEYS as string[]).includes(f)) m[f as NumKey] = p[f as NumKey];
+      else if (f === "curve") m.curve = p.curve.map((q) => [...q] as Pt);
+      else if (f === "hsl") m.hsl = normHsl(p.hsl);
+      else if (f === "crop") m.crop = normCrop(p.crop);
+      else if (f === "spots") m.spots = cleanSpots(JSON.parse(JSON.stringify(p.spots ?? [])));
+    }
+    return m;
+  }
+
+  private async loadOther(id: number) {
+    const gl = this.gl;
+    if (!gl) return;
+    this.others.set(id, "loading");
+    try {
+      const orig = this.multiOrig.get(id);
+      const r = orig ? null : await api.getEdit(this.host.session(), id).catch(() => null);
+      const params =
+        orig ?? clone({ ...ZERO, ...(r ?? {}), curve: (r?.curve ?? []) as Pt[], hsl: normHsl(r?.hsl), crop: normCrop(r?.crop), spots: cleanSpots(r?.spots) });
+      if (!this.multiOrig.has(id)) this.multiOrig.set(id, clone(params));
+      const res = await fetch(url.base(this.host.session(), id));
+      const bmp = await createImageBitmap(await res.blob(), { resizeWidth: 320, resizeQuality: "medium" });
+      if (!this.gl || !this.isOpen) return bmp.close();
+      const t = gl.createTexture()!;
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+      this.others.set(id, { tex: t, w: bmp.width, h: bmp.height, params });
+      bmp.close();
+      gl.bindTexture(gl.TEXTURE_2D, this.tex);
+      this.scheduleOthers();
+    } catch {
+      this.others.delete(id);
+    }
+  }
+
+  /** 用 GPU 畫其他選取照片套用後的縮圖（與目前這張同一套 shader，拖曳時即時更新） */
+  private async renderOthers() {
+    const gl = this.gl;
+    if (!gl || !this.prog || !this.fbo || !this.fboTex || !this.isOpen || this.stripSel.size < 2) return;
+    const save = { p: this.p, tex: this.tex, w: this.imgW, h: this.imgH };
+    for (const pos of this.stripSel) {
+      if (pos === this.pos) continue;
+      const id = this.list[pos]?.id;
+      if (id === undefined) continue;
+      const o = this.others.get(id);
+      if (!o) {
+        void this.loadOther(id);
+        continue;
+      }
+      if (o === "loading") continue;
+      const cell = this.q("#ed-strip").querySelector<HTMLImageElement>(`.ed-thumb[data-pos="${pos}"] img`);
+      if (!cell) continue;
+      // 暫時把「目前照片」換成這張，畫完再換回來
+      this.p = this.mergedFor(o.params);
+      this.tex = o.tex;
+      this.imgW = o.w;
+      this.imgH = o.h;
+      this.updateLut();
+      const f = fromNorm(this.p.crop, o.w, o.h) ?? fullCrop(o.w, o.h);
+      const sc = 200 / Math.max(f.w, f.h);
+      const w = Math.max(1, Math.round(f.w * sc));
+      const h = Math.max(1, Math.round(f.h * sc));
+      gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      this.fboW = w;
+      this.fboH = h;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fboTex, 0);
+      gl.viewport(0, 0, w, h);
+      this.setUniforms(1, 1, f, false);
+      gl.uniform1f(gl.getUniformLocation(this.prog, "u_bypass"), 0);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      this.p = save.p;
+      this.tex = save.tex;
+      this.imgW = save.w;
+      this.imgH = save.h;
+      this.paintThumb(cell, px, w, h);
+    }
+    this.p = save.p;
+    this.tex = save.tex;
+    this.imgW = save.w;
+    this.imgH = save.h;
+    this.updateLut();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    this.render();
+  }
+
+  private dropOthers() {
+    const gl = this.gl;
+    for (const o of this.others.values()) if (o !== "loading" && gl) gl.deleteTexture(o.tex);
+    this.others.clear();
+  }
 
   private changedFields(a: EditParams, b: EditParams): string[] {
     const out: string[] = NUM_KEYS.filter((k) => Math.abs(a[k] - b[k]) > 1e-6);
@@ -1098,7 +1224,11 @@ export class Editor {
     if (!changed.length) return;
     this.lastP = clone(this.p);
     if (this.stripSel.size < 2 || !this.stripSel.has(this.pos)) return;
-    for (const f of changed) this.multiFields.add(f);
+    for (const f of changed) {
+      this.multiFields.add(f);
+      this.multiTouched.add(f);
+    }
+    this.scheduleOthers();
     clearTimeout(this.multiTimer);
     this.multiTimer = window.setTimeout(() => void this.flushMulti(), 350);
   }
@@ -1129,6 +1259,11 @@ export class Editor {
   private updateStripThumb(px: Uint8Array, w: number, h: number) {
     const cell = this.q("#ed-strip").querySelector<HTMLElement>(`.ed-thumb[data-pos="${this.pos}"] img`) as HTMLImageElement | null;
     if (!cell || this.bypass) return;
+    this.paintThumb(cell, px, w, h);
+  }
+
+  /** readPixels 的結果畫成縮圖 */
+  private paintThumb(cell: HTMLImageElement, px: Uint8Array, w: number, h: number) {
     const cv = (this.stripCanvas ??= document.createElement("canvas"));
     cv.width = w;
     cv.height = h;
@@ -1228,7 +1363,10 @@ export class Editor {
     return this.list[this.pos];
   }
 
+  private showSeq = 0;
+
   private async show() {
+    const seq = ++this.showSeq;
     const it = this.item;
     this.host.focus(it.id);
     this.q("#ed-name").textContent = it.name;
@@ -1247,12 +1385,16 @@ export class Editor {
     this.q("#ed-syncbox").classList.add("hidden");
     try {
       const r = await api.getEdit(this.host.session(), it.id);
+      if (seq !== this.showSeq) return;
       this.saved = clone({ ...ZERO, ...r, curve: (r.curve ?? []) as Pt[], hsl: normHsl(r.hsl), crop: normCrop(r.crop), spots: cleanSpots(r.spots) });
     } catch {
       this.saved = clone(ZERO);
     }
+    if (seq !== this.showSeq) return;
+    this.dropOthers();
     this.p = clone(this.saved);
     this.lastP = clone(this.p);
+    this.multiTouched.clear();
     this.curveEd.set(this.p.curve);
     this.updateLut();
     this.syncInputs();
@@ -2767,7 +2909,8 @@ export class Editor {
     const r = await api.saveEdit(this.host.session(), ids, send, fields);
     if (r.failed.length) this.host.toast(`有 ${r.failed.length} 張無法儲存調整：${r.failed[0]}`);
     this.host.saved(r.edited);
-    await this.refreshStrip(ids.filter((id) => id !== this.item.id || !this.isOpen));
+    // 目前這張與正在即時畫縮圖的其他照片，縮圖已是最新，不必再向後端要（避免閃回舊圖）
+    await this.refreshStrip(ids.filter((id) => !this.isOpen || (id !== this.item.id && !this.others.has(id))));
   }
 
   /** 有改過才存 */
@@ -2779,8 +2922,32 @@ export class Editor {
     this.saved = params;
   }
 
+  /** 切換照片中（連點縮圖時只處理最後一次，避免畫面亂跳） */
+  private navBusy = false;
+  private navNext: number | null = null;
+
   async goto(next: number) {
-    if (next < 0 || next >= this.list.length || next === this.pos) return;
+    if (next < 0 || next >= this.list.length) return;
+    if (this.navBusy) {
+      this.navNext = next;
+      return;
+    }
+    if (next === this.pos) return;
+    this.navBusy = true;
+    try {
+      await this.gotoNow(next);
+      // 等待中又點了別張：跳到最後點的那張
+      while (this.navNext !== null) {
+        const n = this.navNext;
+        this.navNext = null;
+        if (n !== this.pos) await this.gotoNow(n);
+      }
+    } finally {
+      this.navBusy = false;
+    }
+  }
+
+  private async gotoNow(next: number) {
     if (this.multiFields.size) {
       clearTimeout(this.multiTimer);
       await this.flushMulti();
@@ -2848,6 +3015,8 @@ export class Editor {
       // 目前這張先完整存檔（包含沒勾選的項目），其他照片只覆寫勾選的項目
       await this.saveCurrent();
       const others = ids.filter((id) => id !== this.item.id);
+      // 用「套用」按鈕同步的項目可能和即時同步的不同：改向後端重新要縮圖
+      this.dropOthers();
       const all = fields.length === SYNC_KEYS.length;
       await this.save(others, clone(this.p), all ? null : fields);
       const names = fields.map((f) => LABEL_OF[f as SyncKey]).join("、");
@@ -2870,6 +3039,7 @@ export class Editor {
     }
     this.multiOrig.clear();
     this.lastP = null;
+    this.dropOthers();
     if (save) {
       try {
         await this.saveCurrent();
