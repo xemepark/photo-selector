@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, ask, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
@@ -765,9 +766,31 @@ function renderTabs() {
 // ---- 把照片拖到其他分頁 = 複製 / 移動到那個分頁的資料夾
 // 縮圖拖曳是系統原生拖曳（也能拖到 Finder 等其他程式），所以在視窗的 drop 事件裡判斷放在哪個分頁上
 
+/** macOS 拖放座標含標題列（紅黃綠按鈕那一條）的高度：量一次標題列高度，換算成網頁座標時扣掉 */
+let titleBarH = 0;
+async function measureTitleBar() {
+  if (!IS_MAC_UI) return;
+  try {
+    const w = getCurrentWindow();
+    const [inner, outer, sf] = await Promise.all([w.innerPosition(), w.outerPosition(), w.scaleFactor()]);
+    const h = (inner.y - outer.y) / (sf || 1);
+    titleBarH = h > 0 && h < 120 ? h : 28;
+  } catch {
+    titleBarH = 28;
+  }
+}
+void measureTitleBar();
+window.addEventListener("resize", () => void measureTitleBar());
+
 /** 視窗座標（實體像素）下的分頁索引；不在分頁上回傳 -1 */
 function tabAt(pos: { x: number; y: number } | undefined): number {
   if (!pos) return -1;
+  if (IS_MAC_UI) {
+    // macOS：座標是點（不必除倍率），而且從視窗最上緣（含標題列）算起
+    const el = document.elementFromPoint(pos.x, pos.y - titleBarH) as HTMLElement | null;
+    const t = el?.closest<HTMLElement>("[data-tab]");
+    return t ? Number(t.dataset.tab) : -1;
+  }
   // macOS 回報的拖放座標已經是點（邏輯像素），其他系統是實體像素
   const dpr = IS_MAC_UI ? 1 : window.devicePixelRatio || 1;
   const el = document.elementFromPoint(pos.x / dpr, pos.y / dpr) as HTMLElement | null;
