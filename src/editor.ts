@@ -8,8 +8,9 @@
 
 import { api, url, Item, EditParams } from "./api";
 import { CurveEditor, Pt, cleanCurve, curveLut, sameCurve } from "./curve";
+import { Crop, MAX_ANGLE, RATIOS, bboxFrame, bisect, fits, fitted, fromNorm, fullCrop, largestAt, toFrame, toImg, toNorm } from "./crop";
 
-type NumKey = Exclude<keyof EditParams, "curve" | "hsl">;
+type NumKey = Exclude<keyof EditParams, "curve" | "hsl" | "crop">;
 type SyncKey = keyof EditParams;
 
 const GROUPS: { group: string; items: { key: NumKey; label: string; min: number; max: number; step: number; cls?: string }[] }[] = [
@@ -56,7 +57,18 @@ function normHsl(h: unknown): number[] {
   return v;
 }
 const hslActive = (h: number[]) => h.some((x) => Math.abs(x) > 1e-4);
+/** 裁切：5 個有效數字，否則空陣列 */
+const normCrop = (c: unknown): number[] =>
+  Array.isArray(c) && c.length === 5 && c.every((x) => Number.isFinite(x)) ? c.map(Number) : [];
+const sameCrop = (a: number[], b: number[]) => {
+  const x = normCrop(a);
+  const y = normCrop(b);
+  return x.length === y.length && x.every((v, i) => Math.abs(v - y[i]) < 1e-5);
+};
 const RESET_ICON = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M3.2 8a4.8 4.8 0 1 0 1.5-3.5"/><path fill="currentColor" d="M2 1.8v4.4h4.4z"/></svg>`;
+const CROP_ICON = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" d="M4 1v11h11M1 4h11v11"/></svg>`;
+const LEVEL_ICON = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M1.5 11.5 14.5 4.5"/><circle cx="4" cy="10.2" r="1.6" fill="currentColor"/><circle cx="12" cy="5.8" r="1.6" fill="currentColor"/></svg>`;
+const SWAP_ICON = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><rect x="1.5" y="4.5" width="8" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" d="M7 1.8h3.5a3 3 0 0 1 3 3V9m-2-2 2 2 2-2"/></svg>`;
 const EYEDROPPER = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M13.6 2.4a2 2 0 0 0-2.8 0L9.3 3.9l-.7-.7-1 1 .7.7-5.5 5.5a1.6 1.6 0 0 0-.4.7l-.6 2.3a.6.6 0 0 0 .8.8l2.3-.6c.3-.1.5-.2.7-.4L11.1 8l.7.7 1-1-.7-.7 1.5-1.5a2 2 0 0 0 0-2.8zM4 12.9l-1.3.4.4-1.3L8.6 6.4l.9.9z"/></svg>`;
 const toLinJs = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
 const toSrgbJs = (c: number) => {
@@ -94,19 +106,22 @@ export const ZERO: EditParams = {
   saturation: 0,
   curve: [],
   hsl: zeroHsl(),
+  crop: [],
 };
 
 const NUM_KEYS = GROUPS.flatMap((g) => g.items.map((s) => s.key));
-const SYNC_KEYS: SyncKey[] = [...NUM_KEYS, "hsl", "curve"];
+const SYNC_KEYS: SyncKey[] = [...NUM_KEYS, "hsl", "curve", "crop"];
 const LABEL_OF: Record<SyncKey, string> = {
   ...(Object.fromEntries(GROUPS.flatMap((g) => g.items.map((s) => [s.key, s.label]))) as Record<NumKey, string>),
   curve: "曲線",
   hsl: "HSL",
+  crop: "裁切",
 };
 const SYNC_GROUPS: { group: string; keys: SyncKey[] }[] = [
   ...GROUPS.map((g) => ({ group: g.group, keys: g.items.map((s) => s.key) as SyncKey[] })),
   { group: "HSL", keys: ["hsl"] },
   { group: "曲線", keys: ["curve"] },
+  { group: "裁切", keys: ["crop"] },
 ];
 
 /** 色階分布圖上可拖曳的區域（與 Camera Raw 相同的五段） */
@@ -119,7 +134,7 @@ const ZONES: { key: NumKey; from: number; to: number }[] = [
 ];
 
 function clone(p: EditParams): EditParams {
-  return { ...p, curve: p.curve.map((q) => [q[0], q[1]] as Pt), hsl: normHsl(p.hsl) };
+  return { ...p, curve: p.curve.map((q) => [q[0], q[1]] as Pt), hsl: normHsl(p.hsl), crop: normCrop(p.crop) };
 }
 
 /** 上次同步時勾選的項目（預設全部） */
@@ -138,9 +153,9 @@ function loadSyncFields(): string[] {
 }
 
 /** 調整面板各區塊的收合狀態（true = 收合），下次開啟沿用 */
-type Sec = "basic" | "color" | "hsl" | "curve";
+type Sec = "crop" | "basic" | "color" | "hsl" | "curve";
 function loadCollapsed(): Record<Sec, boolean> {
-  const d = { basic: false, color: false, hsl: false, curve: false };
+  const d = { crop: false, basic: false, color: false, hsl: false, curve: false };
   try {
     const v = JSON.parse(localStorage.getItem("editCollapsed") ?? "null");
     if (v && typeof v === "object") for (const k of Object.keys(d) as Sec[]) d[k] = v[k] === true;
@@ -153,6 +168,23 @@ function loadCollapsed(): Record<Sec, boolean> {
 function saveCollapsed(c: Record<Sec, boolean>) {
   try {
     localStorage.setItem("editCollapsed", JSON.stringify(c));
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadRatio(): string {
+  try {
+    const v = localStorage.getItem("editCropRatio") ?? "orig";
+    return RATIOS.some((r) => r.id === v) ? v : "orig";
+  } catch {
+    return "orig";
+  }
+}
+
+function saveRatio(v: string) {
+  try {
+    localStorage.setItem("editCropRatio", v);
   } catch {
     /* ignore */
   }
@@ -185,20 +217,27 @@ function saveSyncFields(f: string[]) {
 }
 
 export function isIdentity(p: EditParams) {
-  return NUM_KEYS.every((k) => Math.abs(p[k]) < 1e-4) && cleanCurve(p.curve).length === 0 && !hslActive(normHsl(p.hsl));
+  return NUM_KEYS.every((k) => Math.abs(p[k]) < 1e-4) && cleanCurve(p.curve).length === 0 && !hslActive(normHsl(p.hsl)) && !normCrop(p.crop).length;
 }
 
 const same = (a: EditParams, b: EditParams) =>
   NUM_KEYS.every((k) => Math.abs(a[k] - b[k]) < 1e-4) &&
   sameCurve(a.curve, b.curve) &&
-  normHsl(a.hsl).every((x, i) => Math.abs(x - normHsl(b.hsl)[i]) < 1e-4);
+  normHsl(a.hsl).every((x, i) => Math.abs(x - normHsl(b.hsl)[i]) < 1e-4) &&
+  sameCrop(a.crop, b.crop);
 
 const VERT = `
 attribute vec2 a_pos;
 varying vec2 v_uv;
 uniform vec2 u_scale;
+uniform vec2 u_fc;   // 顯示範圍（框）中心，原圖像素
+uniform vec2 u_fs;   // 框寬高，像素
+uniform vec2 u_img;  // 原圖寬高
+uniform vec2 u_rot;  // (cos, sin) of 角度；與 crop.ts toImg 相同
 void main() {
-  v_uv = vec2(a_pos.x * 0.5 + 0.5, 0.5 - a_pos.y * 0.5);
+  vec2 d = vec2(a_pos.x * 0.5, -a_pos.y * 0.5) * u_fs;
+  vec2 p = u_fc + vec2(u_rot.x * d.x + u_rot.y * d.y, -u_rot.y * d.x + u_rot.x * d.y);
+  v_uv = p / u_img;
   gl_Position = vec4(a_pos * u_scale, 0.0, 1.0);
 }`;
 
@@ -213,6 +252,7 @@ uniform float u_bypass;
 uniform vec3 u_gains;
 uniform float u_ev, u_c, u_h, u_s, u_w, u_b, u_vib, u_sat;
 uniform float u_useHsl;
+uniform float u_outside;
 uniform float u_hh[9];
 uniform float u_hs[9];
 uniform float u_hl[9];
@@ -285,6 +325,10 @@ vec3 hslAdjust(vec3 o) {
   return a >= 0.0 ? rgb + (1.0 - rgb) * a : rgb * (1.0 + a);
 }
 void main() {
+  if (u_outside > 0.5 && (v_uv.x < 0.0 || v_uv.x > 1.0 || v_uv.y < 0.0 || v_uv.y > 1.0)) {
+    gl_FragColor = vec4(0.07, 0.07, 0.08, 1.0);
+    return;
+  }
   vec3 s = texture2D(u_tex, v_uv).rgb;
   if (u_bypass > 0.5) { gl_FragColor = vec4(s, 1.0); return; }
   float ev = exp2(u_ev);
@@ -423,6 +467,43 @@ export class Editor {
       b.addEventListener("click", () => this.setHslTab(Number(b.dataset.hslTab))),
     );
     this.setHslTab(loadHslTab());
+    this.overlay = this.q<HTMLCanvasElement>("#ed-overlay");
+    this.overlay.addEventListener("pointerdown", (e) => this.cropDown(e));
+    this.overlay.addEventListener("pointermove", (e) => this.cropMove(e));
+    this.overlay.addEventListener("pointerup", (e) => this.cropUp(e));
+    this.overlay.addEventListener("pointercancel", (e) => this.cropUp(e));
+    this.overlay.addEventListener("dblclick", (e) => {
+      if (this.cropping && !this.leveling && this.hitCrop(e.clientX, e.clientY).kind === "move") this.commitCrop();
+    });
+    this.q("#ed-crop-tool").addEventListener("click", () => (this.cropping ? this.commitCrop() : this.enterCrop()));
+    this.q("#ed-level-tool").addEventListener("click", () => {
+      if (!this.cropping) this.enterCrop();
+      this.setLeveling(!this.leveling);
+    });
+    this.q("#ed-swap").addEventListener("click", () => {
+      if (!this.cropping) this.enterCrop();
+      this.swapOrient();
+    });
+    const ratioSel = this.q<HTMLSelectElement>("#ed-ratio");
+    ratioSel.value = loadRatio();
+    ratioSel.addEventListener("change", () => {
+      saveRatio(ratioSel.value);
+      if (!this.cropping) this.enterCrop();
+      this.applyRatio();
+    });
+    for (const id of ["#ed-angle", "#ed-angle-num"]) {
+      this.q(id).addEventListener("input", (e) => {
+        e.stopPropagation();
+        const v = Number((e.target as HTMLInputElement).value);
+        if (!Number.isFinite(v)) return;
+        if (!this.cropping) this.enterCrop();
+        this.setAngle(v, e.target as HTMLInputElement);
+      });
+    }
+    this.q("[data-crop-angle-reset]").addEventListener("dblclick", () => {
+      if (!this.cropping) this.enterCrop();
+      this.setAngle(0);
+    });
     this.q("#ed-wb-pick").addEventListener("click", () => this.setTool("wb"));
     this.q("#ed-hsl-pick").addEventListener("click", () => this.setTool("hsl"));
     this.canvas.addEventListener("pointerdown", (e) => this.toolDown(e));
@@ -436,6 +517,12 @@ export class Editor {
         const k = b.dataset.secReset as Sec;
         if (k === "basic" || k === "color") for (const it of GROUPS[k === "basic" ? 0 : 1].items) this.p[it.key] = 0;
         if (k === "hsl") this.p.hsl = zeroHsl();
+        if (k === "crop") {
+          if (this.cropping) {
+            this.draft = fullCrop(this.imgW, this.imgH);
+            this.rotBase = { w: this.draft.w, h: this.draft.h };
+          } else this.p.crop = [];
+        }
         if (k === "curve") {
           this.p.curve = [];
           this.curveEd.set([]);
@@ -519,6 +606,19 @@ export class Editor {
         .join("")}</div>`;
     const light = rowsOf(GROUPS[0]);
     const color = rowsOf(GROUPS[1]);
+    const crop = `<div class="ed-crop">
+        <div class="ed-crop-row">
+          <label>比例</label>
+          <select id="ed-ratio">${RATIOS.map((r) => `<option value="${r.id}">${r.label}</option>`).join("")}</select>
+          <button id="ed-swap" class="ed-ib" title="直式 / 橫式互換（X）">${SWAP_ICON}</button>
+        </div>
+        <div class="ed-row">
+          <label data-crop-angle-reset title="雙擊恢復為 0">角度</label>
+          <input type="number" id="ed-angle-num" min="-45" max="45" step="0.1" />
+          <input type="range" id="ed-angle" min="-45" max="45" step="0.1" />
+        </div>
+        <div class="muted small ed-crop-tip">C 開始裁切 · 拖曳框角調整、框內移動、框外拖曳旋轉 · Enter 套用 · Esc 取消</div>
+      </div>`;
     const hsl = `<div class="ed-hsl">
         <div class="ed-tabs">${HSL_TABS.map((t, i) => `<button data-hsl-tab="${i}">${t}</button>`).join("")}</div>
         ${BANDS.map(
@@ -539,7 +639,7 @@ export class Editor {
     ).join("");
     return `
       <div class="ed-main">
-        <div id="ed-stage" class="ed-stage"><canvas id="ed-canvas"></canvas><div id="ed-msg" class="ed-msg"></div><div id="ed-badge" class="ed-badge hidden">原圖</div><div id="ed-tool-hint" class="ed-tool-hint hidden"></div></div>
+        <div id="ed-stage" class="ed-stage"><canvas id="ed-canvas"></canvas><div id="ed-msg" class="ed-msg"></div><div id="ed-badge" class="ed-badge hidden">原圖</div><canvas id="ed-overlay" class="ed-overlay"></canvas><div id="ed-tool-hint" class="ed-tool-hint hidden"></div></div>
         <div id="ed-strip" class="ed-strip"></div>
       </div>
       <aside class="ed-panel">
@@ -553,6 +653,13 @@ export class Editor {
           <button id="ed-next" title="下一張（→）">›</button>
         </div>
         <div class="ed-scroll">
+          <section class="ed-sec" data-sec="crop">
+            <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
+              <span class="ed-chev">▾</span><span class="ed-sec-title">裁切</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button id="ed-crop-tool" class="ed-ib" title="裁切（C）">${CROP_ICON}</button><button id="ed-level-tool" class="ed-ib" title="拉直工具：在照片上沿著應該水平或垂直的線拖曳">${LEVEL_ICON}</button><button class="ed-ib" data-sec-reset="crop" title="重設裁切">${RESET_ICON}</button>
+            </div>
+            <div class="ed-sec-body">${crop}</div>
+          </section>
           <section class="ed-sec" data-sec="basic">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
               <span class="ed-chev">▾</span><span class="ed-sec-title">亮度</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
@@ -777,11 +884,12 @@ export class Editor {
     this.q<HTMLButtonElement>("#ed-next").disabled = this.pos >= this.list.length - 1;
     this.q("#ed-syncrow").classList.toggle("hidden", this.list.length < 2);
     this.markStrip();
+    if (this.cropping) this.leaveCrop();
     this.setBefore(false);
     this.q("#ed-syncbox").classList.add("hidden");
     try {
       const r = await api.getEdit(this.host.session(), it.id);
-      this.saved = clone({ ...ZERO, ...r, curve: (r.curve ?? []) as Pt[], hsl: normHsl(r.hsl) });
+      this.saved = clone({ ...ZERO, ...r, curve: (r.curve ?? []) as Pt[], hsl: normHsl(r.hsl), crop: normCrop(r.crop) });
     } catch {
       this.saved = clone(ZERO);
     }
@@ -843,12 +951,18 @@ export class Editor {
     });
   }
 
-  private setUniforms(scaleX: number, scaleY: number) {
+  private setUniforms(scaleX: number, scaleY: number, f: Crop, outside: boolean) {
     const gl = this.gl!;
     const u = (k: string) => gl.getUniformLocation(this.prog!, k);
     const p = this.p;
     const g = wbGains(p);
     gl.uniform2f(u("u_scale"), scaleX, scaleY);
+    gl.uniform2f(u("u_fc"), f.cx, f.cy);
+    gl.uniform2f(u("u_fs"), f.w, f.h);
+    gl.uniform2f(u("u_img"), this.imgW, this.imgH);
+    const ar = (f.a * Math.PI) / 180;
+    gl.uniform2f(u("u_rot"), Math.cos(ar), Math.sin(ar));
+    gl.uniform1f(u("u_outside"), outside ? 1 : 0);
     gl.uniform1f(u("u_bypass"), this.bypass ? 1 : 0);
     gl.uniform1f(u("u_useLut"), cleanCurve(p.curve).length ? 1 : 0);
     gl.uniform3f(u("u_gains"), g[0], g[1], g[2]);
@@ -888,20 +1002,24 @@ export class Editor {
     gl.viewport(0, 0, cw, ch);
     gl.clearColor(0.07, 0.07, 0.08, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
+    const f = this.viewFrame();
     const pad = 16 * dpr;
-    const s = Math.min((cw - pad * 2) / this.imgW, (ch - pad * 2) / this.imgH);
-    this.setUniforms((this.imgW * s) / cw, (this.imgH * s) / ch);
+    const s = Math.min((cw - pad * 2) / f.w, (ch - pad * 2) / f.h);
+    this.setUniforms((f.w * s) / cw, (f.h * s) / ch, f, this.cropping);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    this.drawOverlay();
   }
 
   /** 把調整後的影像縮小畫到離屏緩衝區，讀回像素算色階分布 */
   private computeHist() {
     const gl = this.gl;
     if (!gl || !this.prog || !this.imgW || !this.isOpen || !this.fbo || !this.fboTex) return;
+    // 色階分布看裁切後的範圍
+    const f = this.cropFrame();
     const long = 256;
-    const sc = long / Math.max(this.imgW, this.imgH);
-    const w = Math.max(1, Math.round(this.imgW * sc));
-    const h = Math.max(1, Math.round(this.imgH * sc));
+    const sc = long / Math.max(f.w, f.h);
+    const w = Math.max(1, Math.round(f.w * sc));
+    const h = Math.max(1, Math.round(f.h * sc));
     gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
     if (w !== this.fboW || h !== this.fboH) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -915,7 +1033,7 @@ export class Editor {
       return;
     }
     gl.viewport(0, 0, w, h);
-    this.setUniforms(1, 1);
+    this.setUniforms(1, 1, f, false);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     const px = new Uint8Array(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
@@ -1043,8 +1161,421 @@ export class Editor {
   private sample: ImageData | null = null;
   private tdrag: { y: number; i: number; j: number; t: number; start: number[] } | null = null;
 
+  // ---------------------------------------------------------------- 裁切
+
+  /** 裁切模式中 */
+  private cropping = false;
+  /** 裁切模式中正在調整的框（原圖像素；套用時才寫回 p.crop） */
+  private draft: Crop | null = null;
+  /** 進入裁切模式時的設定（Esc 取消時還原） */
+  private cropEntry: number[] = [];
+  /** 旋轉時以這個大小為準（轉回來時框會長回原本大小） */
+  private rotBase = { w: 0, h: 0 };
+  /** 鎖定比例時是直式 */
+  private portrait = false;
+  private leveling = false;
+  private overlay!: HTMLCanvasElement;
+  private cdrag:
+    | { kind: "move" | "resize" | "rotate" | "level"; hx: number; hy: number; x: number; y: number; x2?: number; y2?: number; c0: Crop; ang0: number }
+    | null = null;
+
+  /** 目前畫面顯示的範圍：裁切模式中是整張照片（轉了角度的外框），否則是裁切後的範圍 */
+  private viewFrame(): Crop {
+    if (this.cropping && this.draft) return bboxFrame(this.imgW, this.imgH, this.draft.a);
+    return this.cropFrame();
+  }
+
+  /** 裁切後的範圍（沒有裁切 = 整張） */
+  private cropFrame(): Crop {
+    if (this.cropping && this.draft) return this.draft;
+    return fromNorm(this.p.crop, this.imgW, this.imgH) ?? fullCrop(this.imgW, this.imgH);
+  }
+
+  /** 畫面上的縮放比例與中心（CSS 像素） */
+  private view() {
+    const r = this.q("#ed-stage").getBoundingClientRect();
+    const f = this.viewFrame();
+    const s = Math.min((r.width - 32) / f.w, (r.height - 32) / f.h);
+    return { r, f, s, ox: r.left + r.width / 2, oy: r.top + r.height / 2 };
+  }
+
+  /** 螢幕座標 → 顯示範圍的框座標（像素） */
+  private screenToFrame(x: number, y: number): [number, number] {
+    const v = this.view();
+    return [(x - v.ox) / v.s, (y - v.oy) / v.s];
+  }
+
+  /** 裁切框在顯示範圍框座標中的上下左右 */
+  private draftBox() {
+    const d = this.draft!;
+    const f = this.viewFrame();
+    const [x, y] = toFrame(f, d.cx, d.cy);
+    return { l: x - d.w / 2, r: x + d.w / 2, t: y - d.h / 2, b: y + d.h / 2 };
+  }
+
+  private boxToCrop(b: { l: number; r: number; t: number; b: number }, a: number): Crop {
+    const f = this.viewFrame();
+    const [cx, cy] = toImg(f, (b.l + b.r) / 2, (b.t + b.b) / 2);
+    return { cx, cy, w: b.r - b.l, h: b.b - b.t, a };
+  }
+
+  enterCrop() {
+    if (this.cropping || !this.imgW) return;
+    if (this.tool) this.setTool(null);
+    this.cropping = true;
+    this.cropEntry = normCrop(this.p.crop);
+    this.draft = fromNorm(this.p.crop, this.imgW, this.imgH) ?? fullCrop(this.imgW, this.imgH);
+    this.rotBase = { w: this.draft.w, h: this.draft.h };
+    this.portrait = this.draft.h > this.draft.w;
+    this.overlay.classList.add("on");
+    this.q("#ed-crop-tool").classList.add("active");
+    const sec = this.q('[data-sec="crop"]');
+    if (sec.classList.contains("collapsed")) (sec.querySelector(".ed-sec-head") as HTMLElement).click();
+    this.hint("拖曳框角或邊調整 · 框內拖曳移動 · 框外拖曳旋轉 · 雙擊或 Enter 套用 · Esc 取消");
+    if (this.bypass) this.setBefore(false);
+    this.markChanged();
+    this.draw();
+  }
+
+  /** 套用裁切（離開裁切模式） */
+  commitCrop() {
+    if (!this.cropping || !this.draft) return;
+    this.p.crop = toNorm(this.draft, this.imgW, this.imgH);
+    this.leaveCrop();
+  }
+
+  cancelCrop() {
+    if (!this.cropping) return;
+    this.p.crop = [...this.cropEntry];
+    this.leaveCrop();
+  }
+
+  private leaveCrop() {
+    this.cropping = false;
+    this.draft = null;
+    this.cdrag = null;
+    this.setLeveling(false);
+    this.overlay.classList.remove("on");
+    this.q("#ed-crop-tool").classList.remove("active");
+    this.hint("");
+    this.markChanged();
+    this.draw();
+  }
+
+  private setLeveling(on: boolean) {
+    this.leveling = on;
+    this.q("#ed-level-tool").classList.toggle("active", on);
+    if (this.cropping) {
+      this.hint(on ? "拉直：沿著照片中應該水平或垂直的線拖曳" : "拖曳框角或邊調整 · 框內拖曳移動 · 框外拖曳旋轉 · 雙擊或 Enter 套用 · Esc 取消");
+    }
+  }
+
+  /** 目前的比例（寬 / 高）；不限制 = null */
+  private lockedRatio(): number | null {
+    const id = this.q<HTMLSelectElement>("#ed-ratio").value;
+    const preset = RATIOS.find((r) => r.id === id);
+    if (!preset || preset.r === null) return null;
+    const long = preset.r === 0 ? Math.max(this.imgW, this.imgH) / Math.min(this.imgW, this.imgH) : preset.r;
+    return this.portrait ? 1 / long : long;
+  }
+
+  /** 選了比例：在目前位置放最大的那個比例的框（放不太下時改放在照片中央） */
+  private applyRatio() {
+    const d = this.draft;
+    if (!d) return;
+    const r = this.lockedRatio();
+    if (r === null) return this.draw();
+    const here = largestAt(d.cx, d.cy, r, d.a, this.imgW, this.imgH);
+    const mid = largestAt(this.imgW / 2, this.imgH / 2, r, d.a, this.imgW, this.imgH);
+    this.draft = here.w * here.h < mid.w * mid.h * 0.6 ? mid : here;
+    this.rotBase = { w: this.draft.w, h: this.draft.h };
+    this.markChanged();
+    this.draw();
+  }
+
+  /** 直式 / 橫式互換 */
+  private swapOrient() {
+    const d = this.draft;
+    if (!d) return;
+    this.portrait = !(d.h > d.w);
+    if (this.lockedRatio() !== null) return this.applyRatio();
+    this.draft = fitted({ ...d, w: d.h, h: d.w }, this.imgW, this.imgH);
+    this.rotBase = { w: this.draft.w, h: this.draft.h };
+    this.markChanged();
+    this.draw();
+  }
+
+  /** 角度：以旋轉前的框大小為準，縮到放得下 */
+  private setAngle(a: number, from?: HTMLInputElement) {
+    const d = this.draft;
+    if (!d) return;
+    a = Math.max(-MAX_ANGLE, Math.min(MAX_ANGLE, a));
+    const base = { ...d, w: this.rotBase.w, h: this.rotBase.h, a };
+    this.draft = fitted(base, this.imgW, this.imgH);
+    this.syncCropInputs(from);
+    this.markChanged();
+    this.draw();
+  }
+
+  private syncCropInputs(except?: HTMLInputElement) {
+    const a = this.cropping && this.draft ? this.draft.a : (normCrop(this.p.crop)[4] ?? 0);
+    const txt = (Math.round(a * 10) / 10).toFixed(1);
+    const num = this.q<HTMLInputElement>("#ed-angle-num");
+    const rng = this.q<HTMLInputElement>("#ed-angle");
+    if (num !== except) num.value = txt;
+    if (rng !== except) rng.value = String(a);
+    this.q("[data-crop-angle-reset]").classList.toggle("changed", Math.abs(a) > 0.005);
+  }
+
+  /** 滑鼠在裁切模式畫面上的位置對應到什麼：8 個控制點、框內（移動）、框外（旋轉） */
+  private hitCrop(x: number, y: number): { kind: "move" | "resize" | "rotate"; hx: number; hy: number } {
+    const v = this.view();
+    const b = this.draftBox();
+    const sx = (fx: number) => v.ox + fx * v.s;
+    const sy = (fy: number) => v.oy + fy * v.s;
+    const L = sx(b.l);
+    const R = sx(b.r);
+    const T = sy(b.t);
+    const B = sy(b.b);
+    const tol = 9;
+    const nearX = Math.abs(x - L) < tol ? -1 : Math.abs(x - R) < tol ? 1 : 0;
+    const nearY = Math.abs(y - T) < tol ? -1 : Math.abs(y - B) < tol ? 1 : 0;
+    const inX = x > L - tol && x < R + tol;
+    const inY = y > T - tol && y < B + tol;
+    if (inX && inY && (nearX || nearY)) {
+      // 邊的中段也可以拖（只動那一邊）
+      return { kind: "resize", hx: nearX, hy: nearY };
+    }
+    if (x > L && x < R && y > T && y < B) return { kind: "move", hx: 0, hy: 0 };
+    return { kind: "rotate", hx: 0, hy: 0 };
+  }
+
+  private cropCursor(h: { kind: string; hx: number; hy: number }) {
+    if (this.leveling) return "crosshair";
+    if (h.kind === "move") return "move";
+    if (h.kind === "rotate") return "alias";
+    if (h.hx && h.hy) return h.hx === h.hy ? "nwse-resize" : "nesw-resize";
+    return h.hx ? "ew-resize" : "ns-resize";
+  }
+
+  private cropDown(e: PointerEvent) {
+    if (!this.cropping || !this.draft || e.button !== 0) return;
+    e.preventDefault();
+    const d = this.draft;
+    if (this.leveling) {
+      this.cdrag = { kind: "level", hx: 0, hy: 0, x: e.clientX, y: e.clientY, x2: e.clientX, y2: e.clientY, c0: { ...d }, ang0: d.a };
+    } else {
+      const h = this.hitCrop(e.clientX, e.clientY);
+      const v = this.view();
+      const b = this.draftBox();
+      const bx = v.ox + ((b.l + b.r) / 2) * v.s;
+      const by = v.oy + ((b.t + b.b) / 2) * v.s;
+      this.cdrag = { ...h, x: e.clientX, y: e.clientY, c0: { ...d }, ang0: Math.atan2(e.clientY - by, e.clientX - bx) };
+    }
+    this.overlay.setPointerCapture(e.pointerId);
+  }
+
+  private cropMove(e: PointerEvent) {
+    if (!this.cropping || !this.draft) return;
+    const g = this.cdrag;
+    if (!g) {
+      this.overlay.style.cursor = this.cropCursor(this.hitCrop(e.clientX, e.clientY));
+      return;
+    }
+    const W = this.imgW;
+    const H = this.imgH;
+    const v = this.view();
+    if (g.kind === "level") {
+      g.x2 = e.clientX;
+      g.y2 = e.clientY;
+      return this.drawOverlay();
+    }
+    if (g.kind === "rotate") {
+      const b = this.draftBox();
+      const bx = v.ox + ((b.l + b.r) / 2) * v.s;
+      const by = v.oy + ((b.t + b.b) / 2) * v.s;
+      const ang = Math.atan2(e.clientY - by, e.clientX - bx);
+      let da = ((ang - g.ang0) * 180) / Math.PI;
+      if (da > 180) da -= 360;
+      if (da < -180) da += 360;
+      return this.setAngle(Math.round((g.c0.a + da) * 10) / 10);
+    }
+    const f = this.viewFrame();
+    const dx = (e.clientX - g.x) / v.s;
+    const dy = (e.clientY - g.y) / v.s;
+    const [fx0, fy0] = toFrame(f, g.c0.cx, g.c0.cy);
+    if (g.kind === "move") {
+      const at = (mx: number, my: number): Crop => {
+        const [cx, cy] = toImg(f, fx0 + mx, fy0 + my);
+        return { ...g.c0, cx, cy };
+      };
+      // 整段移動放不下時，先移到能放的地方，再沿著邊滑動
+      const t = bisect((t) => fits(at(dx * t, dy * t), W, H));
+      let mx = dx * t;
+      let my = dy * t;
+      const tx = bisect((t) => fits(at(mx + (dx - mx) * t, my), W, H));
+      mx += (dx - mx) * tx;
+      const ty = bisect((t) => fits(at(mx, my + (dy - my) * t), W, H));
+      my += (dy - my) * ty;
+      this.draft = at(mx, my);
+    } else {
+      const b0 = { l: fx0 - g.c0.w / 2, r: fx0 + g.c0.w / 2, t: fy0 - g.c0.h / 2, b: fy0 + g.c0.h / 2 };
+      const [qx, qy] = this.screenToFrame(e.clientX, e.clientY);
+      const min = Math.max(4, 12 / v.s);
+      const r = this.lockedRatio();
+      const b1 = { ...b0 };
+      if (g.hx === 1) b1.r = Math.max(b0.l + min, qx);
+      if (g.hx === -1) b1.l = Math.min(b0.r - min, qx);
+      if (g.hy === 1) b1.b = Math.max(b0.t + min, qy);
+      if (g.hy === -1) b1.t = Math.min(b0.b - min, qy);
+      if (r !== null) {
+        let w = b1.r - b1.l;
+        let h = b1.b - b1.t;
+        if (g.hx && g.hy) {
+          // 角：以對角為固定點，取變動較大的一邊決定大小
+          if (w / h > r) h = w / r;
+          else w = h * r;
+          if (g.hx === 1) b1.r = b1.l + w;
+          else b1.l = b1.r - w;
+          if (g.hy === 1) b1.b = b1.t + h;
+          else b1.t = b1.b - h;
+        } else if (g.hx) {
+          h = w / r;
+          const cy = (b0.t + b0.b) / 2;
+          b1.t = cy - h / 2;
+          b1.b = cy + h / 2;
+        } else {
+          w = h * r;
+          const cx = (b0.l + b0.r) / 2;
+          b1.l = cx - w / 2;
+          b1.r = cx + w / 2;
+        }
+      }
+      const lerp = (t: number) => ({
+        l: b0.l + (b1.l - b0.l) * t,
+        r: b0.r + (b1.r - b0.r) * t,
+        t: b0.t + (b1.t - b0.t) * t,
+        b: b0.b + (b1.b - b0.b) * t,
+      });
+      const t = bisect((t) => fits(this.boxToCrop(lerp(t), g.c0.a), W, H));
+      this.draft = this.boxToCrop(lerp(t), g.c0.a);
+    }
+    this.rotBase = { w: this.draft.w, h: this.draft.h };
+    this.markChanged();
+    this.draw();
+  }
+
+  private cropUp(e: PointerEvent) {
+    const g = this.cdrag;
+    if (!g) return;
+    this.cdrag = null;
+    try {
+      this.overlay.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    if (g.kind === "level" && this.draft) {
+      const vx = (g.x2 ?? g.x) - g.x;
+      const vy = (g.y2 ?? g.y) - g.y;
+      if (Math.hypot(vx, vy) >= 10) {
+        // 線在畫面上的方向 → 原圖上的方向 → 讓它變成水平（或垂直）的角度
+        const f = this.viewFrame();
+        const [ix, iy] = toImg({ ...f, cx: 0, cy: 0 }, vx, vy);
+        let al = (Math.atan2(iy, ix) * 180) / Math.PI;
+        if (al > 90) al -= 180;
+        if (al <= -90) al += 180;
+        if (Math.abs(al) > 45) al = al > 0 ? al - 90 : al + 90;
+        this.rotBase = { w: this.draft.w, h: this.draft.h };
+        this.setAngle(Math.round(-al * 10) / 10);
+      }
+      this.setLeveling(false);
+      this.drawOverlay();
+    }
+  }
+
+  /** 裁切模式的框線、暗化、三分線、控制點 */
+  private drawOverlay() {
+    const cv = this.overlay;
+    if (!cv) return;
+    const stage = this.q("#ed-stage");
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(stage.clientWidth * dpr));
+    const h = Math.max(1, Math.round(stage.clientHeight * dpr));
+    if (cv.width !== w || cv.height !== h) {
+      cv.width = w;
+      cv.height = h;
+    }
+    const g = cv.getContext("2d");
+    if (!g) return;
+    g.clearRect(0, 0, w, h);
+    if (!this.cropping || !this.draft || !this.imgW) return;
+    const v = this.view();
+    const b = this.draftBox();
+    const X = (fx: number) => (stage.clientWidth / 2 + fx * v.s) * dpr;
+    const Y = (fy: number) => (stage.clientHeight / 2 + fy * v.s) * dpr;
+    const L = X(b.l);
+    const R = X(b.r);
+    const T = Y(b.t);
+    const B = Y(b.b);
+    g.fillStyle = "rgba(0,0,0,0.55)";
+    g.beginPath();
+    g.rect(0, 0, w, h);
+    g.rect(L, T, R - L, B - T);
+    g.fill("evenodd");
+    g.strokeStyle = "rgba(255,255,255,0.35)";
+    g.lineWidth = 1 * dpr;
+    g.beginPath();
+    for (const k of [1, 2]) {
+      g.moveTo(L + ((R - L) * k) / 3, T);
+      g.lineTo(L + ((R - L) * k) / 3, B);
+      g.moveTo(L, T + ((B - T) * k) / 3);
+      g.lineTo(R, T + ((B - T) * k) / 3);
+    }
+    g.stroke();
+    g.strokeStyle = "#fff";
+    g.lineWidth = 1.5 * dpr;
+    g.strokeRect(L, T, R - L, B - T);
+    // 控制點：角是 L 形，邊是短線
+    g.lineWidth = 3 * dpr;
+    const k = 14 * dpr;
+    g.beginPath();
+    for (const [x, y, sx, sy] of [
+      [L, T, 1, 1],
+      [R, T, -1, 1],
+      [L, B, 1, -1],
+      [R, B, -1, -1],
+    ]) {
+      g.moveTo(x, y + sy * k);
+      g.lineTo(x, y);
+      g.lineTo(x + sx * k, y);
+    }
+    const mx = (L + R) / 2;
+    const my = (T + B) / 2;
+    g.moveTo(mx - k / 2, T);
+    g.lineTo(mx + k / 2, T);
+    g.moveTo(mx - k / 2, B);
+    g.lineTo(mx + k / 2, B);
+    g.moveTo(L, my - k / 2);
+    g.lineTo(L, my + k / 2);
+    g.moveTo(R, my - k / 2);
+    g.lineTo(R, my + k / 2);
+    g.stroke();
+    // 拉直線
+    const d = this.cdrag;
+    if (d?.kind === "level" && d.x2 !== undefined && d.y2 !== undefined) {
+      const r = stage.getBoundingClientRect();
+      g.strokeStyle = "#f5b33a";
+      g.lineWidth = 2 * dpr;
+      g.beginPath();
+      g.moveTo((d.x - r.left) * dpr, (d.y - r.top) * dpr);
+      g.lineTo((d.x2 - r.left) * dpr, (d.y2 - r.top) * dpr);
+      g.stroke();
+    }
+  }
+
   /** 開關滴管（再按一次同一個 = 關閉） */
   setTool(t: "wb" | "hsl" | null) {
+    if (t && this.cropping) this.commitCrop();
     this.tool = this.tool === t ? null : t;
     this.tdrag = null;
     this.q("#ed-wb-pick").classList.toggle("active", this.tool === "wb");
@@ -1074,14 +1605,12 @@ export class Editor {
   private pick(e: PointerEvent): [number, number, number] | null {
     const d = this.sample;
     if (!d || !this.imgW) return null;
-    const stage = this.q("#ed-stage");
-    const r = stage.getBoundingClientRect();
-    const pad = 16;
-    const s = Math.min((r.width - pad * 2) / this.imgW, (r.height - pad * 2) / this.imgH);
-    const w = this.imgW * s;
-    const h = this.imgH * s;
-    const u = (e.clientX - r.left - (r.width - w) / 2) / w;
-    const v = (e.clientY - r.top - (r.height - h) / 2) / h;
+    const v0 = this.screenToFrame(e.clientX, e.clientY);
+    const f = this.viewFrame();
+    if (Math.abs(v0[0]) > f.w / 2 || Math.abs(v0[1]) > f.h / 2) return null;
+    const [ix, iy] = toImg(f, v0[0], v0[1]);
+    const u = ix / this.imgW;
+    const v = iy / this.imgH;
     if (u < 0 || u > 1 || v < 0 || v > 1) return null;
     const cx = Math.min(d.width - 1, Math.floor(u * d.width));
     const cy = Math.min(d.height - 1, Math.floor(v * d.height));
@@ -1243,7 +1772,9 @@ export class Editor {
       color: any(GROUPS[1].items.map((s) => s.key)),
       hsl: hslActive(normHsl(this.p.hsl)),
       curve: cleanCurve(this.p.curve).length > 0,
+      crop: this.cropping ? toNorm(this.draft!, this.imgW, this.imgH).length > 0 : normCrop(this.p.crop).length > 0,
     };
+    this.syncCropInputs();
     for (const k of Object.keys(state) as Sec[]) this.q(`[data-sec="${k}"]`).classList.toggle("has-changes", state[k]);
   }
 
@@ -1293,6 +1824,7 @@ export class Editor {
 
   /** 有改過才存 */
   private async saveCurrent() {
+    if (this.cropping) this.commitCrop();
     if (same(this.p, this.saved)) return;
     const params = clone(this.p);
     await this.save([this.item.id], params);
@@ -1383,6 +1915,7 @@ export class Editor {
       }
     }
     if (this.tool) this.setTool(null);
+    if (this.cropping) this.cancelCrop();
     this.loadSeq++;
     this.el.classList.add("hidden");
     this.stripObs?.disconnect();
@@ -1404,6 +1937,8 @@ export class Editor {
     const t = ev.target as HTMLElement;
     // 焦點在滑桿或數字欄時，方向鍵用來微調數值
     const typing = t.tagName === "INPUT";
+    if (ev.key === "Escape" && this.cropping) return this.cancelCrop(), true;
+    if (ev.key === "Enter" && this.cropping && !typing) return this.commitCrop(), true;
     if (ev.key === "Escape" && this.tool) return this.setTool(null), true;
     if (ev.key === "Escape") {
       const box = this.q("#ed-syncbox");
@@ -1413,6 +1948,8 @@ export class Editor {
     if (ev.key === "Enter" && !typing) return void this.close(true), true;
     if (typing) return false;
     if (ev.key === "\\") return this.toggleBefore(), true;
+    if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "c") return (this.cropping ? this.commitCrop() : this.enterCrop()), true;
+    if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "x" && this.cropping) return this.swapOrient(), true;
     if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "i") return this.setTool("wb"), true;
     if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "t") return this.setTool("hsl"), true;
     if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "a") return this.selectAllStrip(), true;

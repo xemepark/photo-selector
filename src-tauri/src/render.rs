@@ -183,18 +183,25 @@ fn fit(img: DynamicImage, edge: u32) -> DynamicImage {
 pub fn render(item: &Item, kind: Kind) -> Result<Vec<u8>> {
     // 有「調整」設定時套用（縮小後才套用，速度快）
     let adj = crate::edit::load(item);
+    // 有裁切時先以較大的尺寸解碼、處理，裁切後再縮到目標大小（縮圖才不會變小、變糊）
+    let grow = adj
+        .as_ref()
+        .filter(|p| p.crop.len() == 5)
+        .map(|p| (1.0 / p.crop[2].min(p.crop[3]).max(0.25)).min(4.0))
+        .unwrap_or(1.0);
+    let big = |edge: u32| if edge == u32::MAX { edge } else { ((edge as f32 * grow) as u32).min(edge.max(4096)) };
     let finish = |img: DynamicImage, edge: u32, q: u8| -> Result<Vec<u8>> {
-        let img = fit(img, edge);
+        let img = fit(img, big(edge));
         let img = match &adj {
-            Some(p) => crate::edit::apply(img, p),
+            Some(p) => fit(crate::edit::apply(img, p), edge),
             None => img,
         };
         encode_jpeg(&img, q)
     };
     match kind {
-        Kind::Thumb => finish(decode_source(item, THUMB_EDGE)?, THUMB_EDGE, 82),
-        Kind::Medium => finish(decode_source(item, MEDIUM_MIN_SOURCE)?, MEDIUM_EDGE, 85),
-        Kind::Preview => finish(decode_source(item, PREVIEW_EDGE)?, PREVIEW_EDGE, 88),
+        Kind::Thumb => finish(decode_source(item, big(THUMB_EDGE))?, THUMB_EDGE, 82),
+        Kind::Medium => finish(decode_source(item, big(MEDIUM_MIN_SOURCE))?, MEDIUM_EDGE, 85),
+        Kind::Preview => finish(decode_source(item, big(PREVIEW_EDGE))?, PREVIEW_EDGE, 88),
         Kind::Base => encode_jpeg(&fit(decode_source(item, PREVIEW_EDGE)?, PREVIEW_EDGE), 90),
         Kind::Full => {
             let f = item.display();

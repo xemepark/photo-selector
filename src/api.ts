@@ -42,6 +42,8 @@ export interface EditParams {
   curve: [number, number][];
   /** HSL：色相 8 格、飽和度 8 格、明亮度 8 格（紅、橙、黃、綠、水綠、藍、紫、洋紅），各 −100…100 */
   hsl: number[];
+  /** 裁切：[中心 x, 中心 y, 寬, 高, 角度]（相對原圖寬高的比例；角度 −45…45）。空陣列 = 不裁切 */
+  crop: number[];
 }
 
 export interface DirInfo {

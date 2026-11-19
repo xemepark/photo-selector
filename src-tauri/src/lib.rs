@@ -216,6 +216,11 @@ async fn save_edit(
 /// 寫入任意 XMP 屬性，位置規則與 write_meta 相同（RAW → 附屬檔、JPEG → 內嵌、配對兩邊都寫）
 fn write_props(it: &scan::Item, props: &[(&str, Option<String>)]) -> Result<(), String> {
     let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    write_props_locked(it, props)
+}
+
+/// write_props 的本體（呼叫端已經拿到 WRITE_LOCK）
+fn write_props_locked(it: &scan::Item, props: &[(&str, Option<String>)]) -> Result<(), String> {
     let err = |e: std::io::Error| format!("{}：{e}", it.name);
     let mut wrote = false;
     if it.raw().is_some() {
@@ -250,7 +255,16 @@ async fn rotate(core: CoreState<'_>, session: u64, ids: Vec<u32>, clockwise: boo
         for id in ids {
             let Some(it) = sess.items.get(id as usize) else { continue };
             match orient::rotate_item(it, clockwise) {
-                Ok(o) => res.done.push((id, o)),
+                Ok(o) => {
+                    // 有裁切時，裁切框跟著照片一起轉
+                    if let Some(mut p) = edit::load(it).filter(|p| !p.crop.is_empty()) {
+                        p.crop = edit::rotate_crop(&p.crop, clockwise);
+                        if let Err(e) = write_props_locked(it, &p.xmp_props()) {
+                            res.failed.push(e);
+                        }
+                    }
+                    res.done.push((id, o))
+                }
                 Err(e) => res.failed.push(format!("{}：{e}", it.name)),
             }
             core.forget(it);

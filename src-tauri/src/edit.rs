@@ -34,6 +34,132 @@ pub struct Params {
     /// 區段依序為紅、橙、黃、綠、水綠、藍、紫、洋紅。空的 = 不套用
     #[serde(default)]
     pub hsl: Vec<f32>,
+    /// 裁切：[中心 x, 中心 y, 寬, 高, 角度]。中心與寬高是相對於（轉正後）原圖寬高的比例 0–1，
+    /// 角度 −45…45 度（正 = 照片順時針轉）。空的 = 不裁切
+    #[serde(default)]
+    pub crop: Vec<f32>,
+}
+
+/// 整理裁切：5 個數字、數值合理；等於整張不裁切時回傳空的
+pub fn clean_crop(c: &[f32]) -> Vec<f32> {
+    if c.len() != 5 || c.iter().any(|x| !x.is_finite()) {
+        return Vec::new();
+    }
+    let v = vec![
+        c[0].clamp(0.0, 1.0),
+        c[1].clamp(0.0, 1.0),
+        c[2].clamp(0.001, 1.0),
+        c[3].clamp(0.001, 1.0),
+        c[4].clamp(-45.0, 45.0),
+    ];
+    let full = v[2] > 0.9995 && v[3] > 0.9995 && v[4].abs() < 0.005 && (v[0] - 0.5).abs() < 0.0005 && (v[1] - 0.5).abs() < 0.0005;
+    if full {
+        Vec::new()
+    } else {
+        v
+    }
+}
+
+/// 裁切框（像素）：中心、寬高、角度（度）。與 editor.ts 的 Crop 相同
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CropPx {
+    pub cx: f32,
+    pub cy: f32,
+    pub w: f32,
+    pub h: f32,
+    pub a: f32,
+}
+
+impl CropPx {
+    pub fn from_norm(c: &[f32], w: f32, h: f32) -> Self {
+        CropPx { cx: c[0] * w, cy: c[1] * h, w: c[2] * w, h: c[3] * h, a: c[4] }
+    }
+
+    /// 裁切框內的位移 d（以裁切框中心為原點，x 向右、y 向下）→ 原圖座標
+    pub fn to_img(&self, dx: f32, dy: f32) -> (f32, f32) {
+        let (s, c) = self.a.to_radians().sin_cos();
+        (self.cx + c * dx + s * dy, self.cy - s * dx + c * dy)
+    }
+
+    /// 四個角都在原圖範圍內
+    pub fn fits(&self, iw: f32, ih: f32) -> bool {
+        let e = 0.01;
+        [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)].iter().all(|(sx, sy)| {
+            let (x, y) = self.to_img(sx * self.w / 2.0, sy * self.h / 2.0);
+            x >= -e && x <= iw + e && y >= -e && y <= ih + e
+        })
+    }
+
+    /// 超出原圖時（例如同步到比例不同的照片）以中心縮小到剛好放得下；與 editor.ts fitCrop 相同
+    pub fn fitted(mut self, iw: f32, ih: f32) -> Self {
+        self.cx = self.cx.clamp(0.0, iw);
+        self.cy = self.cy.clamp(0.0, ih);
+        if self.fits(iw, ih) {
+            return self;
+        }
+        let (mut lo, mut hi) = (0f32, 1f32);
+        for _ in 0..30 {
+            let mid = (lo + hi) / 2.0;
+            if (CropPx { w: self.w * mid, h: self.h * mid, ..self }).fits(iw, ih) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        CropPx { w: self.w * lo, h: self.h * lo, ..self }
+    }
+}
+
+/// 裁切（含旋轉）。角度為 0 時直接切；有角度時雙線性取樣
+pub fn crop_rgb(img: &RgbImage, crop: &[f32]) -> RgbImage {
+    let (iw, ih) = (img.width() as f32, img.height() as f32);
+    let c = CropPx::from_norm(crop, iw, ih).fitted(iw, ih);
+    let ow = (c.w.round() as u32).max(1);
+    let oh = (c.h.round() as u32).max(1);
+    if c.a.abs() < 0.005 {
+        let x = ((c.cx - c.w / 2.0).round().max(0.0) as u32).min(img.width() - 1);
+        let y = ((c.cy - c.h / 2.0).round().max(0.0) as u32).min(img.height() - 1);
+        let ow = ow.min(img.width() - x);
+        let oh = oh.min(img.height() - y);
+        return image::imageops::crop_imm(img, x, y, ow, oh).to_image();
+    }
+    let mut out = RgbImage::new(ow, oh);
+    let src = img.as_raw();
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let px = |x: usize, y: usize, k: usize| src[(y * w + x) * 3 + k] as f32;
+    out.as_mut().par_chunks_mut(ow as usize * 3).enumerate().for_each(|(oy, row)| {
+        for ox in 0..ow as usize {
+            let dx = (ox as f32 + 0.5) / ow as f32 * c.w - c.w / 2.0;
+            let dy = (oy as f32 + 0.5) / oh as f32 * c.h - c.h / 2.0;
+            let (x, y) = c.to_img(dx, dy);
+            let fx = (x - 0.5).clamp(0.0, (w - 1) as f32);
+            let fy = (y - 0.5).clamp(0.0, (h - 1) as f32);
+            let x0 = fx.floor() as usize;
+            let y0 = fy.floor() as usize;
+            let x1 = (x0 + 1).min(w - 1);
+            let y1 = (y0 + 1).min(h - 1);
+            let tx = fx - x0 as f32;
+            let ty = fy - y0 as f32;
+            for k in 0..3 {
+                let top = px(x0, y0, k) * (1.0 - tx) + px(x1, y0, k) * tx;
+                let bot = px(x0, y1, k) * (1.0 - tx) + px(x1, y1, k) * tx;
+                row[ox * 3 + k] = (top * (1.0 - ty) + bot * ty + 0.5) as u8;
+            }
+        }
+    });
+    out
+}
+
+/// 旋轉 90° 後裁切框跟著轉（順時針：新中心 = (1 − cy, cx)、寬高對調；角度不變）
+pub fn rotate_crop(c: &[f32], clockwise: bool) -> Vec<f32> {
+    if c.len() != 5 {
+        return Vec::new();
+    }
+    if clockwise {
+        vec![1.0 - c[1], c[0], c[3], c[2], c[4]]
+    } else {
+        vec![c[1], 1.0 - c[0], c[3], c[2], c[4]]
+    }
 }
 
 pub const HSL_LEN: usize = 24;
@@ -164,10 +290,11 @@ impl Params {
         ]
     }
 
-    fn from_values(v: [f32; 10], curve: Vec<[f32; 2]>, hsl: Vec<f32>) -> Self {
+    fn from_values(v: [f32; 10], curve: Vec<[f32; 2]>, hsl: Vec<f32>, crop: Vec<f32>) -> Self {
         Params {
             curve,
             hsl,
+            crop,
             temp: v[0],
             tint: v[1],
             exposure: v[2],
@@ -188,12 +315,12 @@ impl Params {
             let lim = if i == 2 { 5.0 } else { 100.0 };
             *x = if x.is_finite() { x.clamp(-lim, lim) } else { 0.0 };
         }
-        Params::from_values(v, clean_curve(&self.curve), clean_hsl(&self.hsl))
+        Params::from_values(v, clean_curve(&self.curve), clean_hsl(&self.hsl), clean_crop(&self.crop))
     }
 
     /// 欄位名稱（與前端 / serde 相同），順序與 values() 相同
-    pub const KEYS: [&'static str; 12] = [
-        "temp", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "vibrance", "saturation", "curve", "hsl",
+    pub const KEYS: [&'static str; 13] = [
+        "temp", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "vibrance", "saturation", "curve", "hsl", "crop",
     ];
 
     /// 只把 `fields` 列出的項目換成 `src` 的值，其餘保留自己的
@@ -208,10 +335,16 @@ impl Params {
         let has = |k: &str| fields.iter().any(|f| f == k);
         let curve = if has("curve") { src.curve.clone() } else { self.curve.clone() };
         let hsl = if has("hsl") { src.hsl.clone() } else { self.hsl.clone() };
-        Params::from_values(v, curve, hsl).clamped()
+        let crop = if has("crop") { src.crop.clone() } else { self.crop.clone() };
+        Params::from_values(v, curve, hsl, crop).clamped()
     }
 
     pub fn is_identity(&self) -> bool {
+        self.is_color_identity() && clean_crop(&self.crop).is_empty()
+    }
+
+    /// 只看色彩相關的項目（不含裁切）
+    pub fn is_color_identity(&self) -> bool {
         self.values().iter().all(|v| v.abs() < 1e-4) && clean_curve(&self.curve).is_empty() && clean_hsl(&self.hsl).is_empty()
     }
 
@@ -229,6 +362,9 @@ impl Params {
         let hsl = (!p.hsl.is_empty())
             .then(|| p.hsl.iter().map(|v| format!("{}", (v * 100.0).round() / 100.0)).collect::<Vec<_>>().join(","));
         out.push(("sd:HSL", hsl));
+        let crop = (!p.crop.is_empty())
+            .then(|| p.crop.iter().map(|v| format!("{}", (v * 100000.0).round() / 100000.0)).collect::<Vec<_>>().join(","));
+        out.push(("sd:Crop", crop));
         out.push(("sd:Version", (!p.is_identity()).then(|| "1".to_string())));
         out
     }
@@ -252,7 +388,10 @@ impl Params {
         let hsl: Vec<f32> = xmp::get_prop(xml, "sd:HSL")
             .map(|s| s.split(',').map(|x| x.trim().parse().unwrap_or(0.0)).collect())
             .unwrap_or_default();
-        let p = Params::from_values(v, curve, hsl).clamped();
+        let crop: Vec<f32> = xmp::get_prop(xml, "sd:Crop")
+            .map(|s| s.split(',').map(|x| x.trim().parse().unwrap_or(f32::NAN)).collect())
+            .unwrap_or_default();
+        let p = Params::from_values(v, curve, hsl, crop).clamped();
         (!p.is_identity()).then_some(p)
     }
 }
@@ -420,7 +559,7 @@ fn hsv_to_rgb(hue: f32, s: f32, v: f32) -> [f32; 3] {
 
 /// 套用到整張影像（rayon 逐列平行處理）
 pub fn apply_rgb(img: &mut RgbImage, p: &Params) {
-    if p.is_identity() {
+    if p.is_color_identity() {
         return;
     }
     let p = p.clamped();
@@ -444,6 +583,11 @@ pub fn apply(img: DynamicImage, p: &Params) -> DynamicImage {
         return img;
     }
     let mut rgb = img.to_rgb8();
+    // 先裁切（像素少、算得快；與畫面預覽相同：先取樣再調色）
+    let crop = clean_crop(&p.crop);
+    if !crop.is_empty() {
+        rgb = crop_rgb(&rgb, &crop);
+    }
     apply_rgb(&mut rgb, p);
     DynamicImage::ImageRgb8(rgb)
 }
@@ -492,7 +636,7 @@ mod tests {
         for (field, amt) in [(3, 100.0), (3, -100.0), (4, -100.0), (4, 100.0), (5, 100.0), (5, -100.0), (6, 100.0), (7, -100.0)] {
             let mut v = [0f32; 10];
             v[field] = amt;
-            let p = Params::from_values(v, vec![], vec![]);
+            let p = Params::from_values(v, vec![], vec![], vec![]);
             let mut prev = -1.0;
             for i in 0..=200 {
                 let y = tone(i as f32 / 200.0, &p);
@@ -638,6 +782,57 @@ mod tests {
         assert!(m.hsl.is_empty());
         // 全部 0 = 空的
         assert!(Params { hsl: vec![0.0; HSL_LEN], ..Default::default() }.clamped().hsl.is_empty());
+    }
+
+    #[test]
+    fn crop_basic_and_rotated() {
+        let img = RgbImage::from_fn(200, 100, |x, y| image::Rgb([x as u8, y as u8, 0]));
+        // 右半邊
+        let c = crop_rgb(&img, &[0.75, 0.5, 0.5, 1.0, 0.0]);
+        assert_eq!((c.width(), c.height()), (100, 100));
+        assert_eq!(c.get_pixel(0, 0)[0], 100);
+        // 旋轉 10°：輸出大小照設定，中心像素不變
+        let c = crop_rgb(&img, &[0.5, 0.5, 0.4, 0.4, 10.0]);
+        assert_eq!((c.width(), c.height()), (80, 40));
+        let m = c.get_pixel(40, 20);
+        assert!((m[0] as i32 - 100).abs() <= 2 && (m[1] as i32 - 50).abs() <= 2, "{m:?}");
+        // 正角度 = 照片順時針轉：裁切框往右的方向對應原圖往右上
+        let k = CropPx { cx: 100.0, cy: 50.0, w: 10.0, h: 10.0, a: 10.0 };
+        let (x, y) = k.to_img(10.0, 0.0);
+        assert!(x > 100.0 && y < 50.0);
+        // 太大的框（同步自比例不同的照片）縮到放得下
+        let f = CropPx { cx: 100.0, cy: 50.0, w: 200.0, h: 100.0, a: 20.0 }.fitted(200.0, 100.0);
+        assert!(f.fits(200.0, 100.0) && f.w < 200.0 && (f.w / f.h - 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn crop_xmp_merge_rotate() {
+        assert!(clean_crop(&[0.5, 0.5, 1.0, 1.0, 0.0]).is_empty());
+        let p = Params { crop: vec![0.4, 0.6, 0.5, 0.3, -5.5], ..Default::default() };
+        assert!(!p.is_identity() && p.is_color_identity());
+        let mut xml = String::from("<x:xmpmeta><rdf:RDF><rdf:Description rdf:about=\"\"/></rdf:RDF></x:xmpmeta>");
+        for (k, v) in p.xmp_props() {
+            crate::xmp::test_set_prop(&mut xml, k, v.as_deref());
+        }
+        let back = Params::from_xmp(&xml).unwrap();
+        assert_eq!(back.crop, p.crop);
+        let m = Params { exposure: 1.0, ..Default::default() }.merged(&p, &["crop".into()]);
+        assert_eq!(m.crop, p.crop);
+        assert_eq!(m.exposure, 1.0);
+        // 轉四次回到原樣；順轉再逆轉也回到原樣
+        let mut c = p.crop.clone();
+        for _ in 0..4 {
+            c = rotate_crop(&c, true);
+        }
+        for (a, b) in c.iter().zip(&p.crop) {
+            assert!((a - b).abs() < 1e-6);
+        }
+        assert_eq!(rotate_crop(&rotate_crop(&p.crop, true), false), p.crop);
+        // 只裁切（無調色）時，裁切範圍外的像素值不被改動
+        let img = DynamicImage::ImageRgb8(RgbImage::from_fn(100, 100, |x, y| image::Rgb([x as u8, y as u8, 7])));
+        let out = apply(img, &Params { crop: vec![0.25, 0.25, 0.5, 0.5, 0.0], ..Default::default() }).to_rgb8();
+        assert_eq!((out.width(), out.height()), (50, 50));
+        assert_eq!(out.get_pixel(10, 20), &image::Rgb([10, 20, 7]));
     }
 
     #[test]
