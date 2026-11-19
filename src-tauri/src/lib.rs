@@ -4,6 +4,7 @@ mod cache;
 mod core;
 mod dragout;
 mod edit;
+mod heal;
 mod export;
 mod face;
 mod fileinfo;
@@ -257,8 +258,9 @@ async fn rotate(core: CoreState<'_>, session: u64, ids: Vec<u32>, clockwise: boo
             match orient::rotate_item(it, clockwise) {
                 Ok(o) => {
                     // 有裁切時，裁切框跟著照片一起轉
-                    if let Some(mut p) = edit::load(it).filter(|p| !p.crop.is_empty()) {
+                    if let Some(mut p) = edit::load(it).filter(|p| !p.crop.is_empty() || !p.spots.is_empty()) {
                         p.crop = edit::rotate_crop(&p.crop, clockwise);
+                        p.spots = heal::rotate_spots(&p.spots, clockwise);
                         if let Err(e) = write_props_locked(it, &p.xmp_props()) {
                             res.failed.push(e);
                         }

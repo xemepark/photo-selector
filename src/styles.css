@@ -409,6 +409,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .ed-crop-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 8px; font-size: 12px; }
 .ed-crop-row select { flex: 1; min-width: 0; font-size: 12px; padding: 2px 4px; }
 .ed-crop-tip { line-height: 1.5; margin-top: 2px; }
+.ed-patch-tools { display: flex; gap: 6px; margin: 2px 0 10px; }
+.ed-ptool { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 12px; padding: 4px 0; }
+.ed-ptool.active { background: var(--accent); color: #1a1a1a; border-color: var(--accent); }
+.ed-patch .check { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+.ed-patch .ed-crop-row input[type="range"] { flex: 1; accent-color: var(--accent); }
 .ed-row label[data-crop-angle-reset].changed { color: var(--accent); }
 .ed-ib { width: 18px; height: 18px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; border: none; background: transparent; color: var(--muted); flex: none; }
 .ed-ib:hover { background: #ffffff1a; color: var(--text); }

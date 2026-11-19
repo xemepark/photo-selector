@@ -8,9 +8,10 @@
 
 import { api, url, Item, EditParams } from "./api";
 import { CurveEditor, Pt, cleanCurve, curveLut, sameCurve } from "./curve";
+import { MAX_SPOT_POINTS, Spot, SpotMode, applySpots, cleanSpots, distToStroke, findSource } from "./heal";
 import { Crop, MAX_ANGLE, RATIOS, bboxFrame, bisect, fits, fitted, fromNorm, fullCrop, largestAt, toFrame, toImg, toNorm } from "./crop";
 
-type NumKey = Exclude<keyof EditParams, "curve" | "hsl" | "crop">;
+type NumKey = Exclude<keyof EditParams, "curve" | "hsl" | "crop" | "spots">;
 type SyncKey = keyof EditParams;
 
 const GROUPS: { group: string; items: { key: NumKey; label: string; min: number; max: number; step: number; cls?: string }[] }[] = [
@@ -69,6 +70,14 @@ const RESET_ICON = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden=
 const CROP_ICON = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" d="M4 1v11h11M1 4h11v11"/></svg>`;
 const LEVEL_ICON = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M1.5 11.5 14.5 4.5"/><circle cx="4" cy="10.2" r="1.6" fill="currentColor"/><circle cx="12" cy="5.8" r="1.6" fill="currentColor"/></svg>`;
 const SWAP_ICON = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><rect x="1.5" y="4.5" width="8" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" d="M7 1.8h3.5a3 3 0 0 1 3 3V9m-2-2 2 2 2-2"/></svg>`;
+const ERASER_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M9.5 2.5 14 7l-6 6H4.5L2 10.5z"/><path stroke="currentColor" stroke-width="1.5" d="M6 6l4.5 4.5M8 13.5h6"/></svg>`;
+const HEAL_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="5" y="0.8" width="6" height="14.4" rx="3" transform="rotate(45 8 8)" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="7" cy="7" r=".8" fill="currentColor"/><circle cx="9" cy="9" r=".8" fill="currentColor"/><circle cx="9" cy="7" r=".8" fill="currentColor"/><circle cx="7" cy="9" r=".8" fill="currentColor"/></svg>`;
+const STAMP_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M6.3 8.5V6.7a1.9 1.9 0 1 1 3.4 0v1.8M2.5 8.5h11v3h-11zM3.5 14h9"/></svg>`;
+const SPOT_TOOLS: { m: SpotMode; label: string; icon: string; tip: string }[] = [
+  { m: 0, label: "移除", icon: ERASER_ICON, tip: "移除：塗抹要去掉的東西，自動找最相似的區域補上並融合" },
+  { m: 1, label: "修復", icon: HEAL_ICON, tip: "修復：用旁邊的紋理覆蓋，顏色與明暗自動跟周圍融合" },
+  { m: 2, label: "仿製", icon: STAMP_ICON, tip: "仿製：把來源區域原樣複製過來" },
+];
 const EYEDROPPER = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M13.6 2.4a2 2 0 0 0-2.8 0L9.3 3.9l-.7-.7-1 1 .7.7-5.5 5.5a1.6 1.6 0 0 0-.4.7l-.6 2.3a.6.6 0 0 0 .8.8l2.3-.6c.3-.1.5-.2.7-.4L11.1 8l.7.7 1-1-.7-.7 1.5-1.5a2 2 0 0 0 0-2.8zM4 12.9l-1.3.4.4-1.3L8.6 6.4l.9.9z"/></svg>`;
 const toLinJs = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
 const toSrgbJs = (c: number) => {
@@ -107,21 +116,24 @@ export const ZERO: EditParams = {
   curve: [],
   hsl: zeroHsl(),
   crop: [],
+  spots: [],
 };
 
 const NUM_KEYS = GROUPS.flatMap((g) => g.items.map((s) => s.key));
-const SYNC_KEYS: SyncKey[] = [...NUM_KEYS, "hsl", "curve", "crop"];
+const SYNC_KEYS: SyncKey[] = [...NUM_KEYS, "hsl", "curve", "crop", "spots"];
 const LABEL_OF: Record<SyncKey, string> = {
   ...(Object.fromEntries(GROUPS.flatMap((g) => g.items.map((s) => [s.key, s.label]))) as Record<NumKey, string>),
   curve: "曲線",
   hsl: "HSL",
   crop: "裁切",
+  spots: "修補",
 };
 const SYNC_GROUPS: { group: string; keys: SyncKey[] }[] = [
   ...GROUPS.map((g) => ({ group: g.group, keys: g.items.map((s) => s.key) as SyncKey[] })),
   { group: "HSL", keys: ["hsl"] },
   { group: "曲線", keys: ["curve"] },
   { group: "裁切", keys: ["crop"] },
+  { group: "修補", keys: ["spots"] },
 ];
 
 /** 色階分布圖上可拖曳的區域（與 Camera Raw 相同的五段） */
@@ -134,7 +146,7 @@ const ZONES: { key: NumKey; from: number; to: number }[] = [
 ];
 
 function clone(p: EditParams): EditParams {
-  return { ...p, curve: p.curve.map((q) => [q[0], q[1]] as Pt), hsl: normHsl(p.hsl), crop: normCrop(p.crop) };
+  return { ...p, curve: p.curve.map((q) => [q[0], q[1]] as Pt), hsl: normHsl(p.hsl), crop: normCrop(p.crop), spots: cleanSpots(JSON.parse(JSON.stringify(p.spots ?? []))) };
 }
 
 /** 上次同步時勾選的項目（預設全部） */
@@ -149,13 +161,14 @@ function loadSyncFields(): string[] {
   } catch {
     /* ignore */
   }
-  return [...SYNC_KEYS];
+  // 修補預設不勾（通常每張照片要修的地方不同；感光元件灰塵才需要同步）
+  return SYNC_KEYS.filter((k) => k !== "spots");
 }
 
 /** 調整面板各區塊的收合狀態（true = 收合），下次開啟沿用 */
-type Sec = "crop" | "basic" | "color" | "hsl" | "curve";
+type Sec = "crop" | "patch" | "basic" | "color" | "hsl" | "curve";
 function loadCollapsed(): Record<Sec, boolean> {
-  const d = { crop: false, basic: false, color: false, hsl: false, curve: false };
+  const d = { crop: false, patch: false, basic: false, color: false, hsl: false, curve: false };
   try {
     const v = JSON.parse(localStorage.getItem("editCollapsed") ?? "null");
     if (v && typeof v === "object") for (const k of Object.keys(d) as Sec[]) d[k] = v[k] === true;
@@ -168,6 +181,25 @@ function loadCollapsed(): Record<Sec, boolean> {
 function saveCollapsed(c: Record<Sec, boolean>) {
   try {
     localStorage.setItem("editCollapsed", JSON.stringify(c));
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadBrush(): { size: number; feather: number; opacity: number } {
+  const d = { size: 20, feather: 25, opacity: 100 };
+  try {
+    const v = JSON.parse(localStorage.getItem("editBrush") ?? "null");
+    if (v && typeof v === "object") for (const k of Object.keys(d) as (keyof typeof d)[]) if (Number.isFinite(v[k])) d[k] = v[k];
+  } catch {
+    /* ignore */
+  }
+  return d;
+}
+
+function saveBrush(b: { size: number; feather: number; opacity: number }) {
+  try {
+    localStorage.setItem("editBrush", JSON.stringify(b));
   } catch {
     /* ignore */
   }
@@ -217,14 +249,15 @@ function saveSyncFields(f: string[]) {
 }
 
 export function isIdentity(p: EditParams) {
-  return NUM_KEYS.every((k) => Math.abs(p[k]) < 1e-4) && cleanCurve(p.curve).length === 0 && !hslActive(normHsl(p.hsl)) && !normCrop(p.crop).length;
+  return NUM_KEYS.every((k) => Math.abs(p[k]) < 1e-4) && cleanCurve(p.curve).length === 0 && !hslActive(normHsl(p.hsl)) && !normCrop(p.crop).length && !(p.spots ?? []).length;
 }
 
 const same = (a: EditParams, b: EditParams) =>
   NUM_KEYS.every((k) => Math.abs(a[k] - b[k]) < 1e-4) &&
   sameCurve(a.curve, b.curve) &&
   normHsl(a.hsl).every((x, i) => Math.abs(x - normHsl(b.hsl)[i]) < 1e-4) &&
-  sameCrop(a.crop, b.crop);
+  sameCrop(a.crop, b.crop) &&
+  JSON.stringify(a.spots ?? []) === JSON.stringify(b.spots ?? []);
 
 const VERT = `
 attribute vec2 a_pos;
@@ -253,6 +286,8 @@ uniform vec3 u_gains;
 uniform float u_ev, u_c, u_h, u_s, u_w, u_b, u_vib, u_sat;
 uniform float u_useHsl;
 uniform float u_outside;
+uniform float u_viz;
+uniform vec2 u_texel;
 uniform float u_hh[9];
 uniform float u_hs[9];
 uniform float u_hl[9];
@@ -330,6 +365,20 @@ void main() {
     return;
   }
   vec3 s = texture2D(u_tex, v_uv).rgb;
+  if (u_viz > 0.0) {
+    // 顯現汙點：亮度的高頻成分（與周圍的差）放大，白底上看得到灰塵與雜點
+    float l0 = dot(s, LUM);
+    float acc = 0.0;
+    for (int i = -1; i <= 1; i++) {
+      for (int j = -1; j <= 1; j++) {
+        acc += dot(texture2D(u_tex, v_uv + vec2(float(i), float(j)) * u_texel * 2.0).rgb, LUM);
+      }
+    }
+    float hp = l0 - acc / 9.0;
+    float v = 1.0 - clamp(abs(hp) * u_viz, 0.0, 1.0);
+    gl_FragColor = vec4(v, v, v, 1.0);
+    return;
+  }
   if (u_bypass > 0.5) { gl_FragColor = vec4(s, 1.0); return; }
   float ev = exp2(u_ev);
   vec3 c = vec3(toLin(s.r), toLin(s.g), toLin(s.b)) * u_gains * ev;
@@ -468,10 +517,39 @@ export class Editor {
     );
     this.setHslTab(loadHslTab());
     this.overlay = this.q<HTMLCanvasElement>("#ed-overlay");
-    this.overlay.addEventListener("pointerdown", (e) => this.cropDown(e));
-    this.overlay.addEventListener("pointermove", (e) => this.cropMove(e));
-    this.overlay.addEventListener("pointerup", (e) => this.cropUp(e));
-    this.overlay.addEventListener("pointercancel", (e) => this.cropUp(e));
+    this.overlay.addEventListener("pointerdown", (e) => (this.cropping ? this.cropDown(e) : this.patchDown(e)));
+    this.overlay.addEventListener("pointermove", (e) => (this.cropping ? this.cropMove(e) : this.patchMove(e)));
+    this.overlay.addEventListener("pointerup", (e) => (this.cropping ? this.cropUp(e) : this.patchUp(e)));
+    this.overlay.addEventListener("pointercancel", (e) => (this.cropping ? this.cropUp(e) : this.patchUp(e)));
+    this.overlay.addEventListener("pointerleave", () => {
+      this.phover = null;
+      if (this.ptool !== null) this.drawOverlay();
+    });
+    this.el.querySelectorAll<HTMLElement>("[data-ptool]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const m = Number(b.dataset.ptool) as SpotMode;
+        this.setPatch(this.ptool === m ? null : m);
+      }),
+    );
+    const brush = loadBrush();
+    this.brush = brush;
+    for (const k of ["size", "feather", "opacity"] as const) {
+      for (const sel of [`[data-brush="${k}"]`, `[data-brush-num="${k}"]`]) {
+        const inp = this.q<HTMLInputElement>(sel);
+        inp.value = String(brush[k]);
+        inp.addEventListener("input", (e) => {
+          e.stopPropagation();
+          const v = Number(inp.value);
+          if (Number.isFinite(v)) this.setBrush(k, v, inp);
+        });
+      }
+    }
+    this.q("#ed-ov-show").addEventListener("change", () => this.drawOverlay());
+    this.q("#ed-viz").addEventListener("change", () => this.draw());
+    this.q("#ed-viz-amt").addEventListener("input", (e) => {
+      e.stopPropagation();
+      if (this.vizOn()) this.draw();
+    });
     this.overlay.addEventListener("dblclick", (e) => {
       if (this.cropping && !this.leveling && this.hitCrop(e.clientX, e.clientY).kind === "move") this.commitCrop();
     });
@@ -517,6 +595,10 @@ export class Editor {
         const k = b.dataset.secReset as Sec;
         if (k === "basic" || k === "color") for (const it of GROUPS[k === "basic" ? 0 : 1].items) this.p[it.key] = 0;
         if (k === "hsl") this.p.hsl = zeroHsl();
+        if (k === "patch") {
+          this.p.spots = [];
+          this.selSpot = -1;
+        }
         if (k === "crop") {
           if (this.cropping) {
             this.draft = fullCrop(this.imgW, this.imgH);
@@ -606,6 +688,20 @@ export class Editor {
         .join("")}</div>`;
     const light = rowsOf(GROUPS[0]);
     const color = rowsOf(GROUPS[1]);
+    const brushRow = (k: string, label: string, min: number, max: number) => `<div class="ed-row">
+          <label>${label}</label>
+          <input type="number" data-brush-num="${k}" min="${min}" max="${max}" step="1" />
+          <input type="range" data-brush="${k}" min="${min}" max="${max}" step="1" />
+        </div>`;
+    const patch = `<div class="ed-patch">
+        <div class="ed-patch-tools">${SPOT_TOOLS.map((t) => `<button class="ed-ptool" data-ptool="${t.m}" title="${t.tip}">${t.icon}<span>${t.label}</span></button>`).join("")}</div>
+        ${brushRow("size", "大小", 1, 200)}
+        ${brushRow("feather", "羽化", 0, 100)}
+        ${brushRow("opacity", "不透明度", 1, 100)}
+        <label class="check small"><input type="checkbox" id="ed-ov-show" checked /> 顯示疊加（修補範圍與來源）</label>
+        <div class="ed-crop-row"><label class="check small"><input type="checkbox" id="ed-viz" /> 顯現汙點</label><input type="range" id="ed-viz-amt" min="1" max="100" value="40" /></div>
+        <div class="muted small ed-crop-tip">B 開始修補 · 在照片上塗抹要處理的地方 · 拖曳黃色來源換位置、拖曳白色範圍移動 · Delete 刪除選取 · ⌘Z 復原 · [ ] 調整大小</div>
+      </div>`;
     const crop = `<div class="ed-crop">
         <div class="ed-crop-row">
           <label>比例</label>
@@ -659,6 +755,13 @@ export class Editor {
               <button id="ed-crop-tool" class="ed-ib" title="裁切（C）">${CROP_ICON}</button><button id="ed-level-tool" class="ed-ib" title="拉直工具：在照片上沿著應該水平或垂直的線拖曳">${LEVEL_ICON}</button><button class="ed-ib" data-sec-reset="crop" title="重設裁切">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">${crop}</div>
+          </section>
+          <section class="ed-sec" data-sec="patch">
+            <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
+              <span class="ed-chev">▾</span><span class="ed-sec-title">修補</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button class="ed-ib" data-sec-reset="patch" title="清除所有修補">${RESET_ICON}</button>
+            </div>
+            <div class="ed-sec-body">${patch}</div>
           </section>
           <section class="ed-sec" data-sec="basic">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
@@ -885,11 +988,13 @@ export class Editor {
     this.q("#ed-syncrow").classList.toggle("hidden", this.list.length < 2);
     this.markStrip();
     if (this.cropping) this.leaveCrop();
+    this.selSpot = -1;
+    this.pdrag = null;
     this.setBefore(false);
     this.q("#ed-syncbox").classList.add("hidden");
     try {
       const r = await api.getEdit(this.host.session(), it.id);
-      this.saved = clone({ ...ZERO, ...r, curve: (r.curve ?? []) as Pt[], hsl: normHsl(r.hsl), crop: normCrop(r.crop) });
+      this.saved = clone({ ...ZERO, ...r, curve: (r.curve ?? []) as Pt[], hsl: normHsl(r.hsl), crop: normCrop(r.crop), spots: cleanSpots(r.spots) });
     } catch {
       this.saved = clone(ZERO);
     }
@@ -914,9 +1019,19 @@ export class Editor {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.tex);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, bmp);
       this.imgW = bmp.width;
       this.imgH = bmp.height;
+      // 完整的原圖像素（修補要在 CPU 上算，算完再上傳成貼圖）
+      {
+        const cv = document.createElement("canvas");
+        cv.width = bmp.width;
+        cv.height = bmp.height;
+        const g2 = cv.getContext("2d", { willReadFrequently: true })!;
+        g2.drawImage(bmp, 0, 0);
+        this.baseOrig = g2.getImageData(0, 0, bmp.width, bmp.height);
+        this.baseKey = "";
+        this.uploadBase();
+      }
       // 滴管取色用的縮小原圖
       try {
         const sc = Math.min(1, 1024 / Math.max(bmp.width, bmp.height));
@@ -963,6 +1078,8 @@ export class Editor {
     const ar = (f.a * Math.PI) / 180;
     gl.uniform2f(u("u_rot"), Math.cos(ar), Math.sin(ar));
     gl.uniform1f(u("u_outside"), outside ? 1 : 0);
+    gl.uniform1f(u("u_viz"), this.vizOn() ? 4 + Number(this.q<HTMLInputElement>("#ed-viz-amt").value) * 0.6 : 0);
+    gl.uniform2f(u("u_texel"), 1 / Math.max(1, this.imgW), 1 / Math.max(1, this.imgH));
     gl.uniform1f(u("u_bypass"), this.bypass ? 1 : 0);
     gl.uniform1f(u("u_useLut"), cleanCurve(p.curve).length ? 1 : 0);
     gl.uniform3f(u("u_gains"), g[0], g[1], g[2]);
@@ -990,6 +1107,7 @@ export class Editor {
   private render() {
     const gl = this.gl;
     if (!gl || !this.prog || !this.imgW || !this.isOpen) return;
+    this.uploadBase();
     const stage = this.q("#ed-stage");
     const dpr = window.devicePixelRatio || 1;
     const cw = Math.max(1, Math.round(stage.clientWidth * dpr));
@@ -1222,6 +1340,7 @@ export class Editor {
   enterCrop() {
     if (this.cropping || !this.imgW) return;
     if (this.tool) this.setTool(null);
+    if (this.ptool !== null) this.setPatch(null);
     this.cropping = true;
     this.cropEntry = normCrop(this.p.crop);
     this.draft = fromNorm(this.p.crop, this.imgW, this.imgH) ?? fullCrop(this.imgW, this.imgH);
@@ -1508,6 +1627,7 @@ export class Editor {
     const g = cv.getContext("2d");
     if (!g) return;
     g.clearRect(0, 0, w, h);
+    if (!this.cropping && this.ptool !== null && this.imgW) return this.drawPatchOverlay(g, dpr);
     if (!this.cropping || !this.draft || !this.imgW) return;
     const v = this.view();
     const b = this.draftBox();
@@ -1573,9 +1693,312 @@ export class Editor {
     }
   }
 
+  // ---------------------------------------------------------------- 修補
+
+  /** 修補工具（null = 沒有在修補） */
+  private ptool: SpotMode | null = null;
+  private selSpot = -1;
+  private brush = { size: 20, feather: 25, opacity: 100 };
+  private baseOrig: ImageData | null = null;
+  /** 套用修補後的影像（建立新修補時，自動找來源要看前面修補完的樣子） */
+  private baseWork: ImageData | null = null;
+  private baseKey = "";
+  private phover: { x: number; y: number } | null = null;
+  private pdrag:
+    | { kind: "paint"; pts: [number, number][] }
+    | { kind: "src" | "dest"; i: number; x: number; y: number; d0: [number, number]; p0: [number, number][] }
+    | null = null;
+  private lastPtool: SpotMode = 0;
+
+  private vizOn() {
+    return this.ptool !== null && this.q<HTMLInputElement>("#ed-viz").checked;
+  }
+
+  /** 修補有變時重新計算並上傳貼圖（沒變就什麼都不做） */
+  private uploadBase() {
+    const gl = this.gl;
+    const base = this.baseOrig;
+    if (!gl || !base) return;
+    const spots = this.p.spots ?? [];
+    const key = JSON.stringify(spots);
+    if (key === this.baseKey) return;
+    this.baseKey = key;
+    let img = base;
+    if (spots.length) {
+      img = new ImageData(new Uint8ClampedArray(base.data), base.width, base.height);
+      applySpots(img, spots);
+    }
+    this.baseWork = img;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  }
+
+  /** 開始 / 結束修補（再按一次同一個工具 = 結束） */
+  setPatch(m: SpotMode | null) {
+    if (m !== null) {
+      if (this.cropping) this.commitCrop();
+      if (this.tool) this.setTool(null);
+      this.lastPtool = m;
+    }
+    this.ptool = m;
+    this.pdrag = null;
+    if (m === null) this.selSpot = -1;
+    this.el.querySelectorAll<HTMLElement>("[data-ptool]").forEach((b) => b.classList.toggle("active", Number(b.dataset.ptool) === m));
+    this.overlay.classList.toggle("on", m !== null || this.cropping);
+    this.overlay.style.cursor = m !== null ? "none" : "";
+    if (m !== null) {
+      const sec = this.q('[data-sec="patch"]');
+      if (sec.classList.contains("collapsed")) (sec.querySelector(".ed-sec-head") as HTMLElement).click();
+      if (this.bypass) this.setBefore(false);
+      this.hint(`${SPOT_TOOLS[m].label}：在照片上塗抹要處理的地方 · Esc 結束`);
+    } else this.hint("");
+    this.draw();
+  }
+
+  private setBrush(k: "size" | "feather" | "opacity", v: number, from?: HTMLInputElement) {
+    const lim = { size: [1, 200], feather: [0, 100], opacity: [1, 100] }[k];
+    v = Math.round(Math.max(lim[0], Math.min(lim[1], v)));
+    this.brush[k] = v;
+    saveBrush(this.brush);
+    for (const sel of [`[data-brush="${k}"]`, `[data-brush-num="${k}"]`]) {
+      const inp = this.q<HTMLInputElement>(sel);
+      if (inp !== from) inp.value = String(v);
+    }
+    // 有選取的修補時，一起改那一筆（與 Camera Raw 相同）
+    const s = this.p.spots?.[this.selSpot];
+    if (s) {
+      if (k === "size") s.r = v / 2000;
+      if (k === "feather") s.f = v / 100;
+      if (k === "opacity") s.o = v / 100;
+      this.markChanged();
+    }
+    this.draw();
+  }
+
+  /** 筆刷半徑（原圖像素） */
+  private brushR() {
+    return (this.brush.size / 2000) * Math.max(this.imgW, this.imgH);
+  }
+
+  private screenToImg(x: number, y: number): [number, number] {
+    const [fx, fy] = this.screenToFrame(x, y);
+    return toImg(this.viewFrame(), fx, fy);
+  }
+
+  private spotPx(s: Spot, src: boolean): { pts: [number, number][]; r: number } {
+    const W = this.imgW;
+    const H = this.imgH;
+    const ox = src ? Math.round(s.d[0] * W) : 0;
+    const oy = src ? Math.round(s.d[1] * H) : 0;
+    return { pts: s.p.map(([x, y]) => [x * W + ox, y * H + oy] as [number, number]), r: s.r * Math.max(W, H) };
+  }
+
+  private patchDown(e: PointerEvent) {
+    if (this.ptool === null || e.button !== 0) return;
+    e.preventDefault();
+    const [x, y] = this.screenToImg(e.clientX, e.clientY);
+    const spots = this.p.spots ?? [];
+    const hitSpot = (i: number, src: boolean) => {
+      const q = this.spotPx(spots[i], src);
+      return distToStroke(q.pts, x, y) <= Math.max(q.r, 6 / this.view().s);
+    };
+    let drag: typeof this.pdrag = null;
+    if (this.selSpot >= 0 && spots[this.selSpot] && hitSpot(this.selSpot, true)) {
+      const s = spots[this.selSpot];
+      drag = { kind: "src", i: this.selSpot, x, y, d0: [...s.d], p0: s.p.map((q) => [...q] as [number, number]) };
+    } else {
+      for (let i = spots.length - 1; i >= 0; i--) {
+        if (hitSpot(i, false)) {
+          this.selSpot = i;
+          this.syncBrushFromSpot(spots[i]);
+          const s = spots[i];
+          drag = { kind: "dest", i, x, y, d0: [...s.d], p0: s.p.map((q) => [...q] as [number, number]) };
+          break;
+        }
+      }
+    }
+    if (!drag) {
+      this.selSpot = -1;
+      drag = { kind: "paint", pts: [[x, y]] };
+    }
+    this.pdrag = drag;
+    this.overlay.setPointerCapture(e.pointerId);
+    this.drawOverlay();
+  }
+
+  /** 選取某筆修補時，滑桿顯示它的設定 */
+  private syncBrushFromSpot(s: Spot) {
+    const vals = { size: Math.round(s.r * 2000), feather: Math.round(s.f * 100), opacity: Math.round(s.o * 100) };
+    for (const k of ["size", "feather", "opacity"] as const) {
+      for (const sel of [`[data-brush="${k}"]`, `[data-brush-num="${k}"]`]) this.q<HTMLInputElement>(sel).value = String(vals[k]);
+    }
+  }
+
+  private patchMove(e: PointerEvent) {
+    if (this.ptool === null) return;
+    this.phover = { x: e.clientX, y: e.clientY };
+    const g = this.pdrag;
+    if (!g) return this.drawOverlay();
+    const [x, y] = this.screenToImg(e.clientX, e.clientY);
+    const W = this.imgW;
+    const H = this.imgH;
+    if (g.kind === "paint") {
+      const last = g.pts[g.pts.length - 1];
+      if (Math.hypot(x - last[0], y - last[1]) >= Math.max(1, this.brushR() * 0.3) && g.pts.length < MAX_SPOT_POINTS) g.pts.push([x, y]);
+      return this.drawOverlay();
+    }
+    const s = this.p.spots[g.i];
+    if (!s) return;
+    const dx = (x - g.x) / W;
+    const dy = (y - g.y) / H;
+    if (g.kind === "src") s.d = [g.d0[0] + dx, g.d0[1] + dy];
+    else {
+      // 移動修補範圍，來源留在原地
+      s.p = g.p0.map(([px, py]) => [px + dx, py + dy] as [number, number]);
+      s.d = [g.d0[0] - dx, g.d0[1] - dy];
+    }
+    this.markChanged();
+    this.draw();
+  }
+
+  private patchUp(e: PointerEvent) {
+    const g = this.pdrag;
+    if (!g) return;
+    this.pdrag = null;
+    try {
+      this.overlay.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    if (g.kind === "paint" && this.ptool !== null) {
+      const W = this.imgW;
+      const H = this.imgH;
+      const spot: Spot = {
+        m: this.ptool,
+        r: this.brush.size / 2000,
+        f: this.brush.feather / 100,
+        o: this.brush.opacity / 100,
+        d: [0, 0],
+        p: g.pts.map(([x, y]) => [Math.round((x / W) * 100000) / 100000, Math.round((y / H) * 100000) / 100000] as [number, number]),
+      };
+      this.uploadBase();
+      if (this.baseWork) spot.d = findSource(this.baseWork, spot);
+      this.p.spots = [...(this.p.spots ?? []), spot];
+      this.selSpot = this.p.spots.length - 1;
+      this.markChanged();
+    }
+    this.draw();
+  }
+
+  deleteSpot() {
+    if (this.selSpot < 0 || !this.p.spots?.[this.selSpot]) return;
+    this.p.spots = this.p.spots.filter((_, i) => i !== this.selSpot);
+    this.selSpot = -1;
+    this.markChanged();
+    this.draw();
+  }
+
+  undoSpot() {
+    if (!this.p.spots?.length) return;
+    this.p.spots = this.p.spots.slice(0, -1);
+    this.selSpot = -1;
+    this.markChanged();
+    this.draw();
+  }
+
+  private drawPatchOverlay(g: CanvasRenderingContext2D, dpr: number) {
+    const v = this.view();
+    const f = v.f;
+    const stage = this.q("#ed-stage");
+    const toS = (x: number, y: number): [number, number] => {
+      const [fx, fy] = toFrame(f, x, y);
+      return [(stage.clientWidth / 2 + fx * v.s) * dpr, (stage.clientHeight / 2 + fy * v.s) * dpr];
+    };
+    const stroke = (pts: [number, number][], r: number, color: string) => {
+      const sp = pts.map(([x, y]) => toS(x, y));
+      const rw = r * v.s * dpr;
+      g.fillStyle = color;
+      g.strokeStyle = color;
+      if (sp.length === 1) {
+        g.beginPath();
+        g.arc(sp[0][0], sp[0][1], rw, 0, Math.PI * 2);
+        g.fill();
+        return sp[0];
+      }
+      g.lineWidth = rw * 2;
+      g.lineCap = "round";
+      g.lineJoin = "round";
+      g.beginPath();
+      sp.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+      g.stroke();
+      return sp[0];
+    };
+    const pin = (x: number, y: number, fill: string) => {
+      g.beginPath();
+      g.arc(x, y, 4.5 * dpr, 0, Math.PI * 2);
+      g.fillStyle = fill;
+      g.fill();
+      g.lineWidth = 1.5 * dpr;
+      g.strokeStyle = "#000a";
+      g.stroke();
+    };
+    const show = this.q<HTMLInputElement>("#ed-ov-show").checked;
+    (this.p.spots ?? []).forEach((s, i) => {
+      const sel = i === this.selSpot;
+      if (!show && !sel) return;
+      const dst = this.spotPx(s, false);
+      const a = stroke(dst.pts, dst.r, sel ? "rgba(255,255,255,0.32)" : "rgba(255,255,255,0.16)");
+      if (sel) {
+        const src = this.spotPx(s, true);
+        const b = stroke(src.pts, src.r, "rgba(245,179,58,0.30)");
+        g.setLineDash([4 * dpr, 4 * dpr]);
+        g.lineWidth = 1.5 * dpr;
+        g.strokeStyle = "#f5b33a";
+        g.beginPath();
+        g.moveTo(a[0], a[1]);
+        g.lineTo(b[0], b[1]);
+        g.stroke();
+        g.setLineDash([]);
+        pin(b[0], b[1], "#f5b33a");
+      }
+      pin(a[0], a[1], sel ? "#fff" : "#ffffff99");
+    });
+    const d = this.pdrag;
+    if (d?.kind === "paint") stroke(d.pts, this.brushR(), "rgba(255,255,255,0.35)");
+    // 筆刷游標（外圈 = 大小，內圈 = 羽化開始的地方）
+    if (this.phover && (!d || d.kind === "paint")) {
+      const r = stage.getBoundingClientRect();
+      const cx = (this.phover.x - r.left) * dpr;
+      const cy = (this.phover.y - r.top) * dpr;
+      const rw = this.brushR() * v.s * dpr;
+      g.lineWidth = 1.5 * dpr;
+      g.strokeStyle = "#fff";
+      g.beginPath();
+      g.arc(cx, cy, rw, 0, Math.PI * 2);
+      g.stroke();
+      g.strokeStyle = "#0008";
+      g.lineWidth = 1 * dpr;
+      g.beginPath();
+      g.arc(cx, cy, rw + 1.5 * dpr, 0, Math.PI * 2);
+      g.stroke();
+      const inner = rw * (1 - this.brush.feather / 100);
+      if (inner > 2 * dpr && inner < rw - 1) {
+        g.setLineDash([3 * dpr, 3 * dpr]);
+        g.strokeStyle = "#ffffffaa";
+        g.beginPath();
+        g.arc(cx, cy, inner, 0, Math.PI * 2);
+        g.stroke();
+        g.setLineDash([]);
+      }
+    }
+  }
+
   /** 開關滴管（再按一次同一個 = 關閉） */
   setTool(t: "wb" | "hsl" | null) {
     if (t && this.cropping) this.commitCrop();
+    if (t && this.ptool !== null) this.setPatch(null);
     this.tool = this.tool === t ? null : t;
     this.tdrag = null;
     this.q("#ed-wb-pick").classList.toggle("active", this.tool === "wb");
@@ -1772,6 +2195,7 @@ export class Editor {
       color: any(GROUPS[1].items.map((s) => s.key)),
       hsl: hslActive(normHsl(this.p.hsl)),
       curve: cleanCurve(this.p.curve).length > 0,
+      patch: (this.p.spots ?? []).length > 0,
       crop: this.cropping ? toNorm(this.draft!, this.imgW, this.imgH).length > 0 : normCrop(this.p.crop).length > 0,
     };
     this.syncCropInputs();
@@ -1916,6 +2340,10 @@ export class Editor {
     }
     if (this.tool) this.setTool(null);
     if (this.cropping) this.cancelCrop();
+    if (this.ptool !== null) this.setPatch(null);
+    this.baseOrig = null;
+    this.baseWork = null;
+    this.baseKey = "";
     this.loadSeq++;
     this.el.classList.add("hidden");
     this.stripObs?.disconnect();
@@ -1939,6 +2367,7 @@ export class Editor {
     const typing = t.tagName === "INPUT";
     if (ev.key === "Escape" && this.cropping) return this.cancelCrop(), true;
     if (ev.key === "Enter" && this.cropping && !typing) return this.commitCrop(), true;
+    if (ev.key === "Escape" && this.ptool !== null) return (this.selSpot >= 0 ? ((this.selSpot = -1), this.drawOverlay()) : this.setPatch(null)), true;
     if (ev.key === "Escape" && this.tool) return this.setTool(null), true;
     if (ev.key === "Escape") {
       const box = this.q("#ed-syncbox");
@@ -1948,6 +2377,13 @@ export class Editor {
     if (ev.key === "Enter" && !typing) return void this.close(true), true;
     if (typing) return false;
     if (ev.key === "\\") return this.toggleBefore(), true;
+    if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "b") return this.setPatch(this.ptool !== null ? null : this.lastPtool), true;
+    if (this.ptool !== null) {
+      if (ev.key === "Delete" || ev.key === "Backspace") return this.deleteSpot(), true;
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "z") return this.undoSpot(), true;
+      if (ev.key === "[") return this.setBrush("size", this.brush.size * 0.85), true;
+      if (ev.key === "]") return this.setBrush("size", Math.max(this.brush.size + 1, this.brush.size * 1.15)), true;
+    }
     if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "c") return (this.cropping ? this.commitCrop() : this.enterCrop()), true;
     if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "x" && this.cropping) return this.swapOrient(), true;
     if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "i") return this.setTool("wb"), true;

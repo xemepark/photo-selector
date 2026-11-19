@@ -44,6 +44,8 @@ export interface EditParams {
   hsl: number[];
   /** 裁切：[中心 x, 中心 y, 寬, 高, 角度]（相對原圖寬高的比例；角度 −45…45）。空陣列 = 不裁切 */
   crop: number[];
+  /** 局部修補（移除 / 修復 / 仿製） */
+  spots: import("./heal").Spot[];
 }
 
 export interface DirInfo {

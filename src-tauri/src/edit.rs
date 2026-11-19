@@ -38,6 +38,9 @@ pub struct Params {
     /// 角度 −45…45 度（正 = 照片順時針轉）。空的 = 不裁切
     #[serde(default)]
     pub crop: Vec<f32>,
+    /// 局部修補（移除 / 修復 / 仿製），依序套用
+    #[serde(default)]
+    pub spots: Vec<crate::heal::Spot>,
 }
 
 /// 整理裁切：5 個數字、數值合理；等於整張不裁切時回傳空的
@@ -290,8 +293,9 @@ impl Params {
         ]
     }
 
-    fn from_values(v: [f32; 10], curve: Vec<[f32; 2]>, hsl: Vec<f32>, crop: Vec<f32>) -> Self {
+    fn from_values(v: [f32; 10], curve: Vec<[f32; 2]>, hsl: Vec<f32>, crop: Vec<f32>, spots: Vec<crate::heal::Spot>) -> Self {
         Params {
+            spots,
             curve,
             hsl,
             crop,
@@ -315,12 +319,13 @@ impl Params {
             let lim = if i == 2 { 5.0 } else { 100.0 };
             *x = if x.is_finite() { x.clamp(-lim, lim) } else { 0.0 };
         }
-        Params::from_values(v, clean_curve(&self.curve), clean_hsl(&self.hsl), clean_crop(&self.crop))
+        Params::from_values(v, clean_curve(&self.curve), clean_hsl(&self.hsl), clean_crop(&self.crop), crate::heal::clean_spots(&self.spots))
     }
 
     /// 欄位名稱（與前端 / serde 相同），順序與 values() 相同
-    pub const KEYS: [&'static str; 13] = [
+    pub const KEYS: [&'static str; 14] = [
         "temp", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "vibrance", "saturation", "curve", "hsl", "crop",
+        "spots",
     ];
 
     /// 只把 `fields` 列出的項目換成 `src` 的值，其餘保留自己的
@@ -336,11 +341,12 @@ impl Params {
         let curve = if has("curve") { src.curve.clone() } else { self.curve.clone() };
         let hsl = if has("hsl") { src.hsl.clone() } else { self.hsl.clone() };
         let crop = if has("crop") { src.crop.clone() } else { self.crop.clone() };
-        Params::from_values(v, curve, hsl, crop).clamped()
+        let spots = if has("spots") { src.spots.clone() } else { self.spots.clone() };
+        Params::from_values(v, curve, hsl, crop, spots).clamped()
     }
 
     pub fn is_identity(&self) -> bool {
-        self.is_color_identity() && clean_crop(&self.crop).is_empty()
+        self.is_color_identity() && clean_crop(&self.crop).is_empty() && self.spots.is_empty()
     }
 
     /// 只看色彩相關的項目（不含裁切）
@@ -365,6 +371,7 @@ impl Params {
         let crop = (!p.crop.is_empty())
             .then(|| p.crop.iter().map(|v| format!("{}", (v * 100000.0).round() / 100000.0)).collect::<Vec<_>>().join(","));
         out.push(("sd:Crop", crop));
+        out.push(("sd:Spots", (!p.spots.is_empty()).then(|| crate::heal::to_text(&p.spots))));
         out.push(("sd:Version", (!p.is_identity()).then(|| "1".to_string())));
         out
     }
@@ -391,7 +398,8 @@ impl Params {
         let crop: Vec<f32> = xmp::get_prop(xml, "sd:Crop")
             .map(|s| s.split(',').map(|x| x.trim().parse().unwrap_or(f32::NAN)).collect())
             .unwrap_or_default();
-        let p = Params::from_values(v, curve, hsl, crop).clamped();
+        let spots = xmp::get_prop(xml, "sd:Spots").map(|t| crate::heal::from_text(&t)).unwrap_or_default();
+        let p = Params::from_values(v, curve, hsl, crop, spots).clamped();
         (!p.is_identity()).then_some(p)
     }
 }
@@ -583,7 +591,11 @@ pub fn apply(img: DynamicImage, p: &Params) -> DynamicImage {
         return img;
     }
     let mut rgb = img.to_rgb8();
-    // 先裁切（像素少、算得快；與畫面預覽相同：先取樣再調色）
+    // 修補在最前面（作用在原圖上，與 Camera Raw 相同）
+    if !p.spots.is_empty() {
+        crate::heal::apply_spots(&mut rgb, &p.spots);
+    }
+    // 再裁切（像素少、算得快；與畫面預覽相同：先取樣再調色）
     let crop = clean_crop(&p.crop);
     if !crop.is_empty() {
         rgb = crop_rgb(&rgb, &crop);
@@ -636,7 +648,7 @@ mod tests {
         for (field, amt) in [(3, 100.0), (3, -100.0), (4, -100.0), (4, 100.0), (5, 100.0), (5, -100.0), (6, 100.0), (7, -100.0)] {
             let mut v = [0f32; 10];
             v[field] = amt;
-            let p = Params::from_values(v, vec![], vec![], vec![]);
+            let p = Params::from_values(v, vec![], vec![], vec![], vec![]);
             let mut prev = -1.0;
             for i in 0..=200 {
                 let y = tone(i as f32 / 200.0, &p);
