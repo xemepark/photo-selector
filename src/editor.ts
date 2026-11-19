@@ -56,7 +56,8 @@ function normHsl(h: unknown): number[] {
   return v;
 }
 const hslActive = (h: number[]) => h.some((x) => Math.abs(x) > 1e-4);
-const EYEDROPPER = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M13.6 2.4a2 2 0 0 0-2.8 0L9.3 3.9l-.7-.7-1 1 .7.7-5.5 5.5a1.6 1.6 0 0 0-.4.7l-.6 2.3a.6.6 0 0 0 .8.8l2.3-.6c.3-.1.5-.2.7-.4L11.1 8l.7.7 1-1-.7-.7 1.5-1.5a2 2 0 0 0 0-2.8zM4 12.9l-1.3.4.4-1.3L8.6 6.4l.9.9z"/></svg>`;
+const RESET_ICON = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M3.2 8a4.8 4.8 0 1 0 1.5-3.5"/><path fill="currentColor" d="M2 1.8v4.4h4.4z"/></svg>`;
+const EYEDROPPER = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M13.6 2.4a2 2 0 0 0-2.8 0L9.3 3.9l-.7-.7-1 1 .7.7-5.5 5.5a1.6 1.6 0 0 0-.4.7l-.6 2.3a.6.6 0 0 0 .8.8l2.3-.6c.3-.1.5-.2.7-.4L11.1 8l.7.7 1-1-.7-.7 1.5-1.5a2 2 0 0 0 0-2.8zM4 12.9l-1.3.4.4-1.3L8.6 6.4l.9.9z"/></svg>`;
 const toLinJs = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
 const toSrgbJs = (c: number) => {
   c = Math.min(1, Math.max(0, c));
@@ -103,7 +104,8 @@ const LABEL_OF: Record<SyncKey, string> = {
   hsl: "HSL",
 };
 const SYNC_GROUPS: { group: string; keys: SyncKey[] }[] = [
-  ...GROUPS.map((g) => ({ group: g.group, keys: [...g.items.map((s) => s.key), ...(g.group === "顏色" ? ["hsl"] : [])] as SyncKey[] })),
+  ...GROUPS.map((g) => ({ group: g.group, keys: g.items.map((s) => s.key) as SyncKey[] })),
+  { group: "HSL", keys: ["hsl"] },
   { group: "曲線", keys: ["curve"] },
 ];
 
@@ -136,9 +138,9 @@ function loadSyncFields(): string[] {
 }
 
 /** 調整面板各區塊的收合狀態（true = 收合），下次開啟沿用 */
-type Sec = "basic" | "color" | "curve";
+type Sec = "basic" | "color" | "hsl" | "curve";
 function loadCollapsed(): Record<Sec, boolean> {
-  const d = { basic: false, color: false, curve: false };
+  const d = { basic: false, color: false, hsl: false, curve: false };
   try {
     const v = JSON.parse(localStorage.getItem("editCollapsed") ?? "null");
     if (v && typeof v === "object") for (const k of Object.keys(d) as Sec[]) d[k] = v[k] === true;
@@ -427,20 +429,23 @@ export class Editor {
     this.canvas.addEventListener("pointermove", (e) => this.toolMove(e));
     this.canvas.addEventListener("pointerup", (e) => this.toolUp(e));
     this.canvas.addEventListener("pointercancel", (e) => this.toolUp(e));
-    this.q("#ed-hsl-reset").addEventListener("click", () => {
-      this.p.hsl = zeroHsl();
-      this.syncInputs();
-      if (this.bypass) this.setBefore(false);
-      this.draw();
-    });
-    this.q("#ed-curve-reset").addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.p.curve = [];
-      this.curveEd.set([]);
-      this.updateLut();
-      this.markChanged();
-      this.draw();
-    });
+    // 各區塊的重設按鈕
+    this.el.querySelectorAll<HTMLElement>("[data-sec-reset]").forEach((b) =>
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const k = b.dataset.secReset as Sec;
+        if (k === "basic" || k === "color") for (const it of GROUPS[k === "basic" ? 0 : 1].items) this.p[it.key] = 0;
+        if (k === "hsl") this.p.hsl = zeroHsl();
+        if (k === "curve") {
+          this.p.curve = [];
+          this.curveEd.set([]);
+          this.updateLut();
+        }
+        this.syncInputs();
+        if (this.bypass) this.setBefore(false);
+        this.draw();
+      }),
+    );
     this.q("#ed-before").addEventListener("click", () => this.toggleBefore());
     this.q("#ed-prev").addEventListener("click", () => void this.goto(this.pos - 1));
     this.q("#ed-next").addEventListener("click", () => void this.goto(this.pos + 1));
@@ -513,9 +518,8 @@ export class Editor {
         )
         .join("")}</div>`;
     const light = rowsOf(GROUPS[0]);
-    const color = `<div class="ed-pickrow"><button id="ed-wb-pick" class="ed-pick" title="白平衡滴管（I）：點選照片中應該是白色或灰色的地方，自動設定色溫與色調">${EYEDROPPER} 白平衡滴管</button></div>${rowsOf(GROUPS[1])}`;
+    const color = rowsOf(GROUPS[1]);
     const hsl = `<div class="ed-hsl">
-        <div class="ed-hsl-head"><span>HSL</span><button id="ed-hsl-pick" class="ed-pick" title="目標調整滴管（T）：在照片上按住某個顏色上下拖曳，調整目前分頁中那個顏色">${EYEDROPPER} 目標調整</button><button id="ed-hsl-reset" class="link" title="HSL 全部恢復為 0">重設 HSL</button></div>
         <div class="ed-tabs">${HSL_TABS.map((t, i) => `<button data-hsl-tab="${i}">${t}</button>`).join("")}</div>
         ${BANDS.map(
           (b, i) => `<div class="ed-row">
@@ -552,19 +556,28 @@ export class Editor {
           <section class="ed-sec" data-sec="basic">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
               <span class="ed-chev">▾</span><span class="ed-sec-title">亮度</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button class="ed-ib" data-sec-reset="basic" title="重設亮度">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">${light}</div>
           </section>
           <section class="ed-sec" data-sec="color">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
               <span class="ed-chev">▾</span><span class="ed-sec-title">顏色</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button id="ed-wb-pick" class="ed-ib" title="白平衡滴管（I）：點選照片中應該是白色或灰色的地方，自動設定色溫與色調">${EYEDROPPER}</button><button class="ed-ib" data-sec-reset="color" title="重設顏色">${RESET_ICON}</button>
             </div>
-            <div class="ed-sec-body">${color}${hsl}</div>
+            <div class="ed-sec-body">${color}</div>
+          </section>
+          <section class="ed-sec" data-sec="hsl">
+            <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
+              <span class="ed-chev">▾</span><span class="ed-sec-title">HSL</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button id="ed-hsl-pick" class="ed-ib" title="目標調整滴管（T）：在照片上按住某個顏色上下拖曳，調整目前分頁中那個顏色">${EYEDROPPER}</button><button class="ed-ib" data-sec-reset="hsl" title="重設HSL">${RESET_ICON}</button>
+            </div>
+            <div class="ed-sec-body">${hsl}</div>
           </section>
           <section class="ed-sec" data-sec="curve">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
               <span class="ed-chev">▾</span><span class="ed-sec-title">曲線</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
-              <button id="ed-curve-reset" class="link" title="恢復成直線">重設曲線</button>
+              <button class="ed-ib" data-sec-reset="curve" title="重設曲線">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">
               <canvas id="ed-curve" class="ed-curve"></canvas>
@@ -1038,8 +1051,8 @@ export class Editor {
     this.q("#ed-hsl-pick").classList.toggle("active", this.tool === "hsl");
     this.canvas.style.cursor = this.tool ? "crosshair" : "";
     if (this.tool) {
-      // 確認「顏色」區塊是展開的，看得到數值變化
-      const sec = this.q('[data-sec="color"]');
+      // 確認對應的區塊是展開的，看得到數值變化
+      const sec = this.q(`[data-sec="${this.tool === "wb" ? "color" : "hsl"}"]`);
       if (sec.classList.contains("collapsed")) (sec.querySelector(".ed-sec-head") as HTMLElement).click();
     }
     this.hint(
@@ -1224,14 +1237,14 @@ export class Editor {
   }
 
   private markChanged() {
-    const curved = cleanCurve(this.p.curve).length > 0;
-    this.q("#ed-curve-reset").classList.toggle("changed", curved);
-    this.q('[data-sec="curve"]').classList.toggle("has-changes", curved);
     const any = (keys: NumKey[]) => keys.some((k) => Math.abs(this.p[k]) > 1e-4);
-    const hslOn = hslActive(normHsl(this.p.hsl));
-    this.q("#ed-hsl-reset").classList.toggle("changed", hslOn);
-    this.q('[data-sec="basic"]').classList.toggle("has-changes", any(GROUPS[0].items.map((s) => s.key)));
-    this.q('[data-sec="color"]').classList.toggle("has-changes", any(GROUPS[1].items.map((s) => s.key)) || hslOn);
+    const state: Record<Sec, boolean> = {
+      basic: any(GROUPS[0].items.map((s) => s.key)),
+      color: any(GROUPS[1].items.map((s) => s.key)),
+      hsl: hslActive(normHsl(this.p.hsl)),
+      curve: cleanCurve(this.p.curve).length > 0,
+    };
+    for (const k of Object.keys(state) as Sec[]) this.q(`[data-sec="${k}"]`).classList.toggle("has-changes", state[k]);
   }
 
   private syncInputs(except?: HTMLInputElement) {
