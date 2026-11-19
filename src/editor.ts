@@ -1070,6 +1070,60 @@ export class Editor {
   }
 
   /** 存檔後重新載入縮圖列中這些照片的縮圖 */
+  // ---------------------------------------------------------------- 多張同時調整（仿 Camera Raw）
+  // 縮圖列選了多張時，改了哪個項目就同步寫到其他選取的照片（只寫改過的項目，其他保留各自的值），
+  // 停下來約 0.35 秒後寫檔並更新它們的縮圖。按「取消」會把其他照片還原成開啟前的設定。
+
+  /** 上次比對時的設定（找出這次改了哪些項目） */
+  private lastP: EditParams | null = null;
+  private multiFields = new Set<string>();
+  private multiTimer = 0;
+  /** 其他照片在這次調整前的設定（取消時還原） */
+  private multiOrig = new Map<number, EditParams>();
+
+  private changedFields(a: EditParams, b: EditParams): string[] {
+    const out: string[] = NUM_KEYS.filter((k) => Math.abs(a[k] - b[k]) > 1e-6);
+    if (!sameCurve(a.curve, b.curve)) out.push("curve");
+    const ha = normHsl(a.hsl);
+    const hb = normHsl(b.hsl);
+    if (ha.some((x, i) => Math.abs(x - hb[i]) > 1e-6)) out.push("hsl");
+    if (!sameCrop(a.crop, b.crop)) out.push("crop");
+    if (JSON.stringify(a.spots ?? []) !== JSON.stringify(b.spots ?? [])) out.push("spots");
+    return out;
+  }
+
+  private checkMulti() {
+    if (!this.isOpen || !this.lastP) return;
+    const changed = this.changedFields(this.lastP, this.p);
+    if (!changed.length) return;
+    this.lastP = clone(this.p);
+    if (this.stripSel.size < 2 || !this.stripSel.has(this.pos)) return;
+    for (const f of changed) this.multiFields.add(f);
+    clearTimeout(this.multiTimer);
+    this.multiTimer = window.setTimeout(() => void this.flushMulti(), 350);
+  }
+
+  private async flushMulti() {
+    const fields = [...this.multiFields];
+    this.multiFields.clear();
+    const others = this.targets.filter((id) => id !== this.item.id);
+    if (!fields.length || !others.length) return;
+    try {
+      // 第一次改到某張時先記下它原本的設定（取消時還原）
+      await Promise.all(
+        others
+          .filter((id) => !this.multiOrig.has(id))
+          .map(async (id) => {
+            const r = await api.getEdit(this.host.session(), id).catch(() => null);
+            this.multiOrig.set(id, clone({ ...ZERO, ...(r ?? {}), curve: (r?.curve ?? []) as Pt[], hsl: normHsl(r?.hsl), crop: normCrop(r?.crop), spots: cleanSpots(r?.spots) }));
+          }),
+      );
+      await this.save(others, clone(this.p), fields);
+    } catch (e) {
+      this.host.toast(`無法同步調整：${e}`);
+    }
+  }
+
   /** 下方縮圖列：目前這張即時顯示調整後的樣子（用算色階分布時讀回的小圖） */
   private stripCanvas: HTMLCanvasElement | null = null;
   private updateStripThumb(px: Uint8Array, w: number, h: number) {
@@ -1088,9 +1142,9 @@ export class Editor {
     cell.src = cv.toDataURL("image/jpeg", 0.85);
   }
 
-  private refreshStrip(ids: number[]) {
-    // 確定後端把縮圖列的照片當成可見（不會被取消）
-    void api.setViewport(this.host.session(), this.list.map((it) => it.id)).catch(() => {});
+  private async refreshStrip(ids: number[]) {
+    // 確定後端把縮圖列的照片當成可見（不會被取消），再重新載入縮圖
+    await api.setViewport(this.host.session(), this.list.map((it) => it.id)).catch(() => {});
     const set = new Set(ids);
     this.q("#ed-strip")
       .querySelectorAll<HTMLElement>(".ed-thumb")
@@ -1198,6 +1252,7 @@ export class Editor {
       this.saved = clone(ZERO);
     }
     this.p = clone(this.saved);
+    this.lastP = clone(this.p);
     this.curveEd.set(this.p.curve);
     this.updateLut();
     this.syncInputs();
@@ -1272,6 +1327,7 @@ export class Editor {
   }
 
   private draw() {
+    this.checkMulti();
     cancelAnimationFrame(this.raf);
     this.raf = requestAnimationFrame(() => {
       this.render();
@@ -2711,7 +2767,7 @@ export class Editor {
     const r = await api.saveEdit(this.host.session(), ids, send, fields);
     if (r.failed.length) this.host.toast(`有 ${r.failed.length} 張無法儲存調整：${r.failed[0]}`);
     this.host.saved(r.edited);
-    this.refreshStrip(ids);
+    await this.refreshStrip(ids.filter((id) => id !== this.item.id || !this.isOpen));
   }
 
   /** 有改過才存 */
@@ -2725,6 +2781,10 @@ export class Editor {
 
   async goto(next: number) {
     if (next < 0 || next >= this.list.length || next === this.pos) return;
+    if (this.multiFields.size) {
+      clearTimeout(this.multiTimer);
+      await this.flushMulti();
+    }
     try {
       await this.saveCurrent();
     } catch (e) {
@@ -2798,6 +2858,18 @@ export class Editor {
   }
 
   async close(save: boolean) {
+    clearTimeout(this.multiTimer);
+    if (save && this.multiFields.size) await this.flushMulti();
+    this.multiFields.clear();
+    if (!save && this.multiOrig.size) {
+      // 取消：把同步改過的其他照片還原
+      for (const [id, orig] of this.multiOrig) {
+        if (id === this.item.id) continue;
+        await this.save([id], orig).catch(() => {});
+      }
+    }
+    this.multiOrig.clear();
+    this.lastP = null;
     if (save) {
       try {
         await this.saveCurrent();
