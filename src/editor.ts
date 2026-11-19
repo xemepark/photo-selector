@@ -2851,7 +2851,7 @@ export class Editor {
       const all = fields.length === SYNC_KEYS.length;
       await this.save(others, clone(this.p), all ? null : fields);
       const names = fields.map((f) => LABEL_OF[f as SyncKey]).join("、");
-      this.host.toast(all ? `已把全部調整套用到 ${ids.length} 張照片` : `已把「${names}」套用到 ${ids.length} 張照片，其他設定保留各自的值`);
+      void names; // 不顯示完成訊息（縮圖會直接更新）
     } catch (e) {
       this.host.toast(`無法套用：${e}`);
     }
