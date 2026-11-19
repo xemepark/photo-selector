@@ -84,6 +84,27 @@ function loadSyncFields(): string[] {
   return [...SYNC_KEYS];
 }
 
+/** 調整面板各區塊的收合狀態（true = 收合），下次開啟沿用 */
+type Sec = "basic" | "curve";
+function loadCollapsed(): Record<Sec, boolean> {
+  const d = { basic: false, curve: false };
+  try {
+    const v = JSON.parse(localStorage.getItem("editCollapsed") ?? "null");
+    if (v && typeof v === "object") for (const k of Object.keys(d) as Sec[]) d[k] = v[k] === true;
+  } catch {
+    /* ignore */
+  }
+  return d;
+}
+
+function saveCollapsed(c: Record<Sec, boolean>) {
+  try {
+    localStorage.setItem("editCollapsed", JSON.stringify(c));
+  } catch {
+    /* ignore */
+  }
+}
+
 function saveSyncFields(f: string[]) {
   try {
     localStorage.setItem("editSyncFields", JSON.stringify(f));
@@ -247,7 +268,32 @@ export class Editor {
       this.syncInputs();
       this.draw();
     });
-    this.q("#ed-curve-reset").addEventListener("click", () => {
+    // 區塊收合：狀態記在 localStorage，下次開啟沿用（色階分布圖不收合）
+    const collapsed = loadCollapsed();
+    this.el.querySelectorAll<HTMLElement>(".ed-sec").forEach((sec) => {
+      const k = sec.dataset.sec as Sec;
+      sec.classList.toggle("collapsed", collapsed[k]);
+      const head = sec.querySelector<HTMLElement>(".ed-sec-head")!;
+      const toggle = () => {
+        collapsed[k] = !sec.classList.contains("collapsed");
+        sec.classList.toggle("collapsed", collapsed[k]);
+        saveCollapsed(collapsed);
+        if (!collapsed[k] && k === "curve") this.curveEd.draw();
+      };
+      head.addEventListener("click", (e) => {
+        if ((e.target as HTMLElement).closest("button")) return;
+        toggle();
+      });
+      head.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          toggle();
+        }
+      });
+    });
+    this.q("#ed-curve-reset").addEventListener("click", (e) => {
+      e.stopPropagation();
       this.p.curve = [];
       this.curveEd.set([]);
       this.updateLut();
@@ -350,12 +396,22 @@ export class Editor {
           <button id="ed-next" title="下一張（→）">›</button>
         </div>
         <div class="ed-scroll">
-          ${rows}
-          <div class="ed-group">
-            <h4>曲線 <button id="ed-curve-reset" class="link" title="恢復成直線">重設曲線</button></h4>
-            <canvas id="ed-curve" class="ed-curve"></canvas>
-            <div id="ed-curve-info" class="muted small ed-curve-info"></div>
-          </div>
+          <section class="ed-sec" data-sec="basic">
+            <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
+              <span class="ed-chev">▾</span><span class="ed-sec-title">基本調整</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+            </div>
+            <div class="ed-sec-body">${rows}</div>
+          </section>
+          <section class="ed-sec" data-sec="curve">
+            <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
+              <span class="ed-chev">▾</span><span class="ed-sec-title">曲線</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button id="ed-curve-reset" class="link" title="恢復成直線">重設曲線</button>
+            </div>
+            <div class="ed-sec-body">
+              <canvas id="ed-curve" class="ed-curve"></canvas>
+              <div id="ed-curve-info" class="muted small ed-curve-info"></div>
+            </div>
+          </section>
           <div class="ed-tools">
             <button id="ed-before" title="按 \\ 切換調整前 / 調整後">調整前 / 後（\\）</button>
             <button id="ed-reset" title="全部恢復為 0">全部重設</button>
@@ -807,7 +863,10 @@ export class Editor {
   }
 
   private markChanged() {
-    this.q("#ed-curve-reset").classList.toggle("changed", cleanCurve(this.p.curve).length > 0);
+    const curved = cleanCurve(this.p.curve).length > 0;
+    this.q("#ed-curve-reset").classList.toggle("changed", curved);
+    this.q('[data-sec="curve"]').classList.toggle("has-changes", curved);
+    this.q('[data-sec="basic"]').classList.toggle("has-changes", NUM_KEYS.some((k) => Math.abs(this.p[k]) > 1e-4));
   }
 
   private syncInputs(except?: HTMLInputElement) {
