@@ -141,6 +141,60 @@ pub fn mtime_ms(md: &fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
+/// 加入時間（毫秒）：macOS 的「加入日期」（檔案放進這個資料夾的時間，Finder 同一欄）；
+/// 取不到時用建立時間，再取不到用修改時間
+pub fn added_ms(path: &Path) -> i64 {
+    #[cfg(target_os = "macos")]
+    if let Some(t) = mac_added_time(path) {
+        return t;
+    }
+    let md = match fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    md.created()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_else(|| mtime_ms(&md))
+}
+
+#[cfg(target_os = "macos")]
+fn mac_added_time(path: &Path) -> Option<i64> {
+    use std::os::unix::ffi::OsStrExt;
+    #[repr(C)]
+    struct AttrList {
+        bitmapcount: u16,
+        reserved: u16,
+        commonattr: u32,
+        volattr: u32,
+        dirattr: u32,
+        fileattr: u32,
+        forkattr: u32,
+    }
+    extern "C" {
+        fn getattrlist(path: *const libc::c_char, list: *mut AttrList, buf: *mut libc::c_void, size: libc::size_t, options: libc::c_ulong) -> libc::c_int;
+    }
+    const ATTR_CMN_RETURNED_ATTRS: u32 = 0x8000_0000;
+    const ATTR_CMN_ADDEDTIME: u32 = 0x1000_0000;
+    const FSOPT_NOFOLLOW: libc::c_ulong = 1;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut list = AttrList { bitmapcount: 5, reserved: 0, commonattr: ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_ADDEDTIME, volattr: 0, dirattr: 0, fileattr: 0, forkattr: 0 };
+    // 回傳：u32 長度、attribute_set_t（5 × u32）、timespec（有回傳時）
+    let mut buf = [0u8; 64];
+    let r = unsafe { getattrlist(c.as_ptr(), &mut list, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), FSOPT_NOFOLLOW) };
+    if r != 0 {
+        return None;
+    }
+    let returned = u32::from_ne_bytes(buf[4..8].try_into().ok()?);
+    if returned & ATTR_CMN_ADDEDTIME == 0 {
+        return None;
+    }
+    let sec = i64::from_ne_bytes(buf[24..32].try_into().ok()?);
+    let nsec = i64::from_ne_bytes(buf[32..40].try_into().ok()?);
+    (sec > 0).then(|| sec * 1000 + nsec / 1_000_000)
+}
+
 pub fn scan_dir(dir: &Path) -> io::Result<(Vec<Item>, Vec<DirInfo>)> {
     let mut groups: HashMap<String, Vec<FileEntry>> = HashMap::new();
     let mut sidecars: HashMap<String, PathBuf> = HashMap::new();

@@ -37,6 +37,8 @@ struct ItemDto {
     files: Vec<String>,
     size: u64,
     mtime: i64,
+    /// 加入時間（macOS 加入日期；其他系統為建立時間）
+    added: i64,
 }
 
 #[derive(Serialize)]
@@ -97,6 +99,7 @@ async fn open_folder(app: AppHandle, core: CoreState<'_>, path: String) -> Resul
             files: it.files.iter().map(|f| f.name.clone()).collect(),
             size: it.files.iter().map(|f| f.size).sum(),
             mtime: it.files.iter().map(|f| f.mtime).max().unwrap_or(0),
+            added: it.files.iter().map(|f| scan::added_ms(&f.path)).max().unwrap_or(0),
         })
         .collect();
     let sess = core.new_session(items);

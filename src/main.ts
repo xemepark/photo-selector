@@ -284,6 +284,8 @@ function sortValue(it: Item): number | string {
       return m?.capture ?? new Date(it.mtime).toISOString().replace("T", " ");
     case "mtime":
       return it.mtime;
+    case "added":
+      return it.added ?? it.mtime;
     case "rating":
       return m?.rating ?? 0;
     case "size":

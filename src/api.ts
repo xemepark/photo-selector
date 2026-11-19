@@ -9,6 +9,8 @@ export interface Item {
   files: string[];
   size: number;
   mtime: number;
+  /** 加入時間（毫秒） */
+  added?: number;
 }
 
 export interface Meta {
