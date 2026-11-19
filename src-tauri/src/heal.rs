@@ -208,10 +208,12 @@ fn apply_spot(img: &mut RgbImage, s: &Spot) {
             }
         }
     }
-    if s.m == 0 {
+    // 移除：平常和修復一樣（自動來源 + 融合）；offset 為 0（找不到來源）時從兩側鏡射補
+    let mirror = s.m == 0 && px.ox == 0 && px.oy == 0;
+    if mirror {
         mirror_fill(img, &alpha, (bx0, by0, bwu, bhu), &mut src, &dst);
     }
-    let corr = if s.m == 1 { Some(Correction::new(&dst, &src, &alpha, bwu, bhu)) } else { None };
+    let corr = if s.m != 2 && !mirror { Some(Correction::new(&dst, &src, &alpha, bwu, bhu)) } else { None };
     for y in 0..bhu {
         for x in 0..bwu {
             let j = y * bwu + x;

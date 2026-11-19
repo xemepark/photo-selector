@@ -3,7 +3,7 @@
 // - 仿製：直接把來源蓋上去（依羽化與不透明度混合）
 // - 修復 / 移除：來源的紋理 + 平滑的修正量（在粗網格上解 Laplace 方程式，邊界 = 目的地與來源的差），
 //   讓顏色與明暗跟周圍自然接上
-// - 移除：不需要來源，從範圍兩側（左右或上下，取較窄的方向）鏡射取像素混合補上
+// - 移除：自動在周圍找最吻合的區域（左右優先）補上並融合，不顯示來源；找不到時從兩側鏡射補
 // - 修復與仿製在建立時自動找來源，之後可以拖曳換來源
 // 座標存成相對值：點與 offset 相對原圖寬高，半徑相對長邊。
 
@@ -146,8 +146,11 @@ function applySpot(img: ImageData, s: Spot) {
       }
     }
   }
-  if (s.m === 0) mirrorFill(data, W, H, alpha, b, src, dst);
-  const corr = s.m === 1 ? correction(dst, src, alpha, bw, bh) : null;
+  // 移除：平常和修復一樣（自動找到的來源 + 融合，只是不顯示來源）；
+  // 找不到可用的來源時 offset 為 0，改用兩側鏡射補
+  const mirror = s.m === 0 && px.ox === 0 && px.oy === 0;
+  if (mirror) mirrorFill(data, W, H, alpha, b, src, dst);
+  const corr = s.m !== 2 && !mirror ? correction(dst, src, alpha, bw, bh) : null;
   for (let y = 0; y < bh; y++) {
     for (let x = 0; x < bw; x++) {
       const j = y * bw + x;
@@ -378,14 +381,15 @@ export function findSource(img: ImageData, s: Spot): [number, number] {
         }
         n++;
       }
-      // 距離越遠稍微扣分（同樣像時取近的）
-      const score = sc / Math.max(1, n) + (dd / Math.max(1, px.r)) * 2;
+      // 距離越遠稍微扣分（同樣像時取近的）；移除時左右優先於上下
+      const score = sc / Math.max(1, n) + (dd / Math.max(1, px.r)) * 2 + (s.m === 0 ? Math.abs(Math.sin(ang)) * 6 : 0);
       if (score < bestScore) {
         bestScore = score;
         best = [ox, oy];
       }
     }
   }
+  if (!Number.isFinite(bestScore) && s.m === 0) return [0, 0];
   if (!Number.isFinite(bestScore)) {
     // 都放不下（筆刷太大）：往圖中央的方向移
     const cx = (x0 + x1) / 2;

@@ -74,7 +74,7 @@ const ERASER_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden
 const HEAL_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="5" y="0.8" width="6" height="14.4" rx="3" transform="rotate(45 8 8)" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="7" cy="7" r=".8" fill="currentColor"/><circle cx="9" cy="9" r=".8" fill="currentColor"/><circle cx="9" cy="7" r=".8" fill="currentColor"/><circle cx="7" cy="9" r=".8" fill="currentColor"/></svg>`;
 const STAMP_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M6.3 8.5V6.7a1.9 1.9 0 1 1 3.4 0v1.8M2.5 8.5h11v3h-11zM3.5 14h9"/></svg>`;
 const SPOT_TOOLS: { m: SpotMode; label: string; icon: string; tip: string }[] = [
-  { m: 0, label: "移除", icon: ERASER_ICON, tip: "移除：塗抹要去掉的東西，自動用兩側的畫面補上（不需要來源）" },
+  { m: 0, label: "移除", icon: ERASER_ICON, tip: "移除：塗抹要去掉的東西，自動在周圍找最吻合的畫面補上並融合" },
   { m: 1, label: "修復", icon: HEAL_ICON, tip: "修復：用旁邊的紋理覆蓋，顏色與明暗自動跟周圍融合" },
   { m: 2, label: "仿製", icon: STAMP_ICON, tip: "仿製：把來源區域原樣複製過來" },
 ];
@@ -96,6 +96,21 @@ const arrows = (vertical: boolean) =>
   );
 const CUR_UPDOWN = arrows(true);
 const CUR_LEFTRIGHT = arrows(false);
+const iconCache = new Map<string, HTMLImageElement>();
+/** 修補標記用的工具圖示（指定顏色的 SVG 圖片） */
+function spotIcon(m: SpotMode, color: string): HTMLImageElement {
+  const key = `${m}${color}`;
+  let img = iconCache.get(key);
+  if (!img) {
+    const svg = [ERASER_ICON, HEAL_ICON, STAMP_ICON][m]
+      .replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" ')
+      .replace(/currentColor/g, color);
+    img = new Image();
+    img.src = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+    iconCache.set(key, img);
+  }
+  return img;
+}
 const EYEDROPPER = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M13.6 2.4a2 2 0 0 0-2.8 0L9.3 3.9l-.7-.7-1 1 .7.7-5.5 5.5a1.6 1.6 0 0 0-.4.7l-.6 2.3a.6.6 0 0 0 .8.8l2.3-.6c.3-.1.5-.2.7-.4L11.1 8l.7.7 1-1-.7-.7 1.5-1.5a2 2 0 0 0 0-2.8zM4 12.9l-1.3.4.4-1.3L8.6 6.4l.9.9z"/></svg>`;
 const toLinJs = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
 const toSrgbJs = (c: number) => {
@@ -1785,6 +1800,8 @@ export class Editor {
     | { kind: "src" | "dest"; i: number; x: number; y: number; d0: [number, number]; p0: [number, number][] }
     | null = null;
   private lastPtool: SpotMode = 0;
+  private ovTmp: HTMLCanvasElement | null = null;
+  private hoverSpot = -1;
 
   private vizOn() {
     return this.ptool !== null && this.q<HTMLInputElement>("#ed-viz").checked;
@@ -1960,8 +1977,8 @@ export class Editor {
         p: g.pts.map(([x, y]) => [Math.round((x / W) * 100000) / 100000, Math.round((y / H) * 100000) / 100000] as [number, number]),
       };
       this.uploadBase();
-      // 移除不需要來源（從兩側自動補）；修復 / 仿製自動找一個來源，之後可拖曳
-      if (this.baseWork && spot.m !== 0) spot.d = findSource(this.baseWork, spot);
+      // 自動找來源（移除：在周圍找最吻合的區域，不顯示；修復 / 仿製：之後可拖曳換位置）
+      if (this.baseWork) spot.d = findSource(this.baseWork, spot);
       this.p.spots = [...(this.p.spots ?? []), spot];
       this.selSpot = this.p.spots.length - 1;
       this.markChanged();
@@ -1993,59 +2010,110 @@ export class Editor {
       const [fx, fy] = toFrame(f, x, y);
       return [(stage.clientWidth / 2 + fx * v.s) * dpr, (stage.clientHeight / 2 + fy * v.s) * dpr];
     };
-    const stroke = (pts: [number, number][], r: number, color: string) => {
-      const sp = pts.map(([x, y]) => toS(x, y));
-      const rw = r * v.s * dpr;
-      g.fillStyle = color;
-      g.strokeStyle = color;
+    const W = g.canvas.width;
+    const H = g.canvas.height;
+    // 筆刷形狀的「外框線」（仿 Camera Raw：細白線，不填色）：先畫粗線再挖掉內部
+    const tmp = (this.ovTmp ??= document.createElement("canvas"));
+    if (tmp.width !== W || tmp.height !== H) {
+      tmp.width = W;
+      tmp.height = H;
+    }
+    const tg = tmp.getContext("2d")!;
+    const path = (c: CanvasRenderingContext2D, sp: [number, number][], rw: number, width: number) => {
+      c.lineCap = "round";
+      c.lineJoin = "round";
+      c.lineWidth = width;
+      c.beginPath();
       if (sp.length === 1) {
-        g.beginPath();
-        g.arc(sp[0][0], sp[0][1], rw, 0, Math.PI * 2);
-        g.fill();
-        return sp[0];
-      }
-      g.lineWidth = rw * 2;
-      g.lineCap = "round";
-      g.lineJoin = "round";
-      g.beginPath();
-      sp.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
-      g.stroke();
-      return sp[0];
+        c.moveTo(sp[0][0] - 0.01, sp[0][1]);
+        c.lineTo(sp[0][0] + 0.01, sp[0][1]);
+      } else sp.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y)));
+      c.stroke();
+      void rw;
     };
-    const pin = (x: number, y: number, fill: string) => {
+    const outline = (pts: [number, number][], r: number, color: string, fill?: string) => {
+      const sp = pts.map(([x, y]) => toS(x, y));
+      const rw = Math.max(1, r * v.s * dpr);
+      const lw = 1.5 * dpr;
+      tg.clearRect(0, 0, W, H);
+      tg.globalCompositeOperation = "source-over";
+      tg.strokeStyle = "#000";
+      path(tg, sp, rw, rw * 2 + lw * 3);
+      tg.strokeStyle = color;
+      path(tg, sp, rw, rw * 2 + lw * 2);
+      tg.globalCompositeOperation = "destination-out";
+      tg.strokeStyle = "#000";
+      path(tg, sp, rw, rw * 2);
+      tg.globalCompositeOperation = "source-over";
+      if (fill) {
+        tg.strokeStyle = fill;
+        path(tg, sp, rw, rw * 2);
+      }
+      g.drawImage(tmp, 0, 0);
+      return sp;
+    };
+    // 標記：小圓章裡畫工具圖示（移除 = 橡皮擦、修復 = OK 繃、仿製 = 印章）
+    const pin = (x: number, y: number, m: SpotMode, active: boolean) => {
+      const rr = 8.5 * dpr;
       g.beginPath();
-      g.arc(x, y, 4.5 * dpr, 0, Math.PI * 2);
-      g.fillStyle = fill;
+      g.arc(x, y, rr, 0, Math.PI * 2);
+      g.fillStyle = active ? "#f5b33a" : "rgba(30,30,34,0.85)";
       g.fill();
-      g.lineWidth = 1.5 * dpr;
-      g.strokeStyle = "#000a";
+      g.lineWidth = 1.2 * dpr;
+      g.strokeStyle = "#fff";
       g.stroke();
+      const img = spotIcon(m, active ? "#1a1a1a" : "#fff");
+      if (img.complete) g.drawImage(img, x - 6 * dpr, y - 6 * dpr, 12 * dpr, 12 * dpr);
+      else img.onload = () => this.drawOverlay();
+    };
+    /** 標記放在筆刷路徑起點的右上方 */
+    const pinAt = (sp: [number, number][], r: number): [number, number] => {
+      const rw = r * v.s * dpr;
+      return [sp[0][0] + rw * 0.7, sp[0][1] - rw * 0.7];
     };
     const show = this.q<HTMLInputElement>("#ed-ov-show").checked;
+    // 滑鼠下的修補（顯示外框）
+    let hover = -1;
+    if (this.phover && !this.pdrag) {
+      const [hx, hy] = this.screenToImg(this.phover.x, this.phover.y);
+      const spots = this.p.spots ?? [];
+      for (let i = spots.length - 1; i >= 0; i--) {
+        const q = this.spotPx(spots[i], false);
+        if (distToStroke(q.pts, hx, hy) <= q.r) {
+          hover = i;
+          break;
+        }
+      }
+    }
+    this.hoverSpot = hover;
+    // 滑到已有的修補上：顯示移動游標（可以點選 / 拖曳），否則顯示筆刷圈
+    this.overlay.style.cursor = hover >= 0 ? "move" : "none";
     (this.p.spots ?? []).forEach((s, i) => {
       const sel = i === this.selSpot;
       if (!show && !sel) return;
       const dst = this.spotPx(s, false);
-      const a = stroke(dst.pts, dst.r, sel ? "rgba(255,255,255,0.32)" : "rgba(255,255,255,0.16)");
+      const sp = dst.pts.map(([x, y]) => toS(x, y));
+      if (sel || i === hover) outline(dst.pts, dst.r, "#fff");
       if (sel && s.m !== 0) {
+        // 修復 / 仿製：來源外框（黃）與連線
         const src = this.spotPx(s, true);
-        const b = stroke(src.pts, src.r, "rgba(245,179,58,0.30)");
+        const ss = outline(src.pts, src.r, "#f5b33a");
         g.setLineDash([4 * dpr, 4 * dpr]);
-        g.lineWidth = 1.5 * dpr;
+        g.lineWidth = 1.2 * dpr;
         g.strokeStyle = "#f5b33a";
         g.beginPath();
-        g.moveTo(a[0], a[1]);
-        g.lineTo(b[0], b[1]);
+        g.moveTo(sp[0][0], sp[0][1]);
+        g.lineTo(ss[0][0], ss[0][1]);
         g.stroke();
         g.setLineDash([]);
-        pin(b[0], b[1], "#f5b33a");
       }
-      pin(a[0], a[1], sel ? "#fff" : "#ffffff99");
+      const [px, py] = pinAt(sp, dst.r);
+      pin(px, py, s.m, sel);
     });
     const d = this.pdrag;
-    if (d?.kind === "paint") stroke(d.pts, this.brushR(), "rgba(255,255,255,0.35)");
+    if (d?.kind === "paint") outline(d.pts, this.brushR(), "#fff", "rgba(255,255,255,0.18)");
     // 筆刷游標（外圈 = 大小，內圈 = 羽化開始的地方）
-    if (this.phover && (!d || d.kind === "paint")) {
+    if (this.phover && (!d || d.kind === "paint") && (this.hoverSpot < 0 || d?.kind === "paint")) {
       const r = stage.getBoundingClientRect();
       const cx = (this.phover.x - r.left) * dpr;
       const cy = (this.phover.y - r.top) * dpr;
