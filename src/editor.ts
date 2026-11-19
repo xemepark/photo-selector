@@ -8,7 +8,7 @@
 
 import { api, url, Item, EditParams } from "./api";
 import { CurveEditor, Pt, cleanCurve, curveLut, sameCurve } from "./curve";
-import { MAX_SPOT_POINTS, Spot, SpotMode, applySpots, cleanSpots, distToStroke, findSource } from "./heal";
+import { MAX_SPOT_POINTS, Spot, SpotMode, applySpots, cleanSpots, distToStroke, findSource, outerR } from "./heal";
 import { Crop, MAX_ANGLE, RATIOS, bboxFrame, bisect, fits, fitted, fromNorm, fullCrop, largestAt, toFrame, toImg, toNorm } from "./crop";
 
 type NumKey = Exclude<keyof EditParams, "curve" | "hsl" | "crop" | "spots">;
@@ -74,10 +74,28 @@ const ERASER_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden
 const HEAL_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="5" y="0.8" width="6" height="14.4" rx="3" transform="rotate(45 8 8)" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="7" cy="7" r=".8" fill="currentColor"/><circle cx="9" cy="9" r=".8" fill="currentColor"/><circle cx="9" cy="7" r=".8" fill="currentColor"/><circle cx="7" cy="9" r=".8" fill="currentColor"/></svg>`;
 const STAMP_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M6.3 8.5V6.7a1.9 1.9 0 1 1 3.4 0v1.8M2.5 8.5h11v3h-11zM3.5 14h9"/></svg>`;
 const SPOT_TOOLS: { m: SpotMode; label: string; icon: string; tip: string }[] = [
-  { m: 0, label: "移除", icon: ERASER_ICON, tip: "移除：塗抹要去掉的東西，自動找最相似的區域補上並融合" },
+  { m: 0, label: "移除", icon: ERASER_ICON, tip: "移除：塗抹要去掉的東西，自動用兩側的畫面補上（不需要來源）" },
   { m: 1, label: "修復", icon: HEAL_ICON, tip: "修復：用旁邊的紋理覆蓋，顏色與明暗自動跟周圍融合" },
   { m: 2, label: "仿製", icon: STAMP_ICON, tip: "仿製：把來源區域原樣複製過來" },
 ];
+/** 自訂游標（SVG）：白平衡 = 滴管、曲線 = 上下箭頭、HSL = 左右箭頭 */
+const svgCursor = (svg: string, x: number, y: number, fallback: string) =>
+  `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}") ${x} ${y}, ${fallback}`;
+const CUR_DROPPER = svgCursor(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22"><path d="M18.6 3.4a2.4 2.4 0 0 0-3.4 0l-2 2-1-1-1.4 1.4 1 1-7.6 7.6c-.3.3-.5.6-.6 1l-.8 3.1c-.1.5.3.9.8.8l3.1-.8c.4-.1.7-.3 1-.6l7.6-7.6 1 1 1.4-1.4-1-1 2-2a2.4 2.4 0 0 0 0-3.4z" fill="#fff" stroke="#000" stroke-width="1.2"/></svg>`,
+  2,
+  20,
+  "crosshair",
+);
+const arrows = (vertical: boolean) =>
+  svgCursor(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g transform="rotate(${vertical ? 0 : 90} 12 12)" stroke="#000" stroke-width="1.2" fill="#fff" stroke-linejoin="round"><path d="M12 1.5 16.5 7h-3v3.2h-3V7h-3z"/><path d="M12 22.5 7.5 17h3v-3.2h3V17h3z"/></g><circle cx="12" cy="12" r="1.8" fill="#fff" stroke="#000" stroke-width="1"/></svg>`,
+    12,
+    12,
+    vertical ? "ns-resize" : "ew-resize",
+  );
+const CUR_UPDOWN = arrows(true);
+const CUR_LEFTRIGHT = arrows(false);
 const EYEDROPPER = `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M13.6 2.4a2 2 0 0 0-2.8 0L9.3 3.9l-.7-.7-1 1 .7.7-5.5 5.5a1.6 1.6 0 0 0-.4.7l-.6 2.3a.6.6 0 0 0 .8.8l2.3-.6c.3-.1.5-.2.7-.4L11.1 8l.7.7 1-1-.7-.7 1.5-1.5a2 2 0 0 0 0-2.8zM4 12.9l-1.3.4.4-1.3L8.6 6.4l.9.9z"/></svg>`;
 const toLinJs = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
 const toSrgbJs = (c: number) => {
@@ -584,6 +602,7 @@ export class Editor {
     });
     this.q("#ed-wb-pick").addEventListener("click", () => this.setTool("wb"));
     this.q("#ed-hsl-pick").addEventListener("click", () => this.setTool("hsl"));
+    this.q("#ed-curve-pick").addEventListener("click", () => this.setTool("curve"));
     this.canvas.addEventListener("pointerdown", (e) => this.toolDown(e));
     this.canvas.addEventListener("pointermove", (e) => this.toolMove(e));
     this.canvas.addEventListener("pointerup", (e) => this.toolUp(e));
@@ -700,7 +719,7 @@ export class Editor {
         ${brushRow("opacity", "不透明度", 1, 100)}
         <label class="check small"><input type="checkbox" id="ed-ov-show" checked /> 顯示疊加（修補範圍與來源）</label>
         <div class="ed-crop-row"><label class="check small"><input type="checkbox" id="ed-viz" /> 顯現汙點</label><input type="range" id="ed-viz-amt" min="1" max="100" value="40" /></div>
-        <div class="muted small ed-crop-tip">B 開始修補 · 在照片上塗抹要處理的地方 · 拖曳黃色來源換位置、拖曳白色範圍移動 · Delete 刪除選取 · ⌘Z 復原 · [ ] 調整大小</div>
+        <div class="muted small ed-crop-tip">B 開始修補 · 在照片上塗抹要處理的地方 · 拖曳白色範圍移動、修復 / 仿製可拖曳黃色來源換位置 · Delete 刪除選取 · ⌘Z 復原 · [ ] 調整大小</div>
       </div>`;
     const crop = `<div class="ed-crop">
         <div class="ed-crop-row">
@@ -787,6 +806,7 @@ export class Editor {
           <section class="ed-sec" data-sec="curve">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
               <span class="ed-chev">▾</span><span class="ed-sec-title">曲線</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button id="ed-curve-pick" class="ed-ib" title="曲線目標調整：在照片上按住某個亮度的地方，往上拖變亮、往下拖變暗">${EYEDROPPER}</button>
               <button class="ed-ib" data-sec-reset="curve" title="重設曲線">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">
@@ -1274,10 +1294,66 @@ export class Editor {
 
   private hslTab = 0;
   /** 滴管工具：wb = 白平衡、hsl = HSL 目標調整 */
-  private tool: "wb" | "hsl" | null = null;
+  private tool: "wb" | "hsl" | "curve" | null = null;
   /** 縮小的原始影像（滴管取色用） */
   private sample: ImageData | null = null;
-  private tdrag: { y: number; i: number; j: number; t: number; start: number[] } | null = null;
+  private tdrag: { x: number; i: number; j: number; t: number; start: number[] } | null = null;
+  /** 曲線目標調整：拖曳中的控制點（輸入值）與起始輸出值 */
+  private cdragCurve: { y: number; px: number; py0: number } | null = null;
+  /** 套用曲線之前的影像（小張），曲線目標調整取「輸入值」用；設定變了就重算 */
+  private preCurve: { key: string; px: Uint8Array; w: number; h: number } | null = null;
+
+  private toolCursor() {
+    return this.tool === "wb" ? CUR_DROPPER : this.tool === "curve" ? CUR_UPDOWN : this.tool === "hsl" ? CUR_LEFTRIGHT : "";
+  }
+
+  /** 滑鼠位置在「套用曲線前」的亮度（0–255，近 3×3 平均）；不在照片上回傳 null */
+  private curveInputAt(e: PointerEvent): number | null {
+    const gl = this.gl;
+    if (!gl || !this.prog || !this.fbo || !this.fboTex || !this.imgW) return null;
+    const f = this.cropFrame();
+    const { curve: _c, ...rest } = this.p;
+    void _c;
+    const key = JSON.stringify([rest, f, this.loadSeq]);
+    if (!this.preCurve || this.preCurve.key !== key) {
+      const long = 384;
+      const sc = long / Math.max(f.w, f.h);
+      const w = Math.max(1, Math.round(f.w * sc));
+      const h = Math.max(1, Math.round(f.h * sc));
+      gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      this.fboW = w;
+      this.fboH = h;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fboTex, 0);
+      gl.viewport(0, 0, w, h);
+      this.setUniforms(1, 1, f, false);
+      gl.uniform1f(gl.getUniformLocation(this.prog, "u_useLut"), 0);
+      gl.uniform1f(gl.getUniformLocation(this.prog, "u_bypass"), 0);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      this.preCurve = { key, px, w, h };
+      this.render();
+    }
+    const pc = this.preCurve;
+    const [fx, fy] = this.screenToFrame(e.clientX, e.clientY);
+    const u = fx / f.w + 0.5;
+    const v = fy / f.h + 0.5;
+    if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+    const cx = Math.min(pc.w - 1, Math.floor(u * pc.w));
+    const cy = Math.min(pc.h - 1, Math.floor((1 - v) * pc.h));
+    let sum = 0;
+    let n = 0;
+    for (let y = Math.max(0, cy - 1); y <= Math.min(pc.h - 1, cy + 1); y++)
+      for (let x = Math.max(0, cx - 1); x <= Math.min(pc.w - 1, cx + 1); x++) {
+        const k = (y * pc.w + x) * 4;
+        sum += (pc.px[k] + pc.px[k + 1] + pc.px[k + 2]) / 3;
+        n++;
+      }
+    return Math.round(sum / n);
+  }
 
   // ---------------------------------------------------------------- 裁切
 
@@ -1805,7 +1881,7 @@ export class Editor {
       return distToStroke(q.pts, x, y) <= Math.max(q.r, 6 / this.view().s);
     };
     let drag: typeof this.pdrag = null;
-    if (this.selSpot >= 0 && spots[this.selSpot] && hitSpot(this.selSpot, true)) {
+    if (this.selSpot >= 0 && spots[this.selSpot] && spots[this.selSpot].m !== 0 && hitSpot(this.selSpot, true)) {
       const s = spots[this.selSpot];
       drag = { kind: "src", i: this.selSpot, x, y, d0: [...s.d], p0: s.p.map((q) => [...q] as [number, number]) };
     } else {
@@ -1884,7 +1960,8 @@ export class Editor {
         p: g.pts.map(([x, y]) => [Math.round((x / W) * 100000) / 100000, Math.round((y / H) * 100000) / 100000] as [number, number]),
       };
       this.uploadBase();
-      if (this.baseWork) spot.d = findSource(this.baseWork, spot);
+      // 移除不需要來源（從兩側自動補）；修復 / 仿製自動找一個來源，之後可拖曳
+      if (this.baseWork && spot.m !== 0) spot.d = findSource(this.baseWork, spot);
       this.p.spots = [...(this.p.spots ?? []), spot];
       this.selSpot = this.p.spots.length - 1;
       this.markChanged();
@@ -1950,7 +2027,7 @@ export class Editor {
       if (!show && !sel) return;
       const dst = this.spotPx(s, false);
       const a = stroke(dst.pts, dst.r, sel ? "rgba(255,255,255,0.32)" : "rgba(255,255,255,0.16)");
-      if (sel) {
+      if (sel && s.m !== 0) {
         const src = this.spotPx(s, true);
         const b = stroke(src.pts, src.r, "rgba(245,179,58,0.30)");
         g.setLineDash([4 * dpr, 4 * dpr]);
@@ -1983,38 +2060,46 @@ export class Editor {
       g.beginPath();
       g.arc(cx, cy, rw + 1.5 * dpr, 0, Math.PI * 2);
       g.stroke();
-      const inner = rw * (1 - this.brush.feather / 100);
-      if (inner > 2 * dpr && inner < rw - 1) {
+      // 羽化：內圈（開始變淡）與外圈（完全透明）
+      const fe = this.brush.feather / 100;
+      if (fe > 0.01) {
         g.setLineDash([3 * dpr, 3 * dpr]);
         g.strokeStyle = "#ffffffaa";
-        g.beginPath();
-        g.arc(cx, cy, inner, 0, Math.PI * 2);
-        g.stroke();
+        for (const rr of [rw * (1 - fe), outerR(rw, fe)]) {
+          if (rr < 2 * dpr) continue;
+          g.beginPath();
+          g.arc(cx, cy, rr, 0, Math.PI * 2);
+          g.stroke();
+        }
         g.setLineDash([]);
       }
     }
   }
 
   /** 開關滴管（再按一次同一個 = 關閉） */
-  setTool(t: "wb" | "hsl" | null) {
+  setTool(t: "wb" | "hsl" | "curve" | null) {
     if (t && this.cropping) this.commitCrop();
     if (t && this.ptool !== null) this.setPatch(null);
     this.tool = this.tool === t ? null : t;
     this.tdrag = null;
+    this.cdragCurve = null;
     this.q("#ed-wb-pick").classList.toggle("active", this.tool === "wb");
     this.q("#ed-hsl-pick").classList.toggle("active", this.tool === "hsl");
-    this.canvas.style.cursor = this.tool ? "crosshair" : "";
+    this.q("#ed-curve-pick").classList.toggle("active", this.tool === "curve");
+    this.canvas.style.cursor = this.toolCursor();
     if (this.tool) {
       // 確認對應的區塊是展開的，看得到數值變化
-      const sec = this.q(`[data-sec="${this.tool === "wb" ? "color" : "hsl"}"]`);
+      const sec = this.q(`[data-sec="${this.tool === "wb" ? "color" : this.tool}"]`);
       if (sec.classList.contains("collapsed")) (sec.querySelector(".ed-sec-head") as HTMLElement).click();
     }
     this.hint(
       this.tool === "wb"
         ? "白平衡滴管：點選照片中應該是白色或灰色的地方（Esc 結束）"
         : this.tool === "hsl"
-          ? `目標調整（${HSL_TABS[this.hslTab]}）：在照片上按住某個顏色，往上拖增加、往下拖減少（Esc 結束）`
-          : "",
+          ? `目標調整（${HSL_TABS[this.hslTab]}）：在照片上按住某個顏色，往右拖增加、往左拖減少（Esc 結束）`
+          : this.tool === "curve"
+            ? "曲線目標調整：在照片上按住某個地方，往上拖變亮、往下拖變暗（Esc 結束）"
+            : "",
     );
   }
 
@@ -2090,16 +2175,52 @@ export class Editor {
     if (!c) return;
     e.preventDefault();
     if (this.tool === "wb") return this.pickWb(c);
+    if (this.tool === "curve") {
+      const x = this.curveInputAt(e);
+      if (x === null) return;
+      // 這個亮度附近已有控制點就拖那一點，沒有就在曲線上加一點
+      let pts = (cleanCurve(this.p.curve).length ? this.p.curve : [[0, 0], [255, 255]]).map((q) => [...q] as Pt);
+      let k = pts.findIndex((q) => Math.abs(q[0] - x) <= 6);
+      if (k < 0) {
+        const lut = curveLut(pts);
+        const xx = Math.min(254, Math.max(1, x));
+        pts.push([xx, lut ? Math.round(lut[xx] * 255) : xx]);
+        pts.sort((a, b) => a[0] - b[0]);
+        k = pts.findIndex((q) => q[0] === xx);
+      }
+      this.p.curve = pts;
+      this.curveEd.set(pts);
+      this.cdragCurve = { y: e.clientY, px: pts[k][0], py0: pts[k][1] };
+      this.canvas.setPointerCapture(e.pointerId);
+      return this.toolMove(e);
+    }
     const { hue, sat } = hueOf(this.afterWb(c));
     if (sat < 0.08) return this.hint("這裡幾乎沒有顏色，請按住有顏色的地方拖曳");
     const b = bandsOf(hue);
-    this.tdrag = { y: e.clientY, ...b, start: normHsl(this.p.hsl) };
+    this.tdrag = { x: e.clientX, ...b, start: normHsl(this.p.hsl) };
     this.canvas.setPointerCapture(e.pointerId);
-    this.canvas.style.cursor = "ns-resize";
     this.toolMove(e);
   }
 
   private toolMove(e: PointerEvent) {
+    if (this.tool === "curve") {
+      const g = this.cdragCurve;
+      if (!g) {
+        const x = this.curveInputAt(e);
+        return this.hint(x === null ? "曲線目標調整：在照片上按住某個地方上下拖曳" : `曲線目標調整：這裡的亮度 ${x}　按住上下拖曳`);
+      }
+      const pts = this.p.curve.map((q) => [...q] as Pt);
+      const k = pts.findIndex((q) => q[0] === g.px);
+      if (k < 0) return;
+      pts[k][1] = Math.round(Math.max(0, Math.min(255, g.py0 + (g.y - e.clientY) * 0.5)));
+      this.p.curve = pts;
+      this.curveEd.set(pts);
+      this.updateLut();
+      this.markChanged();
+      if (this.bypass) this.setBefore(false);
+      this.draw();
+      return this.hint(`曲線：輸入 ${pts[k][0]} · 輸出 ${pts[k][1]}`);
+    }
     if (this.tool !== "hsl") return;
     const d = this.tdrag;
     if (!d) {
@@ -2110,9 +2231,9 @@ export class Editor {
       if (sat < 0.08) return this.hint(`目標調整（${HSL_TABS[this.hslTab]}）：這裡幾乎沒有顏色`);
       const b = bandsOf(hue);
       const names = b.t < 0.15 ? BANDS[b.i].label : b.t > 0.85 ? BANDS[b.j].label : `${BANDS[b.i].label} / ${BANDS[b.j].label}`;
-      return this.hint(`目標調整（${HSL_TABS[this.hslTab]}）：${names}　按住上下拖曳`);
+      return this.hint(`目標調整（${HSL_TABS[this.hslTab]}）：${names}　按住左右拖曳`);
     }
-    const delta = (d.y - e.clientY) * 0.5;
+    const delta = (e.clientX - d.x) * 0.5;
     const h = [...d.start];
     const base = this.hslTab * 8;
     const clamp = (x: number) => Math.round(Math.max(-100, Math.min(100, x)));
@@ -2128,14 +2249,15 @@ export class Editor {
   }
 
   private toolUp(e: PointerEvent) {
-    if (!this.tdrag) return;
+    if (!this.tdrag && !this.cdragCurve) return;
     this.tdrag = null;
+    this.cdragCurve = null;
     try {
       this.canvas.releasePointerCapture(e.pointerId);
     } catch {
       /* ignore */
     }
-    this.canvas.style.cursor = this.tool ? "crosshair" : "";
+    this.canvas.style.cursor = this.toolCursor();
   }
 
   /** 切換 HSL 分頁（色相 / 飽和度 / 明亮度）：滑桿換成該分頁的 8 個值與對應的色條 */
@@ -2153,7 +2275,7 @@ export class Editor {
             : `linear-gradient(90deg, hsl(${hue} 70% 18%), hsl(${hue} 70% 50%), hsl(${hue} 70% 82%))`;
     });
     this.syncInputs();
-    if (this.tool === "hsl") this.hint(`目標調整（${HSL_TABS[t]}）：在照片上按住某個顏色，往上拖增加、往下拖減少（Esc 結束）`);
+    if (this.tool === "hsl") this.hint(`目標調整（${HSL_TABS[t]}）：在照片上按住某個顏色，往右拖增加、往左拖減少（Esc 結束）`);
   }
 
   private setHsl(i: number, v: number, from?: HTMLInputElement) {

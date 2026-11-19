@@ -425,10 +425,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .ed-tabs button + button { border-left: 1px solid var(--line); }
 .ed-tabs button.active { background: var(--accent); color: #1a1a1a; font-weight: 600; }
 .ed-row label[data-hsl-reset].changed { color: var(--accent); }
-.ed-row input.hslr, .ed-row input.temp, .ed-row input.tint { -webkit-appearance: none; appearance: none; height: 6px; border-radius: 4px; margin: 8px 0 4px; }
-.ed-row input.hslr::-webkit-slider-thumb, .ed-row input.temp::-webkit-slider-thumb, .ed-row input.tint::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #f2f2f2; border: 1px solid #0006; box-shadow: 0 1px 2px #0008; cursor: pointer;
-}
+/* 拉桿（仿 Camera Raw：細軌道、小圓點） */
+.ed-panel input[type="range"] { -webkit-appearance: none; appearance: none; height: 2px; border-radius: 1px; background: #55555c; margin: 8px 0 5px; accent-color: initial; }
+.ed-panel input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 11px; height: 11px; border-radius: 50%; background: #e6e6e8; border: 1px solid #0007; box-shadow: 0 1px 2px #0009; cursor: pointer; }
+.ed-panel input[type="range"]:hover::-webkit-slider-thumb { background: #fff; }
+.ed-row input.hslr, .ed-row input.temp, .ed-row input.tint { height: 3px; }
 .ed-sec { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 .ed-sec-head { display: flex; align-items: center; gap: 6px; padding: 6px 0; cursor: pointer; user-select: none; font-weight: 600; font-size: 13px; border-radius: 4px; }
 .ed-sec-head:hover .ed-sec-title { color: var(--accent); }
@@ -447,9 +448,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 .ed-row label.changed { color: var(--accent); }
 .ed-row input[type="number"] { width: 64px; text-align: right; font-variant-numeric: tabular-nums; padding: 1px 4px; }
 .ed-row input[type="range"] { grid-column: 1 / 3; width: 100%; accent-color: var(--accent); margin: 2px 0 0; }
-.ed-row input.temp { accent-color: #e0b040; background: linear-gradient(90deg, #4a7bd0, #ddd, #e0b040); border-radius: 4px; height: 6px; }
-.ed-row input.tint { accent-color: #c060c0; background: linear-gradient(90deg, #4caf50, #ddd, #c060c0); border-radius: 4px; height: 6px; }
-.ed-curve { display: block; width: 100%; aspect-ratio: 1; border-radius: 6px; touch-action: none; cursor: crosshair; }
+.ed-row input.temp { accent-color: #e0b040; background: linear-gradient(90deg, #4a7bd0, #ddd, #e0b040); border-radius: 4px; height: 3px; }
+.ed-row input.tint { accent-color: #c060c0; background: linear-gradient(90deg, #4caf50, #ddd, #c060c0); border-radius: 4px; height: 3px; }
+.ed-curve { display: block; width: 100%; max-width: 190px; margin: 0 auto; aspect-ratio: 1; border-radius: 6px; touch-action: none; cursor: crosshair; }
 .ed-curve-info { margin-top: 4px; min-height: 16px; }
 .ed-tools { display: flex; gap: 8px; }
 .ed-tools button { flex: 1; }

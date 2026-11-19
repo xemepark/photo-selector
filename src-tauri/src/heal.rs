@@ -114,15 +114,21 @@ fn round_js(x: f32) -> i64 {
     (x + 0.5).floor() as i64
 }
 
+/// 羽化範圍：從 r·(1−f) 漸變到 r·(1+0.5f)（與 heal.ts outerR 相同）
+fn outer_r(r: f32, f: f32) -> f32 {
+    r * (1.0 + 0.5 * f)
+}
+
 fn alpha_of(d: f32, r: f32, f: f32) -> f32 {
     let inner = r * (1.0 - f);
+    let outer = outer_r(r, f);
     if d <= inner {
         return 1.0;
     }
-    if d >= r {
+    if d >= outer {
         return 0.0;
     }
-    let t = (d - inner) / (r - inner);
+    let t = (d - inner) / (outer - inner);
     1.0 - t * t * (3.0 - 2.0 * t)
 }
 
@@ -139,6 +145,7 @@ fn apply_spot(img: &mut RgbImage, s: &Spot) {
         return;
     }
     let mg = margin(px.r);
+    let ro = outer_r(px.r, s.f);
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     for q in &px.pts {
         x0 = x0.min(q[0]);
@@ -146,7 +153,7 @@ fn apply_spot(img: &mut RgbImage, s: &Spot) {
         x1 = x1.max(q[0]);
         y1 = y1.max(q[1]);
     }
-    let m = px.r + mg;
+    let m = ro + mg;
     let bx0 = ((x0 - m).floor() as i64).max(0);
     let by0 = ((y0 - m).floor() as i64).max(0);
     let bx1 = ((x1 + m).ceil() as i64 + 1).min(w);
@@ -159,7 +166,7 @@ fn apply_spot(img: &mut RgbImage, s: &Spot) {
     let (bwu, bhu) = (bw as usize, bh as usize);
     // 每個像素到路徑的距離（逐段只算各自的外框）
     let mut dist = vec![1e9f32; bwu * bhu];
-    let reach = px.r + mg + 1.0;
+    let reach = ro + mg + 1.0;
     let n = px.pts.len();
     for k in 0..(n.max(2) - 1) {
         let a = px.pts[k.min(n - 1)];
@@ -201,7 +208,10 @@ fn apply_spot(img: &mut RgbImage, s: &Spot) {
             }
         }
     }
-    let corr = if s.m == 2 { None } else { Some(Correction::new(&dst, &src, &alpha, bwu, bhu)) };
+    if s.m == 0 {
+        mirror_fill(img, &alpha, (bx0, by0, bwu, bhu), &mut src, &dst);
+    }
+    let corr = if s.m == 1 { Some(Correction::new(&dst, &src, &alpha, bwu, bhu)) } else { None };
     for y in 0..bhu {
         for x in 0..bwu {
             let j = y * bwu + x;
@@ -215,6 +225,81 @@ fn apply_spot(img: &mut RgbImage, s: &Spot) {
                 let v = src[j * 3 + k] + c[k];
                 let out = dst[j * 3 + k] + (v - dst[j * 3 + k]) * a;
                 p[k] = round_js(out).clamp(0, 255) as u8;
+            }
+        }
+    }
+}
+
+/// 移除：沿著修補範圍較窄的方向（左右或上下），取兩側鏡射位置的像素依距離混合（與 heal.ts mirrorFill 相同）
+fn mirror_fill(img: &RgbImage, alpha: &[f32], b: (i64, i64, usize, usize), src: &mut [f32], dst: &[f32]) {
+    let (x0, y0, bw, bh) = b;
+    let (w, h) = (img.width() as i64, img.height() as i64);
+    let n = bw * bh;
+    let (mut ra, mut rb, mut ca, mut cb) = (vec![0usize; n], vec![0usize; n], vec![0usize; n], vec![0usize; n]);
+    for y in 0..bh {
+        let mut x = 0;
+        while x < bw {
+            if alpha[y * bw + x] <= 0.0 {
+                x += 1;
+                continue;
+            }
+            let mut e = x;
+            while e + 1 < bw && alpha[y * bw + e + 1] > 0.0 {
+                e += 1;
+            }
+            for k in x..=e {
+                ra[y * bw + k] = x;
+                rb[y * bw + k] = e;
+            }
+            x = e + 1;
+        }
+    }
+    for x in 0..bw {
+        let mut y = 0;
+        while y < bh {
+            if alpha[y * bw + x] <= 0.0 {
+                y += 1;
+                continue;
+            }
+            let mut e = y;
+            while e + 1 < bh && alpha[(e + 1) * bw + x] > 0.0 {
+                e += 1;
+            }
+            for k in y..=e {
+                ca[k * bw + x] = y;
+                cb[k * bw + x] = e;
+            }
+            y = e + 1;
+        }
+    }
+    for y in 0..bh {
+        for x in 0..bw {
+            let j = y * bw + x;
+            let i = j * 3;
+            if alpha[j] <= 0.0 {
+                src[i..i + 3].copy_from_slice(&dst[i..i + 3]);
+                continue;
+            }
+            let horiz = rb[j] - ra[j] <= cb[j] - ca[j];
+            let (a, e, p) = if horiz { (ra[j] as i64, rb[j] as i64, x as i64) } else { (ca[j] as i64, cb[j] as i64, y as i64) };
+            let (base, lim) = if horiz { (x0, w) } else { (y0, h) };
+            let lo = base + a - 1 - (p - a);
+            let hi = base + e + 1 + (e - p);
+            let mut t = (p - a) as f32 + 0.5;
+            t /= (e - a + 1) as f32;
+            let (lo_ok, hi_ok) = (lo >= 0, hi < lim);
+            if !lo_ok && hi_ok {
+                t = 1.0;
+            }
+            if lo_ok && !hi_ok {
+                t = 0.0;
+            }
+            let l = lo.clamp(0, lim - 1) as u32;
+            let r = hi.clamp(0, lim - 1) as u32;
+            let (px, py) = ((x as i64 + x0) as u32, (y as i64 + y0) as u32);
+            let (vl, vr) = if horiz { (img.get_pixel(l, py), img.get_pixel(r, py)) } else { (img.get_pixel(px, l), img.get_pixel(px, r)) };
+            for k in 0..3 {
+                src[i + k] = vl[k] as f32 * (1.0 - t) + vr[k] as f32 * t;
             }
         }
     }
@@ -364,6 +449,26 @@ mod tests {
         apply_spots(&mut img, &[spot(1)]);
         let c = img.get_pixel(60, 50)[0] as i32;
         assert!((c - 120).abs() < 12, "healed {c}");
+    }
+
+    #[test]
+    fn remove_fills_from_both_sides() {
+        // 左邊紅、右邊藍，中間一條黑色直線 → 移除後中線附近是紅藍之間的顏色，不再是黑色
+        let mut img = RgbImage::from_fn(200, 100, |x, _| {
+            if (98..=102).contains(&x) {
+                image::Rgb([0, 0, 0])
+            } else if x < 100 {
+                image::Rgb([200, 0, 0])
+            } else {
+                image::Rgb([0, 0, 200])
+            }
+        });
+        let s = Spot { m: 0, r: 0.02, f: 0.0, o: 1.0, d: [0.0, 0.0], p: vec![[0.5, 0.1], [0.5, 0.9]] };
+        apply_spots(&mut img, &[s]);
+        let c = img.get_pixel(100, 50);
+        assert!(c[0] > 50 && c[2] > 50, "{c:?}");
+        let l = img.get_pixel(97, 50);
+        assert!(l[0] > 150 && l[2] < 60, "{l:?}");
     }
 
     #[test]

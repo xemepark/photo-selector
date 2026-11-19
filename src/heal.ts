@@ -3,7 +3,8 @@
 // - 仿製：直接把來源蓋上去（依羽化與不透明度混合）
 // - 修復 / 移除：來源的紋理 + 平滑的修正量（在粗網格上解 Laplace 方程式，邊界 = 目的地與來源的差），
 //   讓顏色與明暗跟周圍自然接上
-// - 移除與修復在建立時自動找來源（移除找得更廣、挑最像的），之後都可以拖曳換來源
+// - 移除：不需要來源，從範圍兩側（左右或上下，取較窄的方向）鏡射取像素混合補上
+// - 修復與仿製在建立時自動找來源，之後可以拖曳換來源
 // 座標存成相對值：點與 offset 相對原圖寬高，半徑相對長邊。
 
 export type SpotMode = 0 | 1 | 2; // 0 移除、1 修復、2 仿製
@@ -26,14 +27,20 @@ export const MAX_SPOT_POINTS = 400;
 
 interface Px {
   r: number;
+  /** 羽化後的外緣半徑（羽化會往外延伸一些，邊緣更柔） */
+  ro: number;
   pts: [number, number][];
   ox: number;
   oy: number;
 }
 
+/** 羽化範圍：從 r·(1−f) 漸變到 r·(1+0.5f) */
+export const outerR = (r: number, f: number) => r * (1 + 0.5 * f);
+
 function toPx(s: Spot, W: number, H: number): Px {
   return {
     r: s.r * Math.max(W, H),
+    ro: outerR(s.r * Math.max(W, H), s.f),
     pts: s.p.map(([x, y]) => [x * W, y * H] as [number, number]),
     ox: Math.round(s.d[0] * W),
     oy: Math.round(s.d[1] * H),
@@ -52,7 +59,7 @@ function bounds(px: Px, W: number, H: number, extra: number): [number, number, n
     x1 = Math.max(x1, x);
     y1 = Math.max(y1, y);
   }
-  const m = px.r + extra;
+  const m = px.ro + extra;
   return [Math.max(0, Math.floor(x0 - m)), Math.max(0, Math.floor(y0 - m)), Math.min(W, Math.ceil(x1 + m) + 1), Math.min(H, Math.ceil(y1 + m) + 1)];
 }
 
@@ -66,7 +73,7 @@ function distances(px: Px, b: [number, number, number, number]): Float32Array {
   const bw = x1 - x0;
   const bh = y1 - y0;
   const dist = new Float32Array(bw * bh).fill(1e9);
-  const reach = px.r + margin(px.r) + 1;
+  const reach = px.ro + margin(px.r) + 1;
   const n = px.pts.length;
   for (let k = 0; k < Math.max(1, n - 1); k++) {
     const [ax, ay] = px.pts[k];
@@ -96,9 +103,10 @@ function distances(px: Px, b: [number, number, number, number]): Float32Array {
 
 function alphaOf(d: number, r: number, f: number): number {
   const inner = r * (1 - f);
+  const outer = outerR(r, f);
   if (d <= inner) return 1;
-  if (d >= r) return 0;
-  const t = (d - inner) / (r - inner);
+  if (d >= outer) return 0;
+  const t = (d - inner) / (outer - inner);
   return 1 - t * t * (3 - 2 * t);
 }
 
@@ -138,7 +146,8 @@ function applySpot(img: ImageData, s: Spot) {
       }
     }
   }
-  const corr = s.m === 2 ? null : correction(dst, src, alpha, bw, bh);
+  if (s.m === 0) mirrorFill(data, W, H, alpha, b, src, dst);
+  const corr = s.m === 1 ? correction(dst, src, alpha, bw, bh) : null;
   for (let y = 0; y < bh; y++) {
     for (let x = 0; x < bw; x++) {
       const j = y * bw + x;
@@ -151,6 +160,92 @@ function applySpot(img: ImageData, s: Spot) {
         const v = src[i + k] + (c ? c[k] : 0);
         const out = dst[i + k] + (v - dst[i + k]) * a;
         data[di + k] = Math.min(255, Math.max(0, Math.round(out)));
+      }
+    }
+  }
+}
+
+/**
+ * 移除：不用指定來源，每個像素沿著修補範圍較窄的方向（左右或上下），
+ * 取範圍兩側鏡射位置的像素，依離兩邊的距離混合 → 兩側的紋理與顏色自然接起來
+ */
+function mirrorFill(
+  data: Uint8ClampedArray,
+  W: number,
+  H: number,
+  alpha: Float32Array,
+  b: [number, number, number, number],
+  src: Float32Array,
+  dst: Float32Array,
+) {
+  const [x0, y0, x1, y1] = b;
+  const bw = x1 - x0;
+  const bh = y1 - y0;
+  const n = bw * bh;
+  const ra = new Int32Array(n);
+  const rb = new Int32Array(n);
+  const ca = new Int32Array(n);
+  const cb = new Int32Array(n);
+  for (let y = 0; y < bh; y++) {
+    let x = 0;
+    while (x < bw) {
+      if (alpha[y * bw + x] <= 0) {
+        x++;
+        continue;
+      }
+      let e = x;
+      while (e + 1 < bw && alpha[y * bw + e + 1] > 0) e++;
+      for (let k = x; k <= e; k++) {
+        ra[y * bw + k] = x;
+        rb[y * bw + k] = e;
+      }
+      x = e + 1;
+    }
+  }
+  for (let x = 0; x < bw; x++) {
+    let y = 0;
+    while (y < bh) {
+      if (alpha[y * bw + x] <= 0) {
+        y++;
+        continue;
+      }
+      let e = y;
+      while (e + 1 < bh && alpha[(e + 1) * bw + x] > 0) e++;
+      for (let k = y; k <= e; k++) {
+        ca[k * bw + x] = y;
+        cb[k * bw + x] = e;
+      }
+      y = e + 1;
+    }
+  }
+  const at = (X: number, Y: number, k: number) => data[(Y * W + X) * 4 + k];
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const j = y * bw + x;
+      const i = j * 3;
+      if (alpha[j] <= 0) {
+        for (let k = 0; k < 3; k++) src[i + k] = dst[i + k];
+        continue;
+      }
+      const horiz = rb[j] - ra[j] <= cb[j] - ca[j];
+      const a = horiz ? ra[j] : ca[j];
+      const e = horiz ? rb[j] : cb[j];
+      const p = horiz ? x : y;
+      const base = horiz ? x0 : y0;
+      const lim = horiz ? W : H;
+      const lo = base + a - 1 - (p - a);
+      const hi = base + e + 1 + (e - p);
+      let t = (p - a + 0.5) / (e - a + 1);
+      const loOk = lo >= 0;
+      const hiOk = hi < lim;
+      if (!loOk && hiOk) t = 1;
+      if (loOk && !hiOk) t = 0;
+      const L = Math.min(lim - 1, Math.max(0, lo));
+      const R = Math.min(lim - 1, Math.max(0, hi));
+      for (let k = 0; k < 3; k++) {
+        const vl = horiz ? at(L, y + y0, k) : at(x + x0, L, k);
+        const vr = horiz ? at(R, y + y0, k) : at(x + x0, R, k);
+        src[i + k] = vl * (1 - t) + vr * t;
       }
     }
   }
@@ -249,11 +344,11 @@ export function findSource(img: ImageData, s: Spot): [number, number] {
   const dist = distances(px, b);
   // 外圍一圈（筆刷外、邊界內）的像素
   const ring: number[] = [];
-  for (let i = 0; i < dist.length; i++) if (dist[i] > px.r && dist[i] <= px.r + mg) ring.push(i);
+  for (let i = 0; i < dist.length; i++) if (dist[i] > px.ro && dist[i] <= px.ro + mg) ring.push(i);
   const step = Math.max(1, Math.floor(ring.length / 1500));
   const ext = Math.max(bw, bh) / 2;
   // 候選距離：貼著筆刷旁邊（細長筆刷往側面找）到整個範圍外
-  const near = 2 * px.r + mg + 2;
+  const near = 2 * px.ro + mg + 2;
   const dists = s.m === 0 ? [near, near * 1.4, near * 2, ext * 1.1, ext * 1.6] : [near, near * 1.5, ext * 1.15];
   const dirs = s.m === 0 ? 16 : 8;
   // 來源不能壓到要修補的地方（否則會把瑕疵本身複製過來）
