@@ -5,6 +5,7 @@ mod core;
 mod dragout;
 mod edit;
 mod heal;
+mod heic;
 mod export;
 mod face;
 mod fileinfo;

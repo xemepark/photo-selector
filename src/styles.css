@@ -516,3 +516,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 .tab-drop-title { font-size: 12px; color: var(--muted); padding: 4px 8px 6px; border-bottom: 1px solid #ffffff1a; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tab-drop-menu button { text-align: left; border: none; background: transparent; padding: 6px 10px; border-radius: 5px; font-size: 13px; }
 .tab-drop-menu button:hover { background: var(--accent); color: #1a1a1a; }
+
+/* 側邊欄可收合的組 */
+.fg-head { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 5px; }
+.fg-head:hover { color: var(--accent); }
+.fg-chev { flex: none; color: var(--muted); transition: transform .15s; }
+.folded > .fg-head .fg-chev { transform: rotate(-90deg); }
+.filter-group.folded > .filter-row { display: none; }
+.folder-sec.folded > :not(h3) { display: none; }
+.folder-sec > h3.fg-head button { margin-left: auto; }
+.fg-on { margin-left: 4px; background: var(--accent); color: #1a1a1a; border-radius: 8px; font-size: 10px; padding: 0 6px; line-height: 16px; font-weight: 600; }

@@ -209,6 +209,16 @@ pub fn read_meta(item: &Item) -> Meta {
         .or_else(|| xmp::read_embedded(&item.display().path))
         .unwrap_or_default();
 
+    if crate::heic::is_heif(item.display()) {
+        // HEIC 的 EXIF 方向和轉出的像素不一定一致：寬高與方向都以轉出的 JPEG 為準
+        if let Ok(b) = crate::heic::jpeg_bytes(item.display()) {
+            if let Some((jw, jh, _)) = crate::jpeg::jpeg_info(&b) {
+                r.w = Some(jw);
+                r.h = Some(jh);
+            }
+            r.orientation = Some(xmp::jpeg_exif_orientation(&b).unwrap_or(1));
+        }
+    }
     let (mut w, mut h) = (r.w, r.h);
     // 在本程式（或 Bridge）旋轉過的方向優先
     if matches!(xmp_orientation(item).or(r.orientation), Some(5..=8)) {
@@ -251,6 +261,8 @@ pub fn item_orientation(item: &Item, data: &[u8]) -> u16 {
     let f = item.display();
     match f.class {
         Class::Jpeg => xmp::jpeg_exif_orientation(data).or_else(|| xmp::jpeg_xmp_orientation(&f.path)).unwrap_or(1),
+        // HEIC：以轉成 JPEG 後的 EXIF 方向為準（與解碼出來的像素一致）
+        _ if crate::heic::is_heif(f) => xmp::sidecar_orientation(&item.sidecar_path()).unwrap_or_else(|| crate::heic::orientation(f)),
         _ => xmp::sidecar_orientation(&item.sidecar_path()).unwrap_or_else(|| orientation(f.class, data)),
     }
 }

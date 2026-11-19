@@ -145,8 +145,13 @@ pub(crate) fn load(item: &Item, formats: &[FormatOptions]) -> Result<Source> {
             let reader = image::ImageReader::new(std::io::Cursor::new(&data[..])).with_guessed_format()?;
             let mut dec = reader.into_decoder()?;
             let icc = dec.icc_profile().ok().flatten();
-            let img = DynamicImage::from_decoder(dec)?;
+            let img = render::flatten_alpha(DynamicImage::from_decoder(dec)?);
             (img, JpegMeta { icc, ..Default::default() })
+        }
+        _ if crate::heic::is_heif(f) => {
+            let b = crate::heic::jpeg_bytes(f)?;
+            let min = decode_min_edge(oriented(jpeg::jpeg_dims(&b)), formats);
+            render::decode_jpeg_with_meta(&b, min)?
         }
         Class::Raw | Class::Other => {
             let list = jpeg::embedded_jpegs(&data, u32::MAX);

@@ -108,7 +108,8 @@ pub fn decode_source(item: &Item, min_edge: u32) -> Result<DynamicImage> {
                 None => decode_jpeg_scaled(&data, min_edge)?,
             }
         }
-        Class::Image => image::load_from_memory(&data)?,
+        Class::Image => flatten_alpha(image::load_from_memory(&data)?),
+        _ if crate::heic::is_heif(f) => decode_jpeg_scaled(&crate::heic::jpeg_bytes(f)?, min_edge)?,
         Class::Raw | Class::Other => {
             let want = if min_edge == 0 { u32::MAX } else { min_edge };
             let list = jpeg::embedded_jpegs(&data, want);
@@ -117,6 +118,24 @@ pub fn decode_source(item: &Item, min_edge: u32) -> Result<DynamicImage> {
         }
     };
     Ok(apply_orientation(img, orient))
+}
+
+/// 有透明度的影像（PNG 等）疊在白底上：直接丟掉透明度的話，透明處原本存的顏色會露出來（花掉）
+pub fn flatten_alpha(img: DynamicImage) -> DynamicImage {
+    if !img.color().has_alpha() {
+        return img;
+    }
+    let rgba = img.to_rgba32f();
+    let (w, h) = rgba.dimensions();
+    let mut out = image::RgbImage::new(w, h);
+    for (o, p) in out.pixels_mut().zip(rgba.pixels()) {
+        let a = p[3].clamp(0.0, 1.0);
+        for k in 0..3 {
+            let v = p[k].clamp(0.0, 1.0) * a + (1.0 - a);
+            o[k] = (v * 255.0 + 0.5) as u8;
+        }
+    }
+    DynamicImage::ImageRgb8(out)
 }
 
 /// JPEG 檔案內嵌、長邊 ≥ min_edge 且比例與原圖一致的預覽圖（取最小的一張）

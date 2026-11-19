@@ -48,7 +48,12 @@ pub struct FileEntry {
 impl FileEntry {
     /// 用於快取的鍵值：路徑 + 修改時間 + 大小，任何一個變了快取就失效
     pub fn cache_key(&self) -> (String, i64, i64) {
-        (self.path.to_string_lossy().into_owned(), self.mtime, self.size as i64)
+        let mut k = self.path.to_string_lossy().into_owned();
+        // 透明 PNG 改成疊白底、HEIC 改用系統轉檔：這兩類的舊縮圖快取作廢重算
+        if matches!(self.class, Class::Image | Class::Other) {
+            k.push_str("#r2");
+        }
+        (k, self.mtime, self.size as i64)
     }
 }
 

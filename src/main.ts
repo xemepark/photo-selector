@@ -362,7 +362,13 @@ function renderFilters() {
     // 「調整」：只要有調整過的照片就顯示（即使全部都調整過）
     const always = key === "rating" || key === "suggest" || key === "eyes" || key === "sharp" || (key === "edited" && (c.get("yes") ?? 0) > 0);
     if (!visible.length || (!always && visible.length < 2 && !S.filters[key].size)) continue;
-    html += `<div class="filter-group"><h4>${title}</h4>`;
+    // 評等以外的篩選組可以收合（狀態記住）；收合時若有勾選，標題旁顯示數量
+    const foldable = key !== "rating";
+    const folded = foldable && collapsedGroups.has(key);
+    const nOn = S.filters[key].size;
+    html += foldable
+      ? `<div class="filter-group foldable${folded ? " folded" : ""}" data-group="${key}"><h4 class="fg-head" title="點一下收合 / 展開"><svg class="fg-chev" viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${title}</span>${folded && nOn ? `<span class="fg-on">${nOn}</span>` : ""}</h4>`
+      : `<div class="filter-group"><h4>${title}</h4>`;
     for (const [v, label] of visible) {
       const on = S.filters[key].has(v);
       const lc = key === "label" && v !== "none" && v !== "other" ? LABELS.find((l) => l.key === v)?.color : null;
@@ -376,7 +382,20 @@ function renderFilters() {
   box.innerHTML = html || `<p class="muted small">開啟資料夾後顯示</p>`;
 }
 
+/** 收合的篩選組 / 資料夾區塊（記在本機） */
+const collapsedGroups = new Set<string>(storage<string[]>("collapsedGroups", []));
+function toggleGroup(key: string) {
+  if (collapsedGroups.has(key)) collapsedGroups.delete(key);
+  else collapsedGroups.add(key);
+  store("collapsedGroups", [...collapsedGroups]);
+}
+
 $("filters").addEventListener("click", (ev) => {
+  const head = (ev.target as HTMLElement).closest<HTMLElement>(".fg-head");
+  if (head) {
+    toggleGroup(head.parentElement!.dataset.group!);
+    return renderFilters();
+  }
   const row = (ev.target as HTMLElement).closest(".filter-row") as HTMLElement | null;
   if (!row) return;
   const set = S.filters[row.dataset.k as FilterKey];
@@ -839,6 +858,22 @@ const folderTree = new FolderTree($("folder-tree"), (path, ev) => {
 $("tree-refresh").addEventListener("click", () => void folderTree.refresh());
 $("btn-open").addEventListener("click", pickFolder);
 $("btn-open-2").addEventListener("click", pickFolder);
+// 資料夾區塊收合
+{
+  const sec = $("folder-tree").closest("section")!;
+  sec.classList.add("folder-sec");
+  const h3 = sec.querySelector("h3")!;
+  h3.classList.add("fg-head");
+  h3.insertAdjacentHTML("afterbegin", `<svg class="fg-chev" viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`);
+  const apply = () => sec.classList.toggle("folded", collapsedGroups.has("folders"));
+  apply();
+  h3.addEventListener("click", (e) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    toggleGroup("folders");
+    apply();
+  });
+}
+
 $("btn-up").addEventListener("click", () => S.parent && openFolder(S.parent));
 $("btn-refresh").addEventListener("click", () => void refreshFolder());
 $("recent").addEventListener("click", (ev) => {
