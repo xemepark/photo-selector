@@ -531,6 +531,8 @@ export class Editor {
         collapsed[k] = !sec.classList.contains("collapsed");
         sec.classList.toggle("collapsed", collapsed[k]);
         saveCollapsed(collapsed);
+        if (collapsed[k] && k === "patch" && this.ptool !== null) this.setPatch(null);
+        if (collapsed[k] && this.tool && (this.tool === "wb" ? "color" : this.tool) === k) this.setTool(null);
         if (!collapsed[k] && k === "curve") this.curveEd.draw();
       };
       head.addEventListener("click", (e) => {
@@ -615,6 +617,19 @@ export class Editor {
       if (!this.cropping) this.enterCrop();
       this.setAngle(0);
     });
+    // 在右側面板點了別的區塊 → 結束修補 / 滴管（與 Camera Raw 切換面板相同），不會留著筆刷游標
+    this.q(".ed-panel").addEventListener(
+      "pointerdown",
+      (e) => {
+        const sec = (e.target as HTMLElement).closest<HTMLElement>(".ed-sec")?.dataset.sec;
+        if (this.ptool !== null && sec !== "patch") this.setPatch(null);
+        if (this.tool) {
+          const own = this.tool === "wb" ? "color" : this.tool;
+          if (sec !== own) this.setTool(null);
+        }
+      },
+      true,
+    );
     this.q("#ed-wb-pick").addEventListener("click", () => this.setTool("wb"));
     this.q("#ed-hsl-pick").addEventListener("click", () => this.setTool("hsl"));
     this.q("#ed-curve-pick").addEventListener("click", () => this.setTool("curve"));
