@@ -98,7 +98,11 @@ const grid = new Grid(gridEl, $("grid-spacer"), {
     setFocus(S.view[i].id, false);
     openLoupe();
   },
-  onViewport: debounce((ids: number[]) => api.setViewport(S.session, ids).catch(() => {}), 30),
+  // 調整視窗開著時由它管理（縮圖列的照片不一定在主畫面上，不能被當成捲出畫面而取消）
+  onViewport: debounce((ids: number[]) => {
+    if (editor.isOpen) return;
+    api.setViewport(S.session, ids).catch(() => {});
+  }, 30),
 });
 
 // ---------------------------------------------------------------- helpers
@@ -2238,7 +2242,8 @@ function openEditor() {
   const focusItem = S.view.find((it) => it.id === S.focus);
   const list = sel.length > 1 ? sel : focusItem ? [focusItem] : [];
   if (!list.length) return;
-  const start = Math.max(0, list.findIndex((it) => it.id === S.focus));
+  // 從第一張開始
+  const start = 0;
   const wasLoupe = S.loupe;
   if (wasLoupe) closeLoupe();
   void editor.open(list, start);

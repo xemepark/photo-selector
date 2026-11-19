@@ -1070,7 +1070,27 @@ export class Editor {
   }
 
   /** 存檔後重新載入縮圖列中這些照片的縮圖 */
+  /** 下方縮圖列：目前這張即時顯示調整後的樣子（用算色階分布時讀回的小圖） */
+  private stripCanvas: HTMLCanvasElement | null = null;
+  private updateStripThumb(px: Uint8Array, w: number, h: number) {
+    const cell = this.q("#ed-strip").querySelector<HTMLElement>(`.ed-thumb[data-pos="${this.pos}"] img`) as HTMLImageElement | null;
+    if (!cell || this.bypass) return;
+    const cv = (this.stripCanvas ??= document.createElement("canvas"));
+    cv.width = w;
+    cv.height = h;
+    const g = cv.getContext("2d");
+    if (!g) return;
+    const img = g.createImageData(w, h);
+    // readPixels 是由下往上，翻轉成由上往下
+    for (let y = 0; y < h; y++) img.data.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+    for (let i = 3; i < img.data.length; i += 4) img.data[i] = 255;
+    g.putImageData(img, 0, 0);
+    cell.src = cv.toDataURL("image/jpeg", 0.85);
+  }
+
   private refreshStrip(ids: number[]) {
+    // 確定後端把縮圖列的照片當成可見（不會被取消）
+    void api.setViewport(this.host.session(), this.list.map((it) => it.id)).catch(() => {});
     const set = new Set(ids);
     this.q("#ed-strip")
       .querySelectorAll<HTMLElement>(".ed-thumb")
@@ -1366,6 +1386,7 @@ export class Editor {
       hist.l[Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b)]++;
     }
     this.hist = hist;
+    this.updateStripThumb(px, w, h);
     this.drawHist();
     this.curveEd.setHistogram(hist.l);
     // 離屏繪製會改到 viewport，重畫一次畫面（不再觸發計算）

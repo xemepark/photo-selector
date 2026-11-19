@@ -26,10 +26,13 @@ pub fn files_for(items: &[&Item], include_raw: bool) -> Vec<PathBuf> {
     out
 }
 
-const SIZE: u32 = 160;
-const BORDER: u32 = 3;
+/// 拖曳圖示大小（原本 160：長寬各一半 = 面積 1/4）
+const SIZE: u32 = 80;
+const BORDER: u32 = 2;
 /// 疊放時每張錯開的距離
-const STEP: u32 = 10;
+const STEP: u32 = 5;
+/// 拖曳圖示的不透明度（約 40%，看得到底下的分頁）
+const OPACITY: f32 = 0.4;
 
 /// 用最多三張縮圖疊成拖曳圖示（PNG，透明背景），寫到 `out`
 pub fn make_icon(thumbs: &[Vec<u8>], out: &Path) -> anyhow::Result<()> {
@@ -38,7 +41,7 @@ pub fn make_icon(thumbs: &[Vec<u8>], out: &Path) -> anyhow::Result<()> {
         .take(3)
         .filter_map(|b| image::load_from_memory(b).ok())
         .map(|img| {
-            let inner = SIZE - STEP * 2 - BORDER * 2 - 8; // 留一點邊
+            let inner = SIZE - STEP * 2 - BORDER * 2 - 4; // 留一點邊
             let t = img.thumbnail(inner, inner).to_rgba8();
             let mut framed = RgbaImage::from_pixel(t.width() + BORDER * 2, t.height() + BORDER * 2, Rgba([255, 255, 255, 255]));
             imageops::overlay(&mut framed, &t, BORDER as i64, BORDER as i64);
@@ -58,6 +61,9 @@ pub fn make_icon(thumbs: &[Vec<u8>], out: &Path) -> anyhow::Result<()> {
     if n == 0 {
         // 沒有縮圖時畫一個灰色方塊，總比沒有圖示好
         canvas = RgbaImage::from_pixel(96, 96, Rgba([128, 128, 128, 200]));
+    }
+    for p in canvas.pixels_mut() {
+        p[3] = (p[3] as f32 * OPACITY).round() as u8;
     }
     canvas.save_with_format(out, image::ImageFormat::Png)?;
     Ok(())
