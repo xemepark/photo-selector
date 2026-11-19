@@ -1,5 +1,5 @@
 //! 簡易照片調整（仿 Camera Raw「基本」面板）：白平衡、曝光、對比、亮部、陰影、白色、黑色、
-//! 自然飽和度、飽和度，以及點曲線（RGB）。
+//! 自然飽和度、飽和度、HSL（8 個色相區段的色相 / 飽和度 / 明亮度），以及點曲線（RGB）。
 //!
 //! - 非破壞性：設定存在 XMP（自訂命名空間 sd:），原始影像不動；RAW 寫附屬檔、JPEG 寫檔案內嵌 XMP，
 //!   RAW+JPEG 兩邊都寫（與評等相同）。
@@ -30,6 +30,27 @@ pub struct Params {
     /// 點曲線（RGB，0–255 的 [輸入, 輸出]，依輸入排序）。空的 = 不套用
     #[serde(default)]
     pub curve: Vec<[f32; 2]>,
+    /// HSL（8 個色相區段 × 色相 / 飽和度 / 明亮度，各 −100…100），順序：色相 8 格、飽和度 8 格、明亮度 8 格。
+    /// 區段依序為紅、橙、黃、綠、水綠、藍、紫、洋紅。空的 = 不套用
+    #[serde(default)]
+    pub hsl: Vec<f32>,
+}
+
+pub const HSL_LEN: usize = 24;
+/// HSL 各區段的中心色相（度），最後一格 360 = 回到紅色
+const HUE_CENTERS: [f32; 9] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 270.0, 300.0, 360.0];
+
+/// 整理 HSL：補滿 24 格、限制在 ±100；全部為 0 回傳空的
+pub fn clean_hsl(h: &[f32]) -> Vec<f32> {
+    let mut v = vec![0f32; HSL_LEN];
+    for (i, x) in h.iter().take(HSL_LEN).enumerate() {
+        v[i] = if x.is_finite() { x.clamp(-100.0, 100.0) } else { 0.0 };
+    }
+    if v.iter().all(|x| x.abs() < 1e-4) {
+        Vec::new()
+    } else {
+        v
+    }
 }
 
 /// 曲線最多幾個點（與前端相同）
@@ -143,9 +164,10 @@ impl Params {
         ]
     }
 
-    fn from_values(v: [f32; 10], curve: Vec<[f32; 2]>) -> Self {
+    fn from_values(v: [f32; 10], curve: Vec<[f32; 2]>, hsl: Vec<f32>) -> Self {
         Params {
             curve,
+            hsl,
             temp: v[0],
             tint: v[1],
             exposure: v[2],
@@ -166,12 +188,13 @@ impl Params {
             let lim = if i == 2 { 5.0 } else { 100.0 };
             *x = if x.is_finite() { x.clamp(-lim, lim) } else { 0.0 };
         }
-        Params::from_values(v, clean_curve(&self.curve))
+        Params::from_values(v, clean_curve(&self.curve), clean_hsl(&self.hsl))
     }
 
     /// 欄位名稱（與前端 / serde 相同），順序與 values() 相同
-    pub const KEYS: [&'static str; 11] =
-        ["temp", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "vibrance", "saturation", "curve"];
+    pub const KEYS: [&'static str; 12] = [
+        "temp", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "vibrance", "saturation", "curve", "hsl",
+    ];
 
     /// 只把 `fields` 列出的項目換成 `src` 的值，其餘保留自己的
     pub fn merged(&self, src: &Params, fields: &[String]) -> Params {
@@ -182,12 +205,14 @@ impl Params {
                 v[i] = s[i];
             }
         }
-        let curve = if fields.iter().any(|f| f == "curve") { src.curve.clone() } else { self.curve.clone() };
-        Params::from_values(v, curve).clamped()
+        let has = |k: &str| fields.iter().any(|f| f == k);
+        let curve = if has("curve") { src.curve.clone() } else { self.curve.clone() };
+        let hsl = if has("hsl") { src.hsl.clone() } else { self.hsl.clone() };
+        Params::from_values(v, curve, hsl).clamped()
     }
 
     pub fn is_identity(&self) -> bool {
-        self.values().iter().all(|v| v.abs() < 1e-4) && clean_curve(&self.curve).is_empty()
+        self.values().iter().all(|v| v.abs() < 1e-4) && clean_curve(&self.curve).is_empty() && clean_hsl(&self.hsl).is_empty()
     }
 
     /// 要寫進 XMP 的屬性（0 的項目移除；全部 0 時連 sd:Version 一起移除）
@@ -201,6 +226,9 @@ impl Params {
         let curve = (!p.curve.is_empty())
             .then(|| p.curve.iter().map(|q| format!("{},{}", q[0], q[1])).collect::<Vec<_>>().join(";"));
         out.push(("sd:ToneCurve", curve));
+        let hsl = (!p.hsl.is_empty())
+            .then(|| p.hsl.iter().map(|v| format!("{}", (v * 100.0).round() / 100.0)).collect::<Vec<_>>().join(","));
+        out.push(("sd:HSL", hsl));
         out.push(("sd:Version", (!p.is_identity()).then(|| "1".to_string())));
         out
     }
@@ -221,7 +249,10 @@ impl Params {
                     .collect()
             })
             .unwrap_or_default();
-        let p = Params::from_values(v, curve).clamped();
+        let hsl: Vec<f32> = xmp::get_prop(xml, "sd:HSL")
+            .map(|s| s.split(',').map(|x| x.trim().parse().unwrap_or(0.0)).collect())
+            .unwrap_or_default();
+        let p = Params::from_values(v, curve, hsl).clamped();
         (!p.is_identity()).then_some(p)
     }
 }
@@ -314,12 +345,75 @@ pub fn pixel(rgb: [f32; 3], p: &Params, gains: &[f32; 3], lut: Option<&[f32; 256
     let mut out = [0f32; 3];
     for i in 0..3 {
         out[i] = linear_to_srgb((y + (c[i] - y) * k).max(0.0));
-        // 點曲線：在顯示用的 sRGB 數值上套用（與 Camera Raw / Photoshop 的 RGB 曲線相同）
-        if let Some(l) = lut {
-            out[i] = lut_apply(l, out[i]);
+    }
+    // HSL：在 sRGB 數值上依色相區段調整
+    if p.hsl.len() == HSL_LEN {
+        out = hsl_adjust(out, &p.hsl);
+    }
+    // 點曲線：在顯示用的 sRGB 數值上套用（與 Camera Raw / Photoshop 的 RGB 曲線相同）
+    if let Some(l) = lut {
+        for v in out.iter_mut() {
+            *v = lut_apply(l, *v);
         }
     }
     out
+}
+
+/// HSL 調整（輸入輸出 0–1 的 sRGB 數值；與 editor.ts shader 的 hslAdjust 相同）。
+/// 色相落在兩個區段中心之間時，兩邊的設定依距離線性混合；灰色（沒有彩度）不受影響。
+fn hsl_adjust(o: [f32; 3], h: &[f32]) -> [f32; 3] {
+    let mx = o[0].max(o[1]).max(o[2]);
+    let mn = o[0].min(o[1]).min(o[2]);
+    let c = mx - mn;
+    if c < 1e-5 || mx < 1e-6 {
+        return o;
+    }
+    let mut hue = if mx == o[0] {
+        60.0 * ((o[1] - o[2]) / c)
+    } else if mx == o[1] {
+        60.0 * ((o[2] - o[0]) / c + 2.0)
+    } else {
+        60.0 * ((o[0] - o[1]) / c + 4.0)
+    };
+    if hue < 0.0 {
+        hue += 360.0;
+    }
+    let mut i = 0;
+    while i < 7 && hue >= HUE_CENTERS[i + 1] {
+        i += 1;
+    }
+    let t = ((hue - HUE_CENTERS[i]) / (HUE_CENTERS[i + 1] - HUE_CENTERS[i])).clamp(0.0, 1.0);
+    let j = (i + 1) % 8;
+    let mix = |a: f32, b: f32| (a + (b - a) * t) / 100.0;
+    let dh = mix(h[i], h[j]);
+    let ds = mix(h[8 + i], h[8 + j]);
+    let dl = mix(h[16 + i], h[16 + j]);
+    let sv = c / mx;
+    // 色相：最多 ±30°；飽和度：−100 = 去色、+100 = 兩倍；明亮度：正值往白、負值往黑（依彩度加權）
+    let s2 = (sv * (1.0 + ds)).clamp(0.0, 1.0);
+    let mut rgb = hsv_to_rgb(hue + dh * 30.0, s2, mx);
+    let a = dl * sv * 0.5;
+    for v in rgb.iter_mut() {
+        *v = if a >= 0.0 { *v + (1.0 - *v) * a } else { *v * (1.0 + a) };
+    }
+    rgb
+}
+
+fn hsv_to_rgb(hue: f32, s: f32, v: f32) -> [f32; 3] {
+    let h = hue.rem_euclid(360.0) / 60.0;
+    let i = h.floor().min(5.0);
+    let f = h - i;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - s * f);
+    let t = v * (1.0 - s * (1.0 - f));
+    match i as i32 {
+        0 => [v, t, p],
+        1 => [q, v, p],
+        2 => [p, v, t],
+        3 => [p, q, v],
+        4 => [t, p, v],
+        _ => [v, p, q],
+    }
 }
 
 /// 套用到整張影像（rayon 逐列平行處理）
@@ -396,7 +490,7 @@ mod tests {
         for (field, amt) in [(3, 100.0), (3, -100.0), (4, -100.0), (4, 100.0), (5, 100.0), (5, -100.0), (6, 100.0), (7, -100.0)] {
             let mut v = [0f32; 10];
             v[field] = amt;
-            let p = Params::from_values(v, vec![]);
+            let p = Params::from_values(v, vec![], vec![]);
             let mut prev = -1.0;
             for i in 0..=200 {
                 let y = tone(i as f32 / 200.0, &p);
@@ -485,6 +579,63 @@ mod tests {
         assert_eq!(m.curve, p.curve);
         assert_eq!(m.contrast, 30.0);
         assert_eq!(m.exposure, 0.0);
+    }
+
+    #[test]
+    fn hsl_bands() {
+        let gray = [0.5, 0.5, 0.5];
+        let mut h = vec![0f32; HSL_LEN];
+        // 全部 0 = 不變（HSV 來回轉換）
+        for c in [[0.8, 0.2, 0.1], [0.1, 0.6, 0.9], [0.3, 0.9, 0.2]] {
+            let o = hsl_adjust(c, &h);
+            for k in 0..3 {
+                assert!((o[k] - c[k]).abs() < 1e-5);
+            }
+        }
+        // 藍色飽和度 −100：藍色變灰、紅色不變、灰色不變
+        h[8 + 5] = -100.0;
+        let b = hsl_adjust([0.1, 0.1, 0.9], &h);
+        assert!((b[0] - b[2]).abs() < 1e-4 && (b[1] - b[2]).abs() < 1e-4);
+        let r = hsl_adjust([0.9, 0.1, 0.1], &h);
+        assert!((r[0] - 0.9).abs() < 1e-5 && (r[1] - 0.1).abs() < 1e-5 && (r[2] - 0.1).abs() < 1e-5);
+        assert_eq!(hsl_adjust(gray, &h), gray);
+        // 藍色明亮度 −100：變暗
+        let mut h = vec![0f32; HSL_LEN];
+        h[16 + 5] = -100.0;
+        let d = hsl_adjust([0.1, 0.1, 0.9], &h);
+        assert!(d[2] < 0.6);
+        // 紅色色相 +100：往橙色（綠色分量增加）
+        let mut h = vec![0f32; HSL_LEN];
+        h[0] = 100.0;
+        let r = hsl_adjust([0.9, 0.1, 0.1], &h);
+        assert!(r[1] > 0.3 && r[2] < 0.15);
+        // 紅色色相 −100：往洋紅（藍色分量增加）
+        h[0] = -100.0;
+        let r = hsl_adjust([0.9, 0.1, 0.1], &h);
+        assert!(r[2] > 0.3);
+    }
+
+    #[test]
+    fn hsl_xmp_roundtrip_and_merge() {
+        let mut hsl = vec![0f32; HSL_LEN];
+        hsl[5] = 20.0;
+        hsl[13] = -35.5;
+        let p = Params { hsl: hsl.clone(), ..Default::default() };
+        assert!(!p.is_identity());
+        let mut xml = String::from("<x:xmpmeta><rdf:RDF><rdf:Description rdf:about=\"\"/></rdf:RDF></x:xmpmeta>");
+        for (k, v) in p.xmp_props() {
+            crate::xmp::test_set_prop(&mut xml, k, v.as_deref());
+        }
+        let back = Params::from_xmp(&xml).unwrap();
+        assert_eq!(back.hsl, hsl);
+        let other = Params { exposure: 1.0, ..Default::default() };
+        let m = other.merged(&p, &["hsl".into()]);
+        assert_eq!(m.hsl, hsl);
+        assert_eq!(m.exposure, 1.0);
+        let m = other.merged(&p, &["exposure".into()]);
+        assert!(m.hsl.is_empty());
+        // 全部 0 = 空的
+        assert!(Params { hsl: vec![0.0; HSL_LEN], ..Default::default() }.clamped().hsl.is_empty());
     }
 
     #[test]

@@ -40,6 +40,8 @@ export interface EditParams {
   saturation: number;
   /** 點曲線（RGB）：0–255 的 [輸入, 輸出]，空陣列 = 不套用 */
   curve: [number, number][];
+  /** HSL：色相 8 格、飽和度 8 格、明亮度 8 格（紅、橙、黃、綠、水綠、藍、紫、洋紅），各 −100…100 */
+  hsl: number[];
 }
 
 export interface DirInfo {

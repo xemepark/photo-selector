@@ -1,7 +1,7 @@
 // 照片調整（仿 Camera Raw）：
 // - 中間大圖、下方正在編輯的照片縮圖列（點一下切換）
 // - 右上色階分布圖：滑鼠移到黑色 / 陰影 / 曝光度 / 亮部 / 白色區域，左右拖曳直接調整
-// - 亮（曝光度、對比、亮部、陰影、白色、黑色）、顏色（色溫、色調、細節飽和度、飽和度）、曲線
+// - 亮度（曝光度、對比、亮部、陰影、白色、黑色）、顏色（色溫、色調、細節飽和度、飽和度、HSL）、曲線
 //
 // 預覽用 WebGL 即時計算；存檔時只把數值寫進 XMP，縮圖、全螢幕、影像轉存由後端用「完全相同的公式」套用
 // （src-tauri/src/edit.rs）。改公式時 shader 與 edit.rs 要一起改；曲線演算法在 curve.ts 與 edit.rs 各一份。
@@ -9,7 +9,7 @@
 import { api, url, Item, EditParams } from "./api";
 import { CurveEditor, Pt, cleanCurve, curveLut, sameCurve } from "./curve";
 
-type NumKey = Exclude<keyof EditParams, "curve">;
+type NumKey = Exclude<keyof EditParams, "curve" | "hsl">;
 type SyncKey = keyof EditParams;
 
 const GROUPS: { group: string; items: { key: NumKey; label: string; min: number; max: number; step: number; cls?: string }[] }[] = [
@@ -35,6 +35,28 @@ const GROUPS: { group: string; items: { key: NumKey; label: string; min: number;
   },
 ];
 
+/** HSL 的 8 個色相區段（順序與 edit.rs 相同），hue = 區段中心色相（度） */
+const BANDS: { label: string; hue: number }[] = [
+  { label: "紅色", hue: 0 },
+  { label: "橙色", hue: 30 },
+  { label: "黃色", hue: 60 },
+  { label: "綠色", hue: 120 },
+  { label: "水綠色", hue: 180 },
+  { label: "藍色", hue: 240 },
+  { label: "紫色", hue: 270 },
+  { label: "洋紅色", hue: 300 },
+];
+const HSL_LEN = 24;
+const HSL_TABS = ["色相", "飽和度", "明亮度"];
+const zeroHsl = () => new Array<number>(HSL_LEN).fill(0);
+/** 補滿 24 格、限制 ±100 */
+function normHsl(h: unknown): number[] {
+  const v = zeroHsl();
+  if (Array.isArray(h)) h.slice(0, HSL_LEN).forEach((x, i) => (v[i] = Number.isFinite(x) ? Math.max(-100, Math.min(100, Number(x))) : 0));
+  return v;
+}
+const hslActive = (h: number[]) => h.some((x) => Math.abs(x) > 1e-4);
+
 export const ZERO: EditParams = {
   temp: 0,
   tint: 0,
@@ -47,16 +69,18 @@ export const ZERO: EditParams = {
   vibrance: 0,
   saturation: 0,
   curve: [],
+  hsl: zeroHsl(),
 };
 
 const NUM_KEYS = GROUPS.flatMap((g) => g.items.map((s) => s.key));
-const SYNC_KEYS: SyncKey[] = [...NUM_KEYS, "curve"];
+const SYNC_KEYS: SyncKey[] = [...NUM_KEYS, "hsl", "curve"];
 const LABEL_OF: Record<SyncKey, string> = {
   ...(Object.fromEntries(GROUPS.flatMap((g) => g.items.map((s) => [s.key, s.label]))) as Record<NumKey, string>),
   curve: "曲線",
+  hsl: "HSL",
 };
 const SYNC_GROUPS: { group: string; keys: SyncKey[] }[] = [
-  ...GROUPS.map((g) => ({ group: g.group, keys: g.items.map((s) => s.key) as SyncKey[] })),
+  ...GROUPS.map((g) => ({ group: g.group, keys: [...g.items.map((s) => s.key), ...(g.group === "顏色" ? ["hsl"] : [])] as SyncKey[] })),
   { group: "曲線", keys: ["curve"] },
 ];
 
@@ -70,14 +94,18 @@ const ZONES: { key: NumKey; from: number; to: number }[] = [
 ];
 
 function clone(p: EditParams): EditParams {
-  return { ...p, curve: p.curve.map((q) => [q[0], q[1]] as Pt) };
+  return { ...p, curve: p.curve.map((q) => [q[0], q[1]] as Pt), hsl: normHsl(p.hsl) };
 }
 
 /** 上次同步時勾選的項目（預設全部） */
 function loadSyncFields(): string[] {
   try {
     const v = JSON.parse(localStorage.getItem("editSyncFields") ?? "null");
-    if (Array.isArray(v) && v.length) return v.filter((k) => (SYNC_KEYS as string[]).includes(k));
+    if (Array.isArray(v) && v.length) {
+      // 舊版沒有 HSL：預設勾選
+      if (localStorage.getItem("editSyncHasHsl") !== "1" && !v.includes("hsl")) v.push("hsl");
+      return v.filter((k) => (SYNC_KEYS as string[]).includes(k));
+    }
   } catch {
     /* ignore */
   }
@@ -85,9 +113,9 @@ function loadSyncFields(): string[] {
 }
 
 /** 調整面板各區塊的收合狀態（true = 收合），下次開啟沿用 */
-type Sec = "basic" | "curve";
+type Sec = "basic" | "color" | "curve";
 function loadCollapsed(): Record<Sec, boolean> {
-  const d = { basic: false, curve: false };
+  const d = { basic: false, color: false, curve: false };
   try {
     const v = JSON.parse(localStorage.getItem("editCollapsed") ?? "null");
     if (v && typeof v === "object") for (const k of Object.keys(d) as Sec[]) d[k] = v[k] === true;
@@ -105,19 +133,40 @@ function saveCollapsed(c: Record<Sec, boolean>) {
   }
 }
 
+function loadHslTab(): number {
+  try {
+    const v = Number(localStorage.getItem("editHslTab"));
+    return v === 1 || v === 2 ? v : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function saveHslTab(t: number) {
+  try {
+    localStorage.setItem("editHslTab", String(t));
+  } catch {
+    /* ignore */
+  }
+}
+
 function saveSyncFields(f: string[]) {
   try {
     localStorage.setItem("editSyncFields", JSON.stringify(f));
+    localStorage.setItem("editSyncHasHsl", "1");
   } catch {
     /* ignore */
   }
 }
 
 export function isIdentity(p: EditParams) {
-  return NUM_KEYS.every((k) => Math.abs(p[k]) < 1e-4) && cleanCurve(p.curve).length === 0;
+  return NUM_KEYS.every((k) => Math.abs(p[k]) < 1e-4) && cleanCurve(p.curve).length === 0 && !hslActive(normHsl(p.hsl));
 }
 
-const same = (a: EditParams, b: EditParams) => NUM_KEYS.every((k) => Math.abs(a[k] - b[k]) < 1e-4) && sameCurve(a.curve, b.curve);
+const same = (a: EditParams, b: EditParams) =>
+  NUM_KEYS.every((k) => Math.abs(a[k] - b[k]) < 1e-4) &&
+  sameCurve(a.curve, b.curve) &&
+  normHsl(a.hsl).every((x, i) => Math.abs(x - normHsl(b.hsl)[i]) < 1e-4);
 
 const VERT = `
 attribute vec2 a_pos;
@@ -138,6 +187,10 @@ uniform float u_useLut;
 uniform float u_bypass;
 uniform vec3 u_gains;
 uniform float u_ev, u_c, u_h, u_s, u_w, u_b, u_vib, u_sat;
+uniform float u_useHsl;
+uniform float u_hh[9];
+uniform float u_hs[9];
+uniform float u_hl[9];
 const vec3 LUM = vec3(0.2126, 0.7152, 0.0722);
 const float TAU = 6.28318530718;
 float toLin(float c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
@@ -164,6 +217,48 @@ float curve(float v) {
   float i = min(floor(x), 254.0);
   return mix(lutAt(i), lutAt(i + 1.0), x - i);
 }
+vec3 hsv2rgb(float hue, float s, float v) {
+  float h = mod(hue, 360.0) / 60.0;
+  float i = min(floor(h), 5.0);
+  float f = h - i;
+  float p = v * (1.0 - s);
+  float q = v * (1.0 - s * f);
+  float t = v * (1.0 - s * (1.0 - f));
+  if (i < 0.5) return vec3(v, t, p);
+  if (i < 1.5) return vec3(q, v, p);
+  if (i < 2.5) return vec3(p, v, t);
+  if (i < 3.5) return vec3(p, q, v);
+  if (i < 4.5) return vec3(t, p, v);
+  return vec3(v, p, q);
+}
+// 與 edit.rs 的 hsl_adjust() 相同
+vec3 hslAdjust(vec3 o) {
+  float mx = max(o.r, max(o.g, o.b));
+  float mn = min(o.r, min(o.g, o.b));
+  float c = mx - mn;
+  if (c < 1e-5 || mx < 1e-6) return o;
+  float hue;
+  if (mx == o.r) hue = 60.0 * ((o.g - o.b) / c);
+  else if (mx == o.g) hue = 60.0 * ((o.b - o.r) / c + 2.0);
+  else hue = 60.0 * ((o.r - o.g) / c + 4.0);
+  if (hue < 0.0) hue += 360.0;
+  float C[9];
+  C[0] = 0.0; C[1] = 30.0; C[2] = 60.0; C[3] = 120.0; C[4] = 180.0; C[5] = 240.0; C[6] = 270.0; C[7] = 300.0; C[8] = 360.0;
+  float dh = 0.0, ds = 0.0, dl = 0.0;
+  for (int i = 0; i < 8; i++) {
+    if (hue >= C[i] && (hue < C[i + 1] || i == 7)) {
+      float t = clamp((hue - C[i]) / (C[i + 1] - C[i]), 0.0, 1.0);
+      dh = mix(u_hh[i], u_hh[i + 1], t) / 100.0;
+      ds = mix(u_hs[i], u_hs[i + 1], t) / 100.0;
+      dl = mix(u_hl[i], u_hl[i + 1], t) / 100.0;
+    }
+  }
+  float sv = c / mx;
+  float s2 = clamp(sv * (1.0 + ds), 0.0, 1.0);
+  vec3 rgb = hsv2rgb(hue + dh * 30.0, s2, mx);
+  float a = dl * sv * 0.5;
+  return a >= 0.0 ? rgb + (1.0 - rgb) * a : rgb * (1.0 + a);
+}
 void main() {
   vec3 s = texture2D(u_tex, v_uv).rgb;
   if (u_bypass > 0.5) { gl_FragColor = vec4(s, 1.0); return; }
@@ -179,6 +274,7 @@ void main() {
   float k = (1.0 + u_sat) * (1.0 + u_vib * (1.0 - s0));
   c = max(vec3(y) + (c - vec3(y)) * k, 0.0);
   vec3 o = vec3(toSrgb(c.r), toSrgb(c.g), toSrgb(c.b));
+  if (u_useHsl > 0.5) o = hslAdjust(o);
   if (u_useLut > 0.5) o = vec3(curve(o.r), curve(o.g), curve(o.b));
   gl_FragColor = vec4(o, 1.0);
 }`;
@@ -258,6 +354,8 @@ export class Editor {
     });
     el.addEventListener("input", (e) => this.onInput(e));
     el.addEventListener("dblclick", (e) => {
+      const hi = (e.target as HTMLElement).closest<HTMLElement>("[data-hsl-reset]")?.dataset.hslReset;
+      if (hi !== undefined) return this.setHsl(Number(hi), 0);
       const k = (e.target as HTMLElement).closest<HTMLElement>("[data-reset]")?.dataset.reset as NumKey | undefined;
       if (k) this.set(k, 0);
     });
@@ -291,6 +389,16 @@ export class Editor {
           toggle();
         }
       });
+    });
+    this.el.querySelectorAll<HTMLElement>("[data-hsl-tab]").forEach((b) =>
+      b.addEventListener("click", () => this.setHslTab(Number(b.dataset.hslTab))),
+    );
+    this.setHslTab(loadHslTab());
+    this.q("#ed-hsl-reset").addEventListener("click", () => {
+      this.p.hsl = zeroHsl();
+      this.syncInputs();
+      if (this.bypass) this.setBefore(false);
+      this.draw();
     });
     this.q("#ed-curve-reset").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -361,8 +469,8 @@ export class Editor {
   }
 
   private markup() {
-    const rows = GROUPS.map(
-      (g) => `<div class="ed-group"><h4>${g.group}</h4>${g.items
+    const rowsOf = (g: (typeof GROUPS)[number]) =>
+      `<div class="ed-group">${g.items
         .map(
           (s) => `<div class="ed-row">
             <label data-reset="${s.key}" title="雙擊恢復為 0">${s.label}</label>
@@ -370,8 +478,20 @@ export class Editor {
             <input type="range" data-key="${s.key}" min="${s.min}" max="${s.max}" step="${s.step}" class="${s.cls ?? ""}" />
           </div>`,
         )
-        .join("")}</div>`,
-    ).join("");
+        .join("")}</div>`;
+    const light = rowsOf(GROUPS[0]);
+    const color = rowsOf(GROUPS[1]);
+    const hsl = `<div class="ed-hsl">
+        <div class="ed-hsl-head"><span>HSL</span><button id="ed-hsl-reset" class="link" title="HSL 全部恢復為 0">重設 HSL</button></div>
+        <div class="ed-tabs">${HSL_TABS.map((t, i) => `<button data-hsl-tab="${i}">${t}</button>`).join("")}</div>
+        ${BANDS.map(
+          (b, i) => `<div class="ed-row">
+            <label data-hsl-reset="${i}" title="雙擊恢復為 0">${b.label}</label>
+            <input type="number" data-hsl-num="${i}" min="-100" max="100" step="1" />
+            <input type="range" data-hsl="${i}" min="-100" max="100" step="1" class="hslr" />
+          </div>`,
+        ).join("")}
+      </div>`;
     const sync = SYNC_GROUPS.map((g) =>
       g.keys.length === 1
         ? `<div class="ed-sync-group"><label class="check grp"><input type="checkbox" data-sync="${g.keys[0]}" data-group="${g.group}" /> ${LABEL_OF[g.keys[0]]}</label></div>`
@@ -398,9 +518,15 @@ export class Editor {
         <div class="ed-scroll">
           <section class="ed-sec" data-sec="basic">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
-              <span class="ed-chev">▾</span><span class="ed-sec-title">基本調整</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <span class="ed-chev">▾</span><span class="ed-sec-title">亮度</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
             </div>
-            <div class="ed-sec-body">${rows}</div>
+            <div class="ed-sec-body">${light}</div>
+          </section>
+          <section class="ed-sec" data-sec="color">
+            <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
+              <span class="ed-chev">▾</span><span class="ed-sec-title">顏色</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+            </div>
+            <div class="ed-sec-body">${color}${hsl}</div>
           </section>
           <section class="ed-sec" data-sec="curve">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
@@ -609,7 +735,7 @@ export class Editor {
     this.q("#ed-syncbox").classList.add("hidden");
     try {
       const r = await api.getEdit(this.host.session(), it.id);
-      this.saved = clone({ ...ZERO, ...r, curve: (r.curve ?? []) as Pt[] });
+      this.saved = clone({ ...ZERO, ...r, curve: (r.curve ?? []) as Pt[], hsl: normHsl(r.hsl) });
     } catch {
       this.saved = clone(ZERO);
     }
@@ -676,6 +802,13 @@ export class Editor {
     gl.uniform1f(u("u_b"), p.blacks / 100);
     gl.uniform1f(u("u_vib"), p.vibrance / 100);
     gl.uniform1f(u("u_sat"), p.saturation / 100);
+    // HSL：每種 9 格（第 9 格 = 紅色，讓洋紅→紅之間可以混合）
+    const h = normHsl(p.hsl);
+    gl.uniform1f(u("u_useHsl"), hslActive(h) ? 1 : 0);
+    const band = (k: number) => new Float32Array([...h.slice(k * 8, k * 8 + 8), h[k * 8]]);
+    gl.uniform1fv(u("u_hh"), band(0));
+    gl.uniform1fv(u("u_hs"), band(1));
+    gl.uniform1fv(u("u_hl"), band(2));
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.lutTex);
     gl.activeTexture(gl.TEXTURE0);
@@ -845,8 +978,42 @@ export class Editor {
 
   // ---------------------------------------------------------------- 滑桿
 
+  private hslTab = 0;
+
+  /** 切換 HSL 分頁（色相 / 飽和度 / 明亮度）：滑桿換成該分頁的 8 個值與對應的色條 */
+  private setHslTab(t: number) {
+    this.hslTab = t;
+    saveHslTab(t);
+    this.el.querySelectorAll<HTMLElement>("[data-hsl-tab]").forEach((b) => b.classList.toggle("active", Number(b.dataset.hslTab) === t));
+    this.el.querySelectorAll<HTMLInputElement>("input[data-hsl]").forEach((r) => {
+      const hue = BANDS[Number(r.dataset.hsl)].hue;
+      r.style.background =
+        t === 0
+          ? `linear-gradient(90deg, hsl(${hue - 30} 75% 55%), hsl(${hue} 75% 55%), hsl(${hue + 30} 75% 55%))`
+          : t === 1
+            ? `linear-gradient(90deg, hsl(${hue} 0% 55%), hsl(${hue} 90% 55%))`
+            : `linear-gradient(90deg, hsl(${hue} 70% 18%), hsl(${hue} 70% 50%), hsl(${hue} 70% 82%))`;
+    });
+    this.syncInputs();
+  }
+
+  private setHsl(i: number, v: number, from?: HTMLInputElement) {
+    const h = normHsl(this.p.hsl);
+    h[this.hslTab * 8 + i] = Math.max(-100, Math.min(100, v));
+    this.p.hsl = h;
+    this.syncInputs(from);
+    if (this.bypass) this.setBefore(false);
+    this.draw();
+  }
+
   private onInput(e: Event) {
     const t = e.target as HTMLInputElement;
+    const hi = t.dataset.hsl ?? t.dataset.hslNum;
+    if (hi !== undefined) {
+      const v = Number(t.value);
+      if (Number.isFinite(v)) this.setHsl(Number(hi), v, t);
+      return;
+    }
     const k = (t.dataset.key ?? t.dataset.num) as NumKey | undefined;
     if (!k) return;
     const v = Number(t.value);
@@ -866,7 +1033,11 @@ export class Editor {
     const curved = cleanCurve(this.p.curve).length > 0;
     this.q("#ed-curve-reset").classList.toggle("changed", curved);
     this.q('[data-sec="curve"]').classList.toggle("has-changes", curved);
-    this.q('[data-sec="basic"]').classList.toggle("has-changes", NUM_KEYS.some((k) => Math.abs(this.p[k]) > 1e-4));
+    const any = (keys: NumKey[]) => keys.some((k) => Math.abs(this.p[k]) > 1e-4);
+    const hslOn = hslActive(normHsl(this.p.hsl));
+    this.q("#ed-hsl-reset").classList.toggle("changed", hslOn);
+    this.q('[data-sec="basic"]').classList.toggle("has-changes", any(GROUPS[0].items.map((s) => s.key)));
+    this.q('[data-sec="color"]').classList.toggle("has-changes", any(GROUPS[1].items.map((s) => s.key)) || hslOn);
   }
 
   private syncInputs(except?: HTMLInputElement) {
@@ -878,6 +1049,15 @@ export class Editor {
         i.value = i.type === "number" ? txt : String(v);
       });
       this.q(`[data-reset="${k}"]`).classList.toggle("changed", Math.abs(v) > 1e-4);
+    }
+    const h = normHsl(this.p.hsl);
+    for (let i = 0; i < 8; i++) {
+      const v = h[this.hslTab * 8 + i];
+      this.el.querySelectorAll<HTMLInputElement>(`[data-hsl="${i}"],[data-hsl-num="${i}"]`).forEach((inp) => {
+        if (inp !== except) inp.value = String(Math.round(v));
+      });
+      // 標籤：這個色彩在任一分頁有調整就標色
+      this.q(`[data-hsl-reset="${i}"]`).classList.toggle("changed", [0, 1, 2].some((t) => Math.abs(h[t * 8 + i]) > 1e-4));
     }
     this.markChanged();
     if (this.hover || this.drag) this.drawHist();
