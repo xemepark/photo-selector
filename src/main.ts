@@ -866,6 +866,21 @@ async function closeTab(i: number) {
   await openTab(tabs[activeTab]);
 }
 
+/** 關閉其他分頁：只留下 keep 這一個（預設目前的分頁） */
+async function closeOtherTabs(keep = activeTab) {
+  if (tabs.length <= 1) return toast("目前只有一個分頁");
+  if (keep !== activeTab) {
+    if (!canSwitchTab()) return;
+    await switchTab(keep);
+  }
+  const n = tabs.length - 1;
+  tabs = [S.dir ? captureTab() : tabs[activeTab]];
+  activeTab = 0;
+  saveTabs();
+  renderTabs();
+  toast(`已關閉其他 ${n} 個分頁`);
+}
+
 function tabName(dir: string) {
   const parts = dir.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? dir;
@@ -988,6 +1003,25 @@ $("tabbar").addEventListener("click", (e) => {
   if (t.closest("#tab-new")) return void newTab();
   const tab = t.closest<HTMLElement>("[data-tab]");
   if (tab) void switchTab(Number(tab.dataset.tab));
+});
+// 右鍵點分頁：關閉分頁 / 關閉其他分頁
+let ctxTab = -1;
+$("tabbar").addEventListener("contextmenu", (e) => {
+  const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]");
+  if (!tab) return;
+  e.preventDefault();
+  ctxTab = Number(tab.dataset.tab);
+  const mod = IS_MAC_UI ? "⌘" : "Ctrl+";
+  const alt = IS_MAC_UI ? "⌥" : "Alt+";
+  ctxMenu.innerHTML = [
+    ["t-close", "關閉分頁", ctxTab === activeTab ? `${mod}W` : ""],
+    ["t-others", "關閉其他分頁", ctxTab === activeTab ? `${alt}${mod}W` : ""],
+  ]
+    .map(([a, label, key]) => `<div class="item${tabs.length <= 1 ? " disabled" : ""}" data-a="${a}"><span>${label}</span><kbd>${key}</kbd></div>`)
+    .join("");
+  ctxMenu.classList.remove("hidden");
+  ctxMenu.style.left = `${Math.min(e.clientX, innerWidth - ctxMenu.offsetWidth - 6)}px`;
+  ctxMenu.style.top = `${Math.min(e.clientY, innerHeight - ctxMenu.offsetHeight - 6)}px`;
 });
 // 中鍵點分頁 = 關閉（與瀏覽器相同）
 $("tabbar").addEventListener("auxclick", (e) => {
@@ -1745,6 +1779,7 @@ document.addEventListener("keydown", (ev) => {
     return void switchTab((activeTab + (ev.shiftKey ? tabs.length - 1 : 1)) % tabs.length);
   }
   if (mod && !ev.shiftKey && (k === "t" || k === "T") && !IS_MAC_UI) return ev.preventDefault(), void newTab();
+  if (mod && ev.altKey && (k === "w" || k === "W" || ev.code === "KeyW") && !IS_MAC_UI) return ev.preventDefault(), void closeOtherTabs();
   if (mod && !ev.shiftKey && (k === "w" || k === "W") && !IS_MAC_UI) return ev.preventDefault(), void closeTab(activeTab);
 
   // 對話框開著時，鍵盤只用來關閉它（不要誤評分背景的照片）
@@ -2208,6 +2243,9 @@ on<string>("menu", (e) => {
     case "close-tab":
       void closeTab(activeTab);
       break;
+    case "close-other-tabs":
+      void closeOtherTabs();
+      break;
     case "next-tab":
       if (tabs.length > 1) void switchTab((activeTab + 1) % tabs.length);
       break;
@@ -2412,6 +2450,8 @@ function showCellMenu(index: number, ev: MouseEvent) {
 ctxMenu.addEventListener("click", (ev) => {
   const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
   hideMenu();
+  if (a === "t-close") return void closeTab(ctxTab);
+  if (a === "t-others") return void closeOtherTabs(ctxTab);
   if (a?.startsWith("f-")) {
     const p = ctxFolder;
     if (a === "f-open") void openFolder(p);

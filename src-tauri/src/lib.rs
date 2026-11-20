@@ -1083,6 +1083,7 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
             &P::separator(app)?,
             // ⌘W 關閉分頁（與瀏覽器 / Finder 相同）；關閉整個視窗改成 ⇧⌘W
             &MenuItem::with_id(app, "close-tab", "關閉分頁", true, Some("CmdOrCtrl+W"))?,
+            &MenuItem::with_id(app, "close-other-tabs", "關閉其他分頁", true, Some("Alt+CmdOrCtrl+W"))?,
             &MenuItem::with_id(app, "close-window", "關閉視窗", true, Some("CmdOrCtrl+Shift+W"))?,
         ],
     )?;
