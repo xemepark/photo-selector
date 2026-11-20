@@ -127,6 +127,7 @@ export const api = {
   createText: (dir: string, name: string, text: string) => invoke<string>("create_text", { dir, name, text }),
   createFolder: (dir: string, name: string) => invoke<string>("create_folder", { dir, name }),
   setFolderRating: (path: string, rating: number) => invoke<void>("set_folder_rating", { path, rating }),
+  trashFolder: (path: string) => invoke<void>("trash_folder", { path }),
   setFolderLabel: (path: string, label: string | null) => invoke<void>("set_folder_label", { path, label }),
   /** 旋轉 90°，存回原檔；回傳 [id, 新方向] */
   rotate: (session: number, ids: number[], clockwise: boolean) =>

@@ -190,6 +190,14 @@ pub fn transfer(items: &[&Item], dest: &Path, mv: bool, bake: bool) -> TransferR
     res
 }
 
+/// 把整個資料夾（連同裡面的檔案）移到垃圾桶
+pub fn trash_folder(path: &Path) -> Result<(), String> {
+    if !path.is_dir() {
+        return Err("找不到這個資料夾".into());
+    }
+    trash_paths(&[path.to_path_buf()])
+}
+
 /// 把檔案移到垃圾桶（macOS 被隱私權保護擋下時改請 Finder 代勞）
 fn trash_paths(paths: &[PathBuf]) -> Result<(), String> {
     #[allow(unused_mut)]

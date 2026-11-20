@@ -223,6 +223,12 @@ async fn write_text(core: CoreState<'_>, session: u64, id: u32, text: String) ->
     .map_err(|e| e.to_string())?
 }
 
+/// 把資料夾移到垃圾桶
+#[tauri::command]
+async fn trash_folder(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || ops::trash_folder(&PathBuf::from(path))).await.map_err(|e| e.to_string())?
+}
+
 /// 資料夾評等（寫在資料夾裡的隱藏檔）
 #[tauri::command]
 async fn set_folder_rating(path: String, rating: i32) -> Result<(), String> {
@@ -1125,6 +1131,7 @@ pub fn run() {
             create_text,
             create_folder,
             set_folder_rating,
+            trash_folder,
             set_folder_label,
             set_rating,
             set_label,

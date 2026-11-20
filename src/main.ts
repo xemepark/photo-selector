@@ -1740,7 +1740,9 @@ document.addEventListener("keydown", (ev) => {
   // Mac 鍵盤的 delete 鍵送出的是 Backspace；Windows / 外接鍵盤則是 Delete
   if ((k === "Backspace" || k === "Delete") && !S.compare.length) {
     ev.preventDefault();
-    void deleteTargets();
+    // 選了縮圖區的資料夾：刪除資料夾
+    if (S.folderSel && !S.loupe && !slideshow.active) void deleteFolder(S.folderSel);
+    else void deleteTargets();
     return;
   }
 
@@ -2342,6 +2344,7 @@ ctxMenu.addEventListener("click", (ev) => {
     else if (a === "f-tab") void newTab(p);
     else if (a === "f-reveal") api.openDir(p).catch((e) => toast(`無法開啟：${e}`));
     else if (a === "f-new") void newFolder();
+    else if (a === "f-trash") void deleteFolder(p);
     return;
   }
   if (!a || S.focus === null) return;
@@ -2378,13 +2381,48 @@ function showFolderMenu(path: string, ev: MouseEvent) {
     ["f-reveal", isMac ? "在 Finder 中開啟" : "在檔案總管中開啟"],
     ["-", ""],
     ["f-new", "新增資料夾…"],
+    ["-", ""],
+    ["f-trash", "移到垃圾桶"],
   ];
   ctxMenu.innerHTML = items
-    .map(([a, label]) => (a === "-" ? `<div class="sep"></div>` : `<div class="item" data-a="${a}"><span>${label}</span><kbd></kbd></div>`))
+    .map(([a, label]) =>
+      a === "-"
+        ? `<div class="sep"></div>`
+        : `<div class="item${a === "f-trash" ? " danger" : ""}" data-a="${a}"><span>${label}</span><kbd>${a === "f-trash" ? "⌫" : ""}</kbd></div>`,
+    )
     .join("");
   ctxMenu.classList.remove("hidden");
   ctxMenu.style.left = `${Math.min(ev.clientX, innerWidth - ctxMenu.offsetWidth - 6)}px`;
   ctxMenu.style.top = `${Math.min(ev.clientY, innerHeight - ctxMenu.offsetHeight - 6)}px`;
+}
+
+/** 把資料夾（連同裡面的檔案）移到垃圾桶；確認方式與刪除照片相同 */
+let deletingFolder = false;
+async function deleteFolder(path: string) {
+  const d = S.subdirs.find((x) => x.path === path);
+  if (!d || deletingFolder) return;
+  if (confirmDelete.checked) {
+    const ok = await ask(`把資料夾「${d.name}」連同裡面所有的檔案移到垃圾桶？\n需要時可以從垃圾桶復原。`, {
+      title: "刪除資料夾",
+      kind: "warning",
+      okLabel: "移到垃圾桶",
+      cancelLabel: "取消",
+    });
+    if (!ok) return;
+  }
+  deletingFolder = true;
+  try {
+    await api.trashFolder(path);
+    S.subdirs = S.subdirs.filter((x) => x.path !== path);
+    update();
+    void folderTree.refresh();
+    toast(`已將資料夾「${d.name}」移到垃圾桶`, 2000);
+  } catch (e) {
+    toast(`無法刪除資料夾「${d.name}」：${e}`, 8000);
+  } finally {
+    deletingFolder = false;
+    gridEl.focus();
+  }
 }
 
 /** 輸入名稱的小對話框；submit 回傳錯誤訊息時保持開啟並顯示錯誤 */
