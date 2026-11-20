@@ -29,10 +29,17 @@ export function imageMode(): Mode {
 
 function remember(url: string, blobUrl: string) {
   blobs.set(url, blobUrl);
-  if (blobs.size > MAX_BLOBS) {
+  // 超過上限時釋放最久沒用的；畫面上還在顯示的不釋放
+  // （macOS 的 WebKit 在圖片重新排版時會再讀一次網址，已釋放就變成破圖「?」）
+  let guard = blobs.size;
+  while (blobs.size > MAX_BLOBS && guard-- > 0) {
     const [k, v] = blobs.entries().next().value as [string, string];
     blobs.delete(k);
-    URL.revokeObjectURL(v); // 已顯示的圖片不受影響
+    if (document.querySelector(`img[src="${v}"]`)) {
+      blobs.set(k, v);
+      continue;
+    }
+    URL.revokeObjectURL(v);
   }
 }
 

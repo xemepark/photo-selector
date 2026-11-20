@@ -45,6 +45,8 @@ interface Cell {
   seq: number;
   /** 正式縮圖已顯示（不是快速小縮圖） */
   full: boolean;
+  /** 正式縮圖的預先載入 */
+  pre: HTMLImageElement | null;
 }
 
 const PAD = 6;
@@ -273,10 +275,12 @@ export class Grid {
       timer: 0,
       seq: 0,
       full: false,
+      pre: null,
     };
     c.img.addEventListener("load", () => {
       c.img.setAttribute("data-loaded", "");
-      if (!c.img.src.includes("/q/")) c.full = true;
+      c.full = true;
+      c.frame.style.backgroundImage = "";
     });
     this.spacer.appendChild(root);
     return c;
@@ -286,21 +290,15 @@ export class Grid {
   private loadThumb(c: Cell) {
     const id = c.id;
     const seq = ++c.seq;
-    // 第一次載入：先顯示檔案內嵌的小縮圖（幾乎立刻出現、略模糊），正式縮圖好了再換上
-    if (c.retry === 0 && !c.img.getAttribute("src") && imageMode() === "direct") {
-      const img = c.img;
-      const q = url.quick(this.host.session(), id);
-      img.dataset.want = q;
-      img.addEventListener(
-        "error",
-        () => {
-          if (img.dataset.want === q) img.removeAttribute("src");
-        },
-        { once: true },
-      );
-      img.src = q;
+    this.armWatch(c, id);
+    // 第一次載入：先把檔案內嵌的小縮圖當成格子的背景顯示（幾乎立刻出現、略模糊），正式縮圖好了蓋在上面。
+    // 小縮圖放在背景而不是 <img>：沒有小縮圖（404）時不會觸發 <img> 的錯誤處理，也不會出現破圖
+    if (c.retry === 0 && !c.full && !c.img.getAttribute("src") && imageMode() === "direct") {
+      c.frame.style.backgroundImage = `url("${url.quick(this.host.session(), id)}")`;
       const pre = new Image();
+      c.pre = pre; // 留著參照，避免載入中被回收
       const go = () => {
+        if (c.pre === pre) c.pre = null;
         if (c.id === id && c.seq === seq) this.loadFull(c, id);
       };
       pre.onload = go;
@@ -311,7 +309,8 @@ export class Grid {
     this.loadFull(c, id);
   }
 
-  private loadFull(c: Cell, id: number) {
+  /** 看門狗：在畫面上卻遲遲沒顯示正式縮圖時重新要求 */
+  private armWatch(c: Cell, id: number) {
     clearTimeout(c.watch);
     c.watch = window.setTimeout(() => {
       if (c.id === id && this.cells.get(c.index) === c && !c.full) {
@@ -319,6 +318,10 @@ export class Grid {
         this.loadThumb(c);
       }
     }, 6000 + Math.min(c.retry, 5) * 2000);
+  }
+
+  private loadFull(c: Cell, id: number) {
+    this.armWatch(c, id);
     setImg(c.img, url.thumb(this.host.session(), id), (status) => {
       if (c.id !== id) return;
       // 410 = 後端認為不在畫面上；這格明明在畫面上，就重新回報可見範圍（保險）
@@ -343,6 +346,8 @@ export class Grid {
     c.id = -1;
     c.seq++;
     c.full = false;
+    c.pre = null;
+    c.frame.style.backgroundImage = "";
     c.root.style.display = "none";
     c.img.removeAttribute("data-loaded");
     clearImg(c.img);
@@ -359,6 +364,7 @@ export class Grid {
     c.root.title = item.files.join("\n");
     c.img.removeAttribute("data-loaded");
     c.full = false;
+    c.frame.style.backgroundImage = "";
     this.loadThumb(c);
   }
 
