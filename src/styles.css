@@ -140,6 +140,8 @@ h3 {
 .info dt { color: var(--muted); }
 .info dd { margin: 0; word-break: break-all; user-select: text; }
 .actions { display: flex; flex-direction: column; gap: 6px; }
+.action-row { display: flex; gap: 6px; }
+.action-row > button { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 4px; padding-right: 4px; }
 
 /* ---------- status ---------- */
 #status {
