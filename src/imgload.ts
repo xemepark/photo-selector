@@ -71,7 +71,8 @@ export function setImg(el: HTMLImageElement, url: string, onFail?: (status: numb
     if (r.ok) {
       el.src = r.src;
     } else {
-      if (r.status !== 410) report(`圖片載入失敗：${r.msg}`);
+      // 410 = 捲出畫面被取消、404 = 換了資料夾（舊的請求作廢），呼叫端會自動重試，不算錯誤
+      if (r.status !== 410 && r.status !== 404) report(`圖片載入失敗：${r.msg}`);
       onFail?.(r.status);
     }
   };
