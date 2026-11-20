@@ -565,6 +565,50 @@ fn hsv_to_rgb(hue: f32, s: f32, v: f32) -> [f32; 3] {
     }
 }
 
+/// 修補一律在長邊約 2560（與調整視窗相同）的解析度計算：內容感知合成與解析度有關，
+/// 原尺寸較大時先縮小計算，再把「修補前後的差」放大加回原圖，結果與調整視窗看到的一致
+fn apply_spots_ref(rgb: &mut RgbImage, spots: &[crate::heal::Spot]) {
+    const REF: u32 = crate::render::PREVIEW_EDGE;
+    let (w, h) = rgb.dimensions();
+    let long = w.max(h);
+    if long <= REF + REF / 20 {
+        crate::heal::apply_spots(rgb, spots);
+        return;
+    }
+    let sw = ((w as u64 * REF as u64) / long as u64).max(1) as u32;
+    let sh = ((h as u64 * REF as u64) / long as u64).max(1) as u32;
+    let small = image::imageops::thumbnail(rgb, sw, sh);
+    let mut healed = small.clone();
+    crate::heal::apply_spots(&mut healed, spots);
+    // 差值（只有修補範圍不為 0）
+    let diff: Vec<f32> = healed.as_raw().iter().zip(small.as_raw()).map(|(a, b)| *a as f32 - *b as f32).collect();
+    let (swu, shu) = (sw as usize, sh as usize);
+    let at = |x: usize, y: usize, k: usize| diff[(y * swu + x) * 3 + k];
+    let wu = w as usize;
+    rgb.as_mut().par_chunks_mut(wu * 3).enumerate().for_each(|(y, row)| {
+        let fy = ((y as f32 + 0.5) * sh as f32 / h as f32 - 0.5).clamp(0.0, (shu - 1) as f32);
+        let y0 = fy.floor() as usize;
+        let y1 = (y0 + 1).min(shu - 1);
+        let ty = fy - y0 as f32;
+        for x in 0..wu {
+            let fx = ((x as f32 + 0.5) * sw as f32 / w as f32 - 0.5).clamp(0.0, (swu - 1) as f32);
+            let x0 = fx.floor() as usize;
+            let x1 = (x0 + 1).min(swu - 1);
+            let tx = fx - x0 as f32;
+            for k in 0..3 {
+                let a = at(x0, y0, k) * (1.0 - tx) + at(x1, y0, k) * tx;
+                let b = at(x0, y1, k) * (1.0 - tx) + at(x1, y1, k) * tx;
+                let d = a * (1.0 - ty) + b * ty;
+                if d.abs() < 0.01 {
+                    continue;
+                }
+                let v = row[x * 3 + k] as f32 + d;
+                row[x * 3 + k] = v.round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    });
+}
+
 /// 套用到整張影像（rayon 逐列平行處理）
 pub fn apply_rgb(img: &mut RgbImage, p: &Params) {
     if p.is_color_identity() {
@@ -593,7 +637,7 @@ pub fn apply(img: DynamicImage, p: &Params) -> DynamicImage {
     let mut rgb = img.to_rgb8();
     // 修補在最前面（作用在原圖上，與 Camera Raw 相同）
     if !p.spots.is_empty() {
-        crate::heal::apply_spots(&mut rgb, &p.spots);
+        apply_spots_ref(&mut rgb, &p.spots);
     }
     // 再裁切（像素少、算得快；與畫面預覽相同：先取樣再調色）
     let crop = clean_crop(&p.crop);

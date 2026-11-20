@@ -159,6 +159,10 @@ fn jpeg_embedded_preview(data: &[u8], min_edge: u32) -> Option<jpeg::EmbeddedJpe
 pub fn render_medium(item: &Item) -> Result<(Vec<u8>, bool)> {
     let f = item.display();
     let adj = crate::edit::load(item);
+    // 有修補：與調整視窗相同的解析度計算（直接做完整預覽）
+    if adj.as_ref().is_some_and(|p| !p.spots.is_empty()) {
+        return Ok((render(item, Kind::Preview)?, true));
+    }
     if f.class == Class::Jpeg {
         let has_embedded = File::open(&f.path)
             .ok()
@@ -208,7 +212,18 @@ pub fn render(item: &Item, kind: Kind) -> Result<Vec<u8>> {
         .filter(|p| p.crop.len() == 5)
         .map(|p| (1.0 / p.crop[2].min(p.crop[3]).max(0.25)).min(4.0))
         .unwrap_or(1.0);
-    let big = |edge: u32| if edge == u32::MAX { edge } else { ((edge as f32 * grow) as u32).min(edge.max(4096)) };
+    // 有修補時一律在與調整視窗相同的解析度（長邊 2560）計算再縮小：內容感知合成與解析度有關，
+    // 直接在小縮圖上算會取到不同（甚至錯誤）的素材，縮圖和調整視窗看到的就不一樣
+    let spots = adj.as_ref().is_some_and(|p| !p.spots.is_empty());
+    let big = |edge: u32| {
+        if edge == u32::MAX {
+            edge
+        } else if spots {
+            PREVIEW_EDGE.max(((edge as f32 * grow) as u32).min(4096))
+        } else {
+            ((edge as f32 * grow) as u32).min(edge.max(4096))
+        }
+    };
     let finish = |img: DynamicImage, edge: u32, q: u8| -> Result<Vec<u8>> {
         let img = fit(img, big(edge));
         let img = match &adj {
