@@ -319,6 +319,7 @@ export class Grid {
         el = document.createElement("div");
         el.className = "cell folder-cell";
         el.dataset.folder = String(i);
+        el.dataset.path = d.path;
         el.title = `${d.path}\n按兩下開啟；拖到分頁列的「＋」用新分頁開啟`;
         el.innerHTML = `<div class="frame">${FOLDER_SVG}</div><div class="cap"><span class="stars"></span><span class="dot"></span><span class="name"></span></div>`;
         el.querySelector(".name")!.textContent = d.name;

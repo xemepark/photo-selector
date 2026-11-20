@@ -590,3 +590,5 @@ body.folder-dragging, body.folder-dragging * { cursor: grabbing !important; }
   padding: 7px 10px; color: var(--text); user-select: text; font-size: 14px;
 }
 .name-err { color: #ff8a80; font-size: 12px; min-height: 16px; margin-top: 6px; }
+.folder-cell.drop-target { outline: 3px solid var(--accent); outline-offset: -3px; background: #f5b32b22; }
+.folder-cell.drop-target .folder-ico { transform: scale(1.08); filter: drop-shadow(0 0 10px #f5b32b88); }

@@ -901,24 +901,32 @@ async function measureTitleBar() {
 void measureTitleBar();
 window.addEventListener("resize", () => void measureTitleBar());
 
-/** 視窗座標（實體像素）下的分頁索引；不在分頁上回傳 -1 */
+/** 拖放座標下的網頁元素（macOS：座標是點、從視窗最上緣含標題列算起；其他系統是實體像素） */
+function elementAtDrop(pos: { x: number; y: number } | undefined): HTMLElement | null {
+  if (!pos) return null;
+  if (IS_MAC_UI) return document.elementFromPoint(pos.x, pos.y - titleBarH) as HTMLElement | null;
+  const dpr = window.devicePixelRatio || 1;
+  return document.elementFromPoint(pos.x / dpr, pos.y / dpr) as HTMLElement | null;
+}
+
+/** 視窗座標下的分頁索引；不在分頁上回傳 -1 */
 function tabAt(pos: { x: number; y: number } | undefined): number {
-  if (!pos) return -1;
-  if (IS_MAC_UI) {
-    // macOS：座標是點（不必除倍率），而且從視窗最上緣（含標題列）算起
-    const el = document.elementFromPoint(pos.x, pos.y - titleBarH) as HTMLElement | null;
-    const t = el?.closest<HTMLElement>("[data-tab]");
-    return t ? Number(t.dataset.tab) : -1;
-  }
-  // macOS 回報的拖放座標已經是點（邏輯像素），其他系統是實體像素
-  const dpr = IS_MAC_UI ? 1 : window.devicePixelRatio || 1;
-  const el = document.elementFromPoint(pos.x / dpr, pos.y / dpr) as HTMLElement | null;
-  const t = el?.closest<HTMLElement>("[data-tab]");
+  const t = elementAtDrop(pos)?.closest<HTMLElement>("[data-tab]");
   return t ? Number(t.dataset.tab) : -1;
+}
+
+/** 視窗座標下縮圖區的資料夾格子 */
+function folderCellAt(pos: { x: number; y: number } | undefined): HTMLElement | null {
+  return elementAtDrop(pos)?.closest<HTMLElement>(".folder-cell[data-path]") ?? null;
 }
 
 function markDropTab(i: number) {
   document.querySelectorAll<HTMLElement>("#tabbar [data-tab]").forEach((t) => t.classList.toggle("drop-target", Number(t.dataset.tab) === i && i !== activeTab));
+}
+
+function markDropFolder(el: HTMLElement | null) {
+  document.querySelectorAll<HTMLElement>(".folder-cell.drop-target").forEach((c) => c !== el && c.classList.remove("drop-target"));
+  el?.classList.add("drop-target");
 }
 
 /** 放到分頁上：問要複製還是移動（仿 Finder 的右鍵拖曳選單） */
@@ -927,9 +935,20 @@ function dropOnTab(i: number, ids: number[]) {
   if (!t || i === activeTab || !ids.length) return;
   if (t.dir === S.dir) return toast("這個分頁和目前是同一個資料夾");
   const tabEl = document.querySelector<HTMLElement>(`#tabbar [data-tab="${i}"]`);
-  const r = tabEl?.getBoundingClientRect();
+  showDropMenu(tabEl?.getBoundingClientRect(), tabName(t.dir), t.dir, ids);
+}
+
+/** 放到縮圖區的子資料夾上：一樣問要複製還是移動 */
+function dropOnFolder(el: HTMLElement, ids: number[]) {
+  const path = el.dataset.path;
+  if (!path || !ids.length) return;
+  const r = el.getBoundingClientRect();
+  showDropMenu(new DOMRect(r.left, r.top + r.height * 0.55, r.width, 0), folderLabel(path), path, ids);
+}
+
+function showDropMenu(r: DOMRect | undefined, name: string, dest: string, ids: number[]) {
   const menu = $("tab-drop-menu");
-  $("tab-drop-title").textContent = `${ids.length} 個項目 → 「${tabName(t.dir)}」`;
+  $("tab-drop-title").textContent = `${ids.length} 個項目 → 「${name}」`;
   menu.style.left = `${Math.max(8, Math.min(window.innerWidth - 230, r ? r.left : 100))}px`;
   menu.style.top = `${r ? r.bottom + 4 : 80}px`;
   menu.classList.remove("hidden");
@@ -938,7 +957,7 @@ function dropOnTab(i: number, ids: number[]) {
     menu.onclick = null;
     document.removeEventListener("keydown", onKey, true);
     document.removeEventListener("pointerdown", onAway, true);
-    if (mode) void transferIds(ids, t.dir, mode, false);
+    if (mode) void transferIds(ids, dest, mode, false);
   };
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") e.preventDefault(), e.stopPropagation(), done(null);
@@ -2271,14 +2290,22 @@ async function openPath(text: string): Promise<boolean> {
     // 自己的縮圖拖到分頁上：反白那個分頁；放下 = 複製 / 移動到那個分頁的資料夾
     const ps = "paths" in p ? (p as { paths: string[] }).paths : undefined;
     if (p.type === "enter" || p.type === "drop") ownDrop = own(ps);
-    if (ownDrop && tabs.length > 1) {
-      if (p.type === "over" || p.type === "enter") markDropTab(tabAt(p.position));
-      else if (p.type === "leave") markDropTab(-1);
-      else if (p.type === "drop") {
+    // 自己的縮圖拖到縮圖區的子資料夾上：反白那個資料夾；放下 = 複製 / 移動到該資料夾
+    if (ownDrop) {
+      if (p.type === "over" || p.type === "enter") {
+        markDropTab(tabs.length > 1 ? tabAt(p.position) : -1);
+        markDropFolder(folderCellAt(p.position));
+      } else if (p.type === "leave") {
         markDropTab(-1);
+        markDropFolder(null);
+      } else if (p.type === "drop") {
+        markDropTab(-1);
+        markDropFolder(null);
         ownDrop = false;
-        const i = tabAt(p.position);
+        const i = tabs.length > 1 ? tabAt(p.position) : -1;
+        const fc = folderCellAt(p.position);
         if (i >= 0) dropOnTab(i, dragIds);
+        else if (fc) dropOnFolder(fc, dragIds);
       }
       return;
     }
