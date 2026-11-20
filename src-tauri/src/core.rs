@@ -212,6 +212,9 @@ impl Core {
             return;
         }
         let Some(item) = sess.items.get(id as usize) else { return };
+        if item.is_text() {
+            return;
+        }
         let dk = disk_key(item);
         if self.cache.has_thumb(&dk) {
             return;
@@ -330,6 +333,19 @@ impl Core {
         };
         let key = item.display().cache_key();
 
+        // 文字檔：縮圖 / 預覽都是「紙張」SVG（每次現做，內容改了馬上看得到）
+        if item.is_text() {
+            if job.kind == Kind::Quick {
+                return respond_status(job.responder, StatusCode::NOT_FOUND);
+            }
+            if job.kind == Kind::Thumb {
+                self.mark_done(job.session, job.id);
+            }
+            let f = item.display();
+            let svg = crate::text::thumb_svg(&crate::text::read_head(&f.path, 4096), &f.ext);
+            return respond(job.responder, StatusCode::OK, "image/svg+xml", svg, false);
+        }
+
         if matches!(job.kind, Kind::Thumb | Kind::Quick) {
             if let Some(bytes) = self.cache.get_thumb(&disk_key(item)) {
                 self.mark_done(job.session, job.id);
@@ -396,6 +412,9 @@ impl Core {
 
     /// 取得某項目的縮圖 JPEG（記憶體 → 磁碟快取 → 現算），給拖曳圖示等用途
     pub fn thumb_bytes(&self, item: &Item) -> anyhow::Result<Arc<Vec<u8>>> {
+        if item.is_text() {
+            return Ok(Arc::new(crate::text::paper_jpeg()?));
+        }
         let key = item.display().cache_key();
         if let Some(b) = self.mem_thumbs.lock().get(&key).cloned() {
             return Ok(b);

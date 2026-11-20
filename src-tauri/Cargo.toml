@@ -13,6 +13,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 anyhow = "1.0.104"
+encoding_rs = "0.8.35"
 filetime = "0.2.29"
 image = { version = "0.25.10", default-features = false, features = ["png", "tiff", "webp", "gif", "bmp", "jpeg"] }
 jpeg-decoder = "0.3.2"

@@ -531,3 +531,38 @@ body.resizing { cursor: col-resize; user-select: none; }
 .ed-resizer:hover, .ed-resizer:active { background: var(--accent); opacity: .5; }
 .filter-sep { height: 1px; background: var(--line); margin: 6px 0 6px 18px; }
 .filter-group.folded > .filter-sep { display: none; }
+
+/* ---------- 文字檔：預覽與內建編輯器 ---------- */
+.loupe-text { position: absolute; inset: 0 0 44px 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; padding: 28px 16px 70px; }
+.loupe-text.hidden { display: none; }
+.lt-page {
+  width: min(820px, 100%); background: #fff; color: #222; border-radius: 4px; box-shadow: 0 10px 40px #0008;
+  padding: 40px 48px; min-height: 60vh;
+}
+.lt-page pre {
+  margin: 0; white-space: pre-wrap; word-break: break-word; user-select: text;
+  font: 15px/1.75 -apple-system, "PingFang TC", "Heiti TC", "Microsoft JhengHei", "Noto Sans CJK TC", sans-serif;
+}
+.lt-page pre.empty { color: #999; text-align: center; padding-top: 40px; }
+#loupe-text-edit { position: fixed; right: 24px; bottom: 60px; z-index: 3; box-shadow: 0 4px 16px #0006; }
+.stage.hidden { display: none; }
+.te-box { width: min(860px, calc(100% - 32px)); max-height: calc(100% - 40px); display: flex; flex-direction: column; overflow: hidden; }
+.te-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+.te-head h2 { margin: 0; }
+.te-file { color: var(--muted); word-break: break-all; }
+.te-name { display: flex; align-items: center; gap: 6px; color: var(--muted); flex: 1; min-width: 240px; }
+.te-name input {
+  flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
+  color: var(--text); user-select: text;
+}
+.te-note { font-size: 12px; color: #f5c46b; background: #f5c46b14; border: 1px solid #f5c46b40; border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; }
+.te-box textarea {
+  flex: 1; min-height: 52vh; resize: none; background: #fff; color: #222; border: 1px solid var(--line); border-radius: 6px;
+  padding: 16px 18px; outline: none; user-select: text; tab-size: 4;
+  font: 15px/1.7 -apple-system, "PingFang TC", "Heiti TC", "Microsoft JhengHei", "Noto Sans CJK TC", sans-serif;
+}
+.te-box textarea:focus { border-color: var(--accent); }
+.te-confirm { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: var(--panel-2); }
+.te-confirm span { flex: 1; }
+.te-confirm.hidden { display: none; }
+.te-count { color: var(--muted); }

@@ -16,6 +16,7 @@ mod orient;
 mod ops;
 mod render;
 mod scan;
+mod text;
 mod tiff;
 mod xmp;
 mod zipout;
@@ -178,6 +179,80 @@ fn write_meta(core: &Core, it: &scan::Item, rating: Option<i32>, label: Option<O
         xmp::update(&it.sidecar_path(), rating, label).map_err(err)?;
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct TextDto {
+    text: String,
+    /// RTF 檔：存檔後粗體、顏色等格式會移除
+    rtf: bool,
+    name: String,
+}
+
+/// 讀取文字檔內容
+#[tauri::command]
+async fn read_text(core: CoreState<'_>, session: u64, id: u32) -> Result<TextDto, String> {
+    let sess = core.session(session)?;
+    let it = sess.items.get(id as usize).ok_or("找不到項目")?.clone();
+    if !it.is_text() {
+        return Err("不是文字檔".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let f = it.display();
+        let text = text::read(&f.path).map_err(|e| format!("無法讀取 {}：{e}", f.name))?;
+        Ok(TextDto { text, rtf: text::is_rtf(&f.path), name: f.name.clone() })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 儲存文字檔
+#[tauri::command]
+async fn write_text(core: CoreState<'_>, session: u64, id: u32, text: String) -> Result<(), String> {
+    let sess = core.session(session)?;
+    let it = sess.items.get(id as usize).ok_or("找不到項目")?.clone();
+    if !it.is_text() {
+        return Err("不是文字檔".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let f = it.display();
+        text::write(&f.path, &text).map_err(|e| format!("無法儲存 {}：{e}", f.name))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 在資料夾裡新增文字檔，回傳實際的檔名（沒有副檔名時加上 .txt）
+#[tauri::command]
+async fn create_text(dir: String, name: String, text: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut name = name.trim().to_string();
+        if name.is_empty() {
+            name = "未命名".into();
+        }
+        if name.contains(['/', '\\', ':']) || name.starts_with('.') {
+            return Err("檔名不能包含 / \\ : ，也不能以 . 開頭".to_string());
+        }
+        let ext = std::path::Path::new(&name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if !text::TEXT_EXTS.contains(&ext.as_str()) {
+            name.push_str(".txt");
+        }
+        let path = PathBuf::from(&dir).join(&name);
+        let data = if text::is_rtf(&path) { text::text_to_rtf(&text) } else { text };
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("資料夾裡已經有「{name}」，請換一個檔名")
+            } else {
+                format!("無法建立 {name}：{e}")
+            }
+        })?;
+        f.write_all(data.as_bytes()).map_err(|e| format!("無法寫入 {name}：{e}"))?;
+        Ok(name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 讀取一張照片的調整設定（沒有 = 全部 0）
@@ -997,6 +1072,9 @@ pub fn run() {
             open_folder,
             set_viewport,
             set_order,
+            read_text,
+            write_text,
+            create_text,
             set_rating,
             set_label,
             transfer,

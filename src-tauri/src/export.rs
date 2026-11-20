@@ -160,6 +160,7 @@ pub(crate) fn load(item: &Item, formats: &[FormatOptions]) -> Result<Source> {
             // 內嵌預覽通常沒有 EXIF；RAW 本身的 TIFF 檔頭含大量私有資料，不直接複製
             render::decode_jpeg_with_meta(j.bytes(&data), min)?
         }
+        Class::Text => return Err(anyhow!("文字檔不能轉存成影像")),
     };
     // 套用「調整」設定（在色彩轉換之前，與畫面上看到的一致）
     let img = crate::edit::apply_item(item, render::apply_orientation(img, orient));

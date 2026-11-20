@@ -44,6 +44,7 @@
           <div class="actions">
             <button id="btn-copy">複製選取項目到…</button>
             <button id="btn-move">移動選取項目到…</button>
+            <button id="btn-new-text" title="在目前的資料夾新增一個文字檔（按兩下文字檔可以再編輯）">＋ 新增文字檔</button>
             <button id="btn-settings" title="刪除確認、拖曳、提示訊息、標籤名稱等設定">⚙ 系統設定…</button>
           </div>
         </section>
@@ -86,6 +87,10 @@
 
     <div id="loupe" class="overlay hidden">
       <div id="loupe-stage" class="stage"><img id="loupe-img" alt="" /></div>
+      <div id="loupe-text" class="loupe-text hidden">
+        <div class="lt-page"><pre id="loupe-text-body"></pre></div>
+        <button id="loupe-text-edit" class="primary" title="用內建編輯器編輯（也可以在縮圖上按兩下）">編輯文字</button>
+      </div>
       <div id="loupe-faces"></div>
       <div id="loupe-info" class="overlay-info"></div>
     </div>

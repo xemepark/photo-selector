@@ -188,6 +188,11 @@ fn shutter(t: f64) -> String {
 }
 
 pub fn read_meta(item: &Item) -> Meta {
+    // 文字檔：只有附屬檔裡的評等 / 標籤
+    if item.is_text() {
+        let rl = xmp::read_sidecar(&item.sidecar_path()).unwrap_or_default();
+        return Meta { rating: rl.rating.unwrap_or(0), label: rl.label, ..Default::default() };
+    }
     let mut r = Raw::default();
     // RAW+JPEG 配對時，讀 JPEG 的 EXIF 最快也最完整
     file_exif(item.display(), &mut r);

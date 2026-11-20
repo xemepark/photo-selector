@@ -13,10 +13,19 @@ pub struct TransferResult {
     pub failed: Vec<String>,
 }
 
+/// 文字檔的附屬檔（notes.txt.xmp）：回傳它所屬檔案在 files 裡的位置
+fn text_sidecar_owner(files: &[PathBuf], p: &Path) -> Option<usize> {
+    if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmp")) {
+        return None;
+    }
+    let stem = p.file_stem()?.to_string_lossy().to_lowercase();
+    files.iter().position(|q| q.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase() == stem))
+}
+
 fn target_names(files: &[PathBuf], dest: &Path) -> Vec<PathBuf> {
     let mut n = 0;
     loop {
-        let names: Vec<PathBuf> = files
+        let mut names: Vec<PathBuf> = files
             .iter()
             .map(|p| {
                 let stem = p.file_stem().unwrap_or_default().to_string_lossy();
@@ -24,6 +33,13 @@ fn target_names(files: &[PathBuf], dest: &Path) -> Vec<PathBuf> {
                 if n == 0 { dest.join(format!("{stem}{ext}")) } else { dest.join(format!("{stem}_{n}{ext}")) }
             })
             .collect();
+        // 文字檔的附屬檔跟著文字檔的新名稱（notes_1.txt → notes_1.txt.xmp）
+        for (i, p) in files.iter().enumerate() {
+            if let Some(o) = text_sidecar_owner(files, p) {
+                let owner = names[o].file_name().unwrap_or_default().to_string_lossy().into_owned();
+                names[i] = dest.join(format!("{owner}.xmp"));
+            }
+        }
         if names.iter().all(|p| !p.exists()) {
             return names;
         }
@@ -213,6 +229,15 @@ pub enum RenameMode {
 }
 
 fn new_path(dir: &Path, src: &Path, stem: &str) -> PathBuf {
+    // 文字檔的附屬檔：notes.txt.xmp → 新名.txt.xmp
+    if src.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmp")) {
+        if let Some(inner) = src.file_stem().map(Path::new).and_then(|s| s.extension()) {
+            let ie = inner.to_string_lossy().to_lowercase();
+            if crate::text::TEXT_EXTS.contains(&ie.as_str()) {
+                return dir.join(format!("{stem}.{}.xmp", inner.to_string_lossy()));
+            }
+        }
+    }
     match src.extension() {
         Some(e) => dir.join(format!("{stem}.{}", e.to_string_lossy())),
         None => dir.join(stem),

@@ -118,6 +118,7 @@ pub fn decode_source(item: &Item, min_edge: u32) -> Result<DynamicImage> {
             let j = jpeg::pick(&list, want).ok_or_else(|| anyhow!("找不到內嵌預覽圖"))?;
             decode_jpeg_scaled(j.bytes(&data), min_edge)?
         }
+        Class::Text => return Err(anyhow!("文字檔沒有影像")),
     };
     Ok(apply_orientation(img, orient))
 }

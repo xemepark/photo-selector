@@ -1,6 +1,6 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 
-export type Kind = "raw+jpeg" | "raw" | "jpeg" | "image" | "other";
+export type Kind = "raw+jpeg" | "raw" | "jpeg" | "image" | "other" | "text";
 
 export interface Item {
   id: number;
@@ -119,6 +119,9 @@ export const api = {
   openFolder: (path: string) => invoke<OpenResult>("open_folder", { path }),
   setViewport: (session: number, ids: number[]) => invoke<void>("set_viewport", { session, ids }),
   setOrder: (session: number, ids: number[]) => invoke<void>("set_order", { session, ids }),
+  readText: (session: number, id: number) => invoke<{ text: string; rtf: boolean; name: string }>("read_text", { session, id }),
+  writeText: (session: number, id: number, text: string) => invoke<void>("write_text", { session, id, text }),
+  createText: (dir: string, name: string, text: string) => invoke<string>("create_text", { dir, name, text }),
   /** 旋轉 90°，存回原檔；回傳 [id, 新方向] */
   rotate: (session: number, ids: number[], clockwise: boolean) =>
     invoke<{ done: [number, number][]; failed: string[] }>("rotate", { session, ids, clockwise }),

@@ -26,6 +26,7 @@ import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { BatchRename } from "./rename";
 import { Exporter } from "./exporter";
 import { Editor } from "./editor";
+import { TextEditor } from "./textedit";
 import { FolderTree } from "./foldertree";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
 import { Cull, Analysis, drawFaces, contentRect } from "./cull";
@@ -97,6 +98,8 @@ const grid = new Grid(gridEl, $("grid-spacer"), {
   onCellUp,
   onCellOpen: (i) => {
     setFocus(S.view[i].id, false);
+    // 文字檔：按兩下直接用內建編輯器開啟
+    if (S.view[i].kind === "text") return void textEditor.openEdit(S.session, S.view[i].id);
     openLoupe();
   },
   // 調整視窗開著時由它管理（縮圖列的照片不一定在主畫面上，不能被當成捲出畫面而取消）
@@ -241,6 +244,7 @@ const KIND_NAMES: Record<string, string> = {
   jpeg: "JPEG",
   image: "其他影像",
   other: "其他格式",
+  text: "文字",
 };
 
 const LOADING = "\u0000loading";
@@ -526,7 +530,7 @@ function fileInfoHtml(id: number, info: FileInfo | undefined) {
     seg.push(size);
     seg.push(`建立 ${fmtDateTime(info.created)}`);
     seg.push(`修改 ${fmtDateTime(info.modified)}`);
-    seg.push(`色彩空間 ${escapeHtml(info.color_space ?? "未標示（視為 sRGB）")}`);
+    if (S.items[id]?.kind !== "text") seg.push(`色彩空間 ${escapeHtml(info.color_space ?? "未標示（視為 sRGB）")}`);
   } else {
     if (m?.camera) seg.push(escapeHtml(m.camera));
     if (m?.width && m?.height) seg.push(`${m.width} × ${m.height}`);
@@ -544,6 +548,8 @@ function renderFileInfo() {
     return;
   }
   const key = `${S.session}:${id}`;
+  // 文字檔可能剛在內建編輯器改過：大小、修改時間每次重新讀
+  if (it.kind === "text") fileInfoCache.delete(key);
   const cached = fileInfoCache.get(key);
   el.innerHTML = fileInfoHtml(id, cached);
   el.title = it.files.join("\n");
@@ -618,7 +624,7 @@ async function refreshFolder() {
   }
 }
 
-async function doRefreshFolder() {
+async function doRefreshFolder(quiet = false) {
   const selNames = new Set([...S.selected].map((id) => S.items[id]?.name));
   const focusName = S.focus !== null ? S.items[S.focus]?.name : undefined;
   const filters = FILTER_KEYS.map((k) => [k, new Set(S.filters[k])] as const);
@@ -635,7 +641,7 @@ async function doRefreshFolder() {
   update();
   gridEl.scrollTop = top;
   grid.reloadThumbs();
-  toast("已重新整理");
+  if (!quiet) toast("已重新整理");
 }
 
 // ---------------------------------------------------------------- 分頁（多個資料夾）
@@ -1278,17 +1284,60 @@ function closeLoupe() {
   stage.classList.remove("zoom");
   loupe.classList.add("hidden");
   chain = null;
+  hideLoupeText();
   clearImg(loupeImg);
   faceLayer.innerHTML = "";
   gridEl.focus();
 }
+
+const loupeText = $("loupe-text");
+const loupeTextBody = $("loupe-text-body");
+let loupeTextSeq = 0;
+
+/** 文字檔的預覽：顯示完整內容（可捲動） */
+function showLoupeText(id: number) {
+  const seq = ++loupeTextSeq;
+  chain = null;
+  clearImg(loupeImg);
+  stage.classList.add("hidden");
+  loupeText.classList.remove("hidden");
+  loupeTextBody.textContent = "讀取中…";
+  api
+    .readText(S.session, id)
+    .then((r) => {
+      if (seq !== loupeTextSeq) return;
+      loupeTextBody.textContent = r.text || "（空白）";
+      loupeTextBody.classList.toggle("empty", !r.text);
+      loupeText.scrollTop = 0;
+    })
+    .catch((e) => {
+      if (seq === loupeTextSeq) loupeTextBody.textContent = `無法讀取：${e}`;
+    });
+}
+
+function hideLoupeText() {
+  loupeTextSeq++;
+  loupeText.classList.add("hidden");
+  stage.classList.remove("hidden");
+}
+
+$("loupe-text-edit").addEventListener("click", () => {
+  if (S.focus !== null) void textEditor.openEdit(S.session, S.focus);
+});
+loupeText.addEventListener("dblclick", () => {
+  if (S.focus !== null) void textEditor.openEdit(S.session, S.focus);
+});
 
 function showLoupe() {
   if (S.focus === null) return;
   S.zoom = false;
   stage.classList.remove("zoom");
   faceLayer.innerHTML = "";
-  startChain(S.focus);
+  if (S.items[S.focus]?.kind === "text") showLoupeText(S.focus);
+  else {
+    hideLoupeText();
+    startChain(S.focus);
+  }
   renderLoupeInfo();
   // 預先載入前後兩張，翻頁時幾乎零等待
   prefetched.length = 0;
@@ -1352,7 +1401,7 @@ function renderLoupeInfo() {
 }
 
 function toggleZoom(ev?: MouseEvent) {
-  if (S.focus === null) return;
+  if (S.focus === null || S.items[S.focus]?.kind === "text") return;
   S.zoom = !S.zoom;
   chain = null;
   faceLayer.innerHTML = "";
@@ -1499,6 +1548,28 @@ $("sort-dir").addEventListener("click", () => {
 });
 
 
+// ---------------------------------------------------------------- 文字檔（內建簡易編輯器）
+
+const textEditor = new TextEditor({
+  toast: (m) => toast(m),
+  closed: () => gridEl.focus(),
+  saved: (r) => {
+    if (r.kind === "edit") {
+      grid.reloadThumbs(new Set([r.id]));
+      if (S.loupe && S.focus === r.id) showLoupe();
+      return;
+    }
+    // 新檔案：重新讀取資料夾（保留篩選與選取），再選取新檔案
+    void (async () => {
+      await doRefreshFolder(true);
+      const it = S.items.find((i) => i.name === r.name);
+      if (it && S.viewIndex.has(it.id)) setFocus(it.id, false);
+      else if (it) toast(`已新增「${r.name}」，但目前的篩選條件把它隱藏了`);
+    })();
+  },
+});
+$("btn-new-text").addEventListener("click", () => textEditor.openNew(S.dir));
+
 // ---------------------------------------------------------------- keyboard
 
 document.addEventListener("keydown", (ev) => {
@@ -1507,6 +1578,7 @@ document.addEventListener("keydown", (ev) => {
     if (editor.key(ev)) ev.preventDefault();
     return;
   }
+  if (textEditor.isOpen) return;
   const t = ev.target as HTMLElement;
   if (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA") return;
   const mod = ev.ctrlKey || ev.metaKey;
@@ -2139,6 +2211,7 @@ function showCellMenu(index: number, ev: MouseEvent) {
   const n = S.selected.size;
   const isMac = /Mac/.test(navigator.platform) || navigator.userAgent.includes("Mac OS X");
   const items: [string, string, string?][] = [
+    ...(it.kind === "text" ? ([["textedit", "編輯文字…"], ["-", ""]] as [string, string][]) : []),
     ["reveal", isMac ? "在 Finder 中顯示" : "在檔案總管中顯示"],
     ["rename", "重新命名…", "F2"],
     ["batch", n > 1 ? `批次重新命名 ${n} 張…` : "批次重新命名…", "⇧⌘R"],
@@ -2170,7 +2243,8 @@ ctxMenu.addEventListener("click", (ev) => {
   const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
   hideMenu();
   if (!a || S.focus === null) return;
-  if (a === "reveal") api.revealItem(S.session, S.focus).catch((e) => toast(`無法開啟：${e}`));
+  if (a === "textedit") void textEditor.openEdit(S.session, S.focus);
+  else if (a === "reveal") api.revealItem(S.session, S.focus).catch((e) => toast(`無法開啟：${e}`));
   else if (a === "rename") openRename();
   else if (a === "batch") openBatchRename();
   else if (a === "export") openExport();
@@ -2199,7 +2273,8 @@ function openRename() {
   if (S.focus === null) return;
   const it = S.items[S.focus];
   renameId = it.id;
-  renameInput.value = it.name;
+  // 文字檔的名稱含副檔名：只改主檔名
+  renameInput.value = it.kind === "text" ? it.name.replace(/\.[^.]+$/, "") : it.name;
   $("rename-files").textContent = `會一起改名：${it.files.join("、")}（以及 .xmp 附屬檔，副檔名不變）`;
   $("rename-error").textContent = "";
   renameDialog.classList.remove("hidden");
@@ -2211,7 +2286,9 @@ async function doRename() {
   if (renameId === null) return;
   const stem = renameInput.value.trim().replace(/[/:]/g, "-");
   if (!stem) return;
-  if (stem === S.items[renameId].name) {
+  const cur = S.items[renameId];
+  const ext = cur.kind === "text" ? (cur.name.match(/\.[^.]+$/)?.[0] ?? "") : "";
+  if (stem + ext === cur.name) {
     renameDialog.classList.add("hidden");
     return gridEl.focus();
   }
@@ -2224,7 +2301,7 @@ async function doRename() {
     return;
   }
   renameDialog.classList.add("hidden");
-  await reloadFolder(stem);
+  await reloadFolder(stem + ext);
   gridEl.focus();
 }
 
@@ -2309,8 +2386,11 @@ function openEditor() {
   // 只把選取的照片帶進調整視窗；只選一張（或沒選）時就只開焦點那一張
   const sel = S.view.filter((it) => S.selected.has(it.id));
   const focusItem = S.view.find((it) => it.id === S.focus);
-  const list = sel.length > 1 ? sel : focusItem ? [focusItem] : [];
-  if (!list.length) return;
+  const list = (sel.length > 1 ? sel : focusItem ? [focusItem] : []).filter((it) => it.kind !== "text");
+  if (!list.length) {
+    if (focusItem?.kind === "text") toast("文字檔不能調整；按兩下文字檔可以編輯內容");
+    return;
+  }
   // 從第一張開始
   const start = 0;
   const wasLoupe = S.loupe;
@@ -2325,7 +2405,7 @@ let rotating = Promise.resolve();
 
 /** 旋轉焦點 / 選取的照片 90°，結果存回原檔，縮圖跟著更新（連按會依序處理） */
 function rotateTargets(clockwise: boolean) {
-  const ids: number[] = targets();
+  const ids: number[] = targets().filter((id) => S.items[id]?.kind !== "text");
   if (!ids.length) return;
   rotating = rotating.then(async () => {
     try {
@@ -2388,7 +2468,7 @@ $("btn-zip").addEventListener("click", () => void makeZip());
 
 const exporter = new Exporter($("export-dialog"), {
   session: () => S.session,
-  selectedIds: () => S.view.filter((it) => S.selected.has(it.id)).map((it) => it.id),
+  selectedIds: () => S.view.filter((it) => S.selected.has(it.id) && it.kind !== "text").map((it) => it.id),
   currentDir: () => S.dir,
   toast: (m) => toast(m),
   done: (r) => {

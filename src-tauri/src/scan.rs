@@ -14,6 +14,8 @@ pub enum Class {
     Jpeg,
     Image,
     Other,
+    /// 文字檔（.txt / .md / .rtf）
+    Text,
 }
 
 pub const RAW_EXTS: &[&str] = &[
@@ -29,6 +31,7 @@ pub fn classify(ext: &str) -> Option<Class> {
         "jpg" | "jpeg" | "jpe" => Some(Class::Jpeg),
         "png" | "tif" | "tiff" | "webp" | "gif" | "bmp" => Some(Class::Image),
         "heic" | "heif" | "avif" | "psd" | "psb" => Some(Class::Other),
+        e if crate::text::TEXT_EXTS.contains(&e) => Some(Class::Text),
         _ => None,
     }
 }
@@ -77,6 +80,9 @@ impl Item {
             .or_else(|| self.by_class(Class::Raw))
             .unwrap_or(&self.files[0])
     }
+    pub fn is_text(&self) -> bool {
+        self.files[0].class == Class::Text
+    }
     pub fn raw(&self) -> Option<&FileEntry> {
         self.by_class(Class::Raw)
     }
@@ -84,6 +90,11 @@ impl Item {
     pub fn sidecar_path(&self) -> PathBuf {
         if let Some(s) = &self.sidecar {
             return s.clone();
+        }
+        // 文字檔：附屬檔名稱包含副檔名（notes.txt → notes.txt.xmp），不會和同名照片的附屬檔混在一起
+        if self.is_text() {
+            let f = &self.files[0];
+            return f.path.with_file_name(format!("{}.xmp", f.name));
         }
         let f = self.raw().unwrap_or_else(|| self.display());
         f.path.with_file_name(format!("{}.xmp", f.stem))
@@ -221,7 +232,9 @@ pub fn scan_dir(dir: &Path) -> io::Result<(Vec<Item>, Vec<DirInfo>)> {
         let Some(class) = classify(&ext) else { continue };
         let Ok(md) = entry.metadata() else { continue };
         let mtime = mtime_ms(&md);
-        groups.entry(stem.to_lowercase()).or_default().push(FileEntry {
+        // 文字檔不和同名照片配對：每個文字檔自成一個項目
+        let key = if class == Class::Text { format!("\u{1}{}", name.to_lowercase()) } else { stem.to_lowercase() };
+        groups.entry(key).or_default().push(FileEntry {
             path,
             name,
             stem,
@@ -237,16 +250,22 @@ pub fn scan_dir(dir: &Path) -> io::Result<(Vec<Item>, Vec<DirInfo>)> {
         files.sort_by(|a, b| a.name.cmp(&b.name));
         let raws = files.iter().filter(|f| f.class == Class::Raw).count();
         let jpgs = files.iter().filter(|f| f.class == Class::Jpeg).count();
-        let mut sidecar = sidecars.remove(&key);
+        let mut sidecar = match key.strip_prefix('\u{1}') {
+            Some(name) => sidecars.remove(name),
+            None => sidecars.remove(&key),
+        };
         let mut push = |files: Vec<FileEntry>, sidecar: Option<PathBuf>| {
             let kind = match (files.len(), files[0].class) {
                 (2, _) => "raw+jpeg",
                 (_, Class::Raw) => "raw",
                 (_, Class::Jpeg) => "jpeg",
                 (_, Class::Image) => "image",
+                (_, Class::Text) => "text",
                 _ => "other",
             };
-            items.push(Item { id: 0, name: files[0].stem.clone(), kind, files, sidecar });
+            // 文字檔顯示完整檔名（notes.txt），一眼就知道是文字檔
+            let name = if files[0].class == Class::Text { files[0].name.clone() } else { files[0].stem.clone() };
+            items.push(Item { id: 0, name, kind, files, sidecar });
         };
         if raws == 1 && jpgs == 1 {
             let (pair, rest): (Vec<_>, Vec<_>) =
@@ -281,14 +300,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ps-scan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("sub")).unwrap();
-        for n in ["IMG_10.CR2", "IMG_10.JPG", "IMG_10.xmp", "IMG_2.jpg", "notes.txt", "a.png"] {
+        for n in ["IMG_10.CR2", "IMG_10.JPG", "IMG_10.xmp", "IMG_2.jpg", "notes.txt", "notes.txt.xmp", "a.png", "IMG_2.md", "x.doc"] {
             fs::write(dir.join(n), b"x").unwrap();
         }
         let (items, subdirs) = scan_dir(&dir).unwrap();
         let names: Vec<_> = items.iter().map(|i| (i.name.as_str(), i.kind)).collect();
-        assert_eq!(names, vec![("a", "image"), ("IMG_2", "jpeg"), ("IMG_10", "raw+jpeg")]);
-        assert_eq!(items[2].display().ext, "jpg");
-        assert!(items[2].sidecar.is_some());
+        assert_eq!(
+            names,
+            vec![("a", "image"), ("IMG_2", "jpeg"), ("IMG_2.md", "text"), ("IMG_10", "raw+jpeg"), ("notes.txt", "text")]
+        );
+        assert!(items[4].sidecar.as_ref().unwrap().ends_with("notes.txt.xmp"));
+        assert!(items[2].sidecar_path().ends_with("IMG_2.md.xmp"));
+        assert_eq!(items[3].display().ext, "jpg");
+        assert!(items[3].sidecar.is_some());
         assert_eq!(subdirs.len(), 1);
         fs::remove_dir_all(&dir).unwrap();
     }

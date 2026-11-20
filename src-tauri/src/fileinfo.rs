@@ -119,6 +119,10 @@ pub fn file_info(item: &Item) -> FileInfo {
     let created = md.as_ref().and_then(|m| ms(m.created()));
     let modified = md.as_ref().and_then(|m| ms(m.modified()));
 
+    if item.is_text() {
+        let parts = vec![FilePart { ext: format_name(&disp.ext), size: md.as_ref().map(|m| m.len()).unwrap_or(disp.size) }];
+        return FileInfo { parts, created, modified, color_space: None, width: None, height: None };
+    }
     let mut color_space = icc_of(&disp.path, disp.class).as_deref().and_then(icc_name);
     if color_space.is_none() {
         color_space = exif_color_space(&disp.path);
