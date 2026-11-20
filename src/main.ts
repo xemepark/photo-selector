@@ -368,6 +368,8 @@ function renderFilters() {
 
   let html = "";
   for (const [key, title, rows] of groups) {
+    // 系統設定裡關掉的篩選組不顯示
+    if (hiddenGroups.has(key)) continue;
     const c = counts(key);
     const visible = rows.filter(([v]) => (c.get(v) ?? 0) > 0 || S.filters[key].has(v));
     // 「調整」：只要有調整過的照片就顯示（即使全部都調整過）
@@ -1091,6 +1093,26 @@ const renameBake = settingBox("rename-bake", "renameBake", true);
 const dragBake = settingBox("drag-bake", "dragBake", true);
 const zipBake = settingBox("zip-bake", "zipBake", true);
 const zipRaw = settingBox("zip-raw", "zipRaw", false);
+
+// 系統設定：左側要顯示哪些篩選組（調整 / 相機 / 鏡頭）
+const hiddenGroups = new Set<string>(storage<string[]>("hiddenFilterGroups", []));
+document.querySelectorAll<HTMLInputElement>("[data-show-group]").forEach((cb) => {
+  const k = cb.dataset.showGroup!;
+  cb.checked = !hiddenGroups.has(k);
+  cb.addEventListener("change", () => {
+    if (cb.checked) hiddenGroups.delete(k);
+    else {
+      hiddenGroups.add(k);
+      // 隱藏時一併清掉這組的勾選，避免看不到的篩選還在作用
+      if (S.filters[k as FilterKey].size) {
+        S.filters[k as FilterKey].clear();
+        update({ resetGrid: true });
+      }
+    }
+    store("hiddenFilterGroups", [...hiddenGroups]);
+    renderFilters();
+  });
+});
 
 const confirmDelete = $<HTMLInputElement>("confirm-delete");
 confirmDelete.checked = storage("confirmDelete", true);
