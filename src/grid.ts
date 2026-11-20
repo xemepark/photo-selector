@@ -218,8 +218,7 @@ export class Grid {
     for (const [, c] of this.cells) {
       if (c.id < 0 || (ids && !ids.has(c.id))) continue;
       c.retry = 0;
-      // 舊縮圖先留著，新的載入完成才換掉（不會先變黑一段時間）
-      c.img.removeAttribute("data-loaded");
+      // 舊縮圖先留著（不隱藏），新的在背景載好才換掉，不會先變空白
       this.loadThumb(c);
     }
   }

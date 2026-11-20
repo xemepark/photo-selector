@@ -82,6 +82,22 @@ export function setImg(el: HTMLImageElement, url: string, onFail?: (status: numb
     return;
   }
 
+  // 已經有圖（重新產生 / 調整後重新載入）：先在背景載好再換，不會先變成空白
+  if (el.getAttribute("src") && el.complete && el.naturalWidth > 0) {
+    const pre = new Image();
+    pre.onload = () => {
+      if (!current()) return;
+      directOk = true;
+      el.src = url;
+    };
+    pre.onerror = () => {
+      if (!current()) return;
+      fetchBlob(url).then(useResult);
+    };
+    pre.src = url;
+    return;
+  }
+
   el.addEventListener(
     "load",
     () => {
@@ -96,7 +112,7 @@ export function setImg(el: HTMLImageElement, url: string, onFail?: (status: numb
       fetchBlob(url).then((r) => {
         if (r.ok && !directOk && ++fallbackWins >= 3 && mode === "direct") {
           mode = "blob";
-          report("此系統無法直接顯示圖片，已自動改用相容模式", false);
+          console.info("[image] 已自動改用相容模式（fetch → blob）");
         }
         useResult(r);
       });

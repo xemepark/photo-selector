@@ -67,6 +67,18 @@ fn respond_status(responder: UriSchemeResponder, status: StatusCode) {
     respond(responder, status, "text/plain", Vec::new(), false);
 }
 
+/// 磁碟快取的鍵值：用檔案「現在」的修改時間與大小。
+/// 存調整 / 旋轉 / 評等時會改寫 JPEG（時間與大小都會變），但開資料夾時記下的值不會更新；
+/// 用舊值存的話，下次開啟就對不上而重算（有修補的照片要好幾秒）
+fn disk_key(item: &Item) -> (String, i64, i64) {
+    let mut k = item.display().cache_key();
+    if let Ok(md) = std::fs::metadata(&item.display().path) {
+        k.1 = crate::scan::mtime_ms(&md);
+        k.2 = md.len() as i64;
+    }
+    k
+}
+
 impl Core {
     pub fn new(cache_dir: PathBuf) -> anyhow::Result<Arc<Self>> {
         let core = Arc::new(Self {
@@ -196,7 +208,7 @@ impl Core {
         let key = item.display().cache_key();
 
         if job.kind == Kind::Thumb {
-            if let Some(bytes) = self.cache.get_thumb(&key) {
+            if let Some(bytes) = self.cache.get_thumb(&disk_key(item)) {
                 let bytes = Arc::new(bytes);
                 self.mem_thumbs.lock().put(key, bytes.clone());
                 return respond(job.responder, StatusCode::OK, "image/jpeg", bytes.as_ref().clone(), true);
@@ -229,7 +241,7 @@ impl Core {
             Ok(bytes) => {
                 match job.kind {
                     Kind::Thumb => {
-                        self.cache.put_thumb(&key, &bytes);
+                        self.cache.put_thumb(&disk_key(item), &bytes);
                         self.mem_thumbs.lock().put(key, Arc::new(bytes.clone()));
                     }
                     Kind::Medium => {
@@ -255,13 +267,13 @@ impl Core {
         if let Some(b) = self.mem_thumbs.lock().get(&key).cloned() {
             return Ok(b);
         }
-        if let Some(b) = self.cache.get_thumb(&key) {
+        if let Some(b) = self.cache.get_thumb(&disk_key(item)) {
             let b = Arc::new(b);
             self.mem_thumbs.lock().put(key, b.clone());
             return Ok(b);
         }
         let bytes = render::render(item, Kind::Thumb)?;
-        self.cache.put_thumb(&key, &bytes);
+        self.cache.put_thumb(&disk_key(item), &bytes);
         let b = Arc::new(bytes);
         self.mem_thumbs.lock().put(key, b.clone());
         Ok(b)
