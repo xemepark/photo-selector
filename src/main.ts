@@ -395,7 +395,7 @@ function renderFilters() {
     // 每組都可以收合（狀態記住）；收合時若有勾選，標題旁顯示數量
     const folded = collapsedGroups.has(key);
     const nOn = S.filters[key].size + (key === "rating" ? S.filters.label.size : 0);
-    html += `<div class="filter-group foldable${folded ? " folded" : ""}" data-group="${key}"><h4 class="fg-head" title="點一下收合 / 展開">${CHEV}<span>${key === "rating" ? "評等與標籤" : title}</span>${folded && nOn ? `<span class="fg-on">${nOn}</span>` : ""}</h4>`;
+    html += `<div class="filter-group foldable${folded ? " folded" : ""}" data-group="${key}"><h4 class="fg-head" title="點一下收合 / 展開">${CHEV}<span>${title}</span>${folded && nOn ? `<span class="fg-on">${nOn}</span>` : ""}</h4>`;
     html += rowsHtml(key, rows);
     if (key === "rating") {
       // 色彩標籤接在星等下面
