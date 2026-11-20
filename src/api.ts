@@ -106,6 +106,8 @@ const n = () => `?n=${++seq}`;
 
 export const url = {
   thumb: (session: number, id: number) => `${base}t/${session}/${id}${n()}`,
+  /** 快速小縮圖（檔案內嵌的小圖，正式縮圖好之前先顯示） */
+  quick: (session: number, id: number) => `${base}q/${session}/${id}${n()}`,
   medium: (session: number, id: number) => `${base}m/${session}/${id}${n()}`,
   preview: (session: number, id: number) => `${base}p/${session}/${id}${n()}`,
   full: (session: number, id: number) => `${base}f/${session}/${id}${n()}`,
@@ -116,6 +118,7 @@ export const url = {
 export const api = {
   openFolder: (path: string) => invoke<OpenResult>("open_folder", { path }),
   setViewport: (session: number, ids: number[]) => invoke<void>("set_viewport", { session, ids }),
+  setOrder: (session: number, ids: number[]) => invoke<void>("set_order", { session, ids }),
   /** 旋轉 90°，存回原檔；回傳 [id, 新方向] */
   rotate: (session: number, ids: number[], clockwise: boolean) =>
     invoke<{ done: [number, number][]; failed: string[] }>("rotate", { session, ids, clockwise }),

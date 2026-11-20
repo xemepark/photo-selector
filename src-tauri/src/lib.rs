@@ -107,10 +107,19 @@ async fn open_folder(app: AppHandle, core: CoreState<'_>, path: String) -> Resul
     // EXIF / 評等在背景分批讀取，先讓畫面出現
     let core2 = core.inner().clone();
     let s2 = sess.clone();
-    std::thread::spawn(move || {
-        s2.items.par_chunks(48).for_each(|chunk| {
+    // 用專屬的 2 個執行緒讀（不佔滿 CPU / 硬碟），畫面上的縮圖還在產生時先讓路（最多等 0.3 秒，仍會穩定前進）
+    static META_POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    let pool = META_POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(2).thread_name(|i| format!("meta-{i}")).build().unwrap());
+    pool.spawn(move || {
+        s2.items.par_chunks(24).for_each(|chunk| {
             if core2.current().id != s2.id {
                 return;
+            }
+            for _ in 0..15 {
+                if !core2.busy() || core2.current().id != s2.id {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
             }
             let metas = chunk.iter().map(|it| (it.id, meta::read_meta(it))).collect();
             let _ = app.emit("meta-batch", MetaBatch { session: s2.id, metas });
@@ -130,6 +139,11 @@ async fn open_folder(app: AppHandle, core: CoreState<'_>, path: String) -> Resul
 #[tauri::command]
 fn set_viewport(core: CoreState<'_>, session: u64, ids: Vec<u32>) {
     core.set_viewport(session, ids);
+}
+
+#[tauri::command]
+fn set_order(core: CoreState<'_>, session: u64, ids: Vec<u32>) {
+    core.set_order(session, ids);
 }
 
 /// 同一時間只寫一個檔案：快速連按評分鍵、評分與調整同時存檔時，不會互相覆蓋或把檔案寫壞
@@ -982,6 +996,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_folder,
             set_viewport,
+            set_order,
             set_rating,
             set_label,
             transfer,

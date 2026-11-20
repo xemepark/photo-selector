@@ -17,6 +17,8 @@ const MEDIUM_MIN_SOURCE: u32 = 1600;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Thumb,
+    /// 快速小縮圖：相機檔案裡內嵌的約 160px 縮圖，幾乎不用解碼，正式縮圖算好前先顯示
+    Quick,
     /// 中等預覽（約 1600–2048px）：相機 JPEG / RAW 內嵌預覽就有這個大小，幾乎不用解碼原圖，全螢幕時先顯示
     Medium,
     Preview,
@@ -183,6 +185,75 @@ pub fn render_medium(item: &Item) -> Result<(Vec<u8>, bool)> {
     Ok((encode_jpeg(&fit(img, MEDIUM_EDGE), 85)?, false))
 }
 
+/// 快速小縮圖：取檔案裡內嵌的小預覽圖（EXIF 縮圖等，長邊 120–640px），裁掉加的黑邊、轉正。
+/// 沒有合適的小圖、或照片有調整設定（小圖看不出調整效果）時回傳 None。
+pub fn render_quick(item: &Item) -> Result<Option<Vec<u8>>> {
+    let f = item.display();
+    if !matches!(f.class, Class::Jpeg | Class::Raw | Class::Other) || crate::heic::is_heif(f) {
+        return Ok(None);
+    }
+    if crate::edit::load(item).is_some() {
+        return Ok(None);
+    }
+    let file = File::open(&f.path)?;
+    let data = unsafe { memmap2::Mmap::map(&file)? };
+    let (list, photo, color) = if f.class == Class::Jpeg {
+        let Some((w, h, nc)) = jpeg::jpeg_info(&data) else { return Ok(None) };
+        (jpeg::jpeg_file_previews(&data), (w, h), nc >= 3)
+    } else {
+        let list = jpeg::embedded_jpegs(&data, 0);
+        let Some(big) = list.iter().max_by_key(|j| j.width as u64 * j.height as u64) else { return Ok(None) };
+        let dims = (big.width, big.height);
+        (list, dims, true)
+    };
+    let Some(j) = list
+        .iter()
+        .filter(|j| (120..=640).contains(&j.long_edge()))
+        .filter(|j| !(color && j.components < 3))
+        .min_by_key(|j| j.width as u64 * j.height as u64)
+        .copied()
+    else {
+        return Ok(None);
+    };
+    let img = decode_jpeg_scaled(j.bytes(&data), 0)?;
+    // 比例不同（例如 3:2 照片的 160×120 縮圖上下加了黑邊）→ 從中間裁成照片的比例
+    let (pw, ph) = (photo.0.max(1) as f32, photo.1.max(1) as f32);
+    let (tw, th) = (img.width(), img.height());
+    if (pw >= ph) != (tw >= th) {
+        return Ok(None);
+    }
+    let a = pw / ph;
+    let t = tw as f32 / th.max(1) as f32;
+    let img = if (t - a).abs() / a < 0.02 {
+        img
+    } else {
+        // 有的相機是加黑邊，有的是直接壓扁：邊緣是黑的才裁，否則拉回正確比例
+        let (x, y, w, h) = if t > a {
+            let w = ((th as f32 * a).round() as u32).clamp(1, tw);
+            ((tw - w) / 2, 0, w, th)
+        } else {
+            let h = ((tw as f32 / a).round() as u32).clamp(1, th);
+            (0, (th - h) / 2, tw, h)
+        };
+        let rgb = img.to_rgb8();
+        let (mut sum, mut n) = (0u64, 0u64);
+        for (px, py, p) in rgb.enumerate_pixels() {
+            if px < x || px >= x + w || py < y || py >= y + h {
+                sum += p.0.iter().map(|&v| v as u64).sum::<u64>();
+                n += 3;
+            }
+        }
+        if n > 0 && sum / n < 24 {
+            img.crop_imm(x, y, w, h)
+        } else {
+            let (nw, nh) = if t > a { (tw, ((tw as f32 / a).round() as u32).max(1)) } else { (((th as f32 * a).round() as u32).max(1), th) };
+            img.resize_exact(nw, nh, image::imageops::FilterType::Triangle)
+        }
+    };
+    let orient = meta::item_orientation(item, &data);
+    Ok(Some(encode_jpeg(&apply_orientation(img, orient), 85)?))
+}
+
 pub fn encode_jpeg(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
     let rgb = img.to_rgb8();
     let mut buf = Vec::with_capacity((rgb.width() * rgb.height() / 4) as usize);
@@ -233,7 +304,7 @@ pub fn render(item: &Item, kind: Kind) -> Result<Vec<u8>> {
         encode_jpeg(&img, q)
     };
     match kind {
-        Kind::Thumb => finish(decode_source(item, big(THUMB_EDGE))?, THUMB_EDGE, 82),
+        Kind::Thumb | Kind::Quick => finish(decode_source(item, big(THUMB_EDGE))?, THUMB_EDGE, 82),
         Kind::Medium => finish(decode_source(item, big(MEDIUM_MIN_SOURCE))?, MEDIUM_EDGE, 85),
         Kind::Preview => finish(decode_source(item, big(PREVIEW_EDGE))?, PREVIEW_EDGE, 88),
         Kind::Base => encode_jpeg(&fit(decode_source(item, PREVIEW_EDGE)?, PREVIEW_EDGE), 90),
@@ -278,6 +349,16 @@ mod tests {
         let Ok(dir) = std::env::var("THUMB_BENCH_DIR") else { return };
         let (items, _) = crate::scan::scan_dir(std::path::Path::new(&dir)).unwrap();
         for it in &items {
+            let t = std::time::Instant::now();
+            if let Ok(Some(q)) = render_quick(it) {
+                let img = image::load_from_memory(&q).unwrap();
+                println!("{} Quick: {:?} -> {}x{}", it.name, t.elapsed(), img.width(), img.height());
+                if let Ok(out) = std::env::var("THUMB_BENCH_SAVE") {
+                    std::fs::write(format!("{out}/{}_Quick.jpg", it.name), &q).unwrap();
+                }
+            } else {
+                println!("{} Quick: none", it.name);
+            }
             for kind in [Kind::Thumb, Kind::Medium, Kind::Preview] {
                 let t = std::time::Instant::now();
                 let bytes = render(it, kind).unwrap();

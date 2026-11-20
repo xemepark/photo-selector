@@ -3,7 +3,7 @@
 // 讓後端取消已經捲出畫面的縮圖工作。
 
 import { Item, Meta, url, stars, labelColor } from "./api";
-import { setImg, clearImg } from "./imgload";
+import { setImg, clearImg, imageMode } from "./imgload";
 
 export interface GridHost {
   session(): number;
@@ -21,6 +21,8 @@ export interface GridHost {
   /** 在格子上按下又放開、中間沒有變成拖曳 */
   onCellUp(index: number): void;
   onViewport(ids: number[]): void;
+  /** 排序 / 篩選後的完整順序（後端依此在背景預先產生縮圖） */
+  onOrder?(ids: number[]): void;
 }
 
 interface Cell {
@@ -39,6 +41,10 @@ interface Cell {
   /** 看門狗：在畫面上卻遲遲沒載入完成時重新要求 */
   watch: number;
   timer: number;
+  /** 載入序號（快速小縮圖 → 正式縮圖，舊的結果作廢用） */
+  seq: number;
+  /** 正式縮圖已顯示（不是快速小縮圖） */
+  full: boolean;
 }
 
 const PAD = 6;
@@ -59,6 +65,8 @@ export class Grid {
   private raf = 0;
   private geo = 0;
   private lastViewportKey = "";
+  private lastOrderView: Item[] | null = null;
+  private lastOrderSession = -1;
 
   constructor(
     private el: HTMLElement,
@@ -181,7 +189,17 @@ export class Grid {
         this.cells.delete(idx);
       }
     }
-    for (let i = first; i <= last; i++) {
+    // 先處理畫面上看得到的格子（由左上到右下），再處理上下的緩衝列：縮圖會依這個順序產生
+    const visStart = Math.min(Math.max(first, firstVisRow * this.cols), last + 1);
+    const order: number[] = [];
+    for (let i = visStart; i <= last; i++) order.push(i);
+    for (let i = first; i < visStart; i++) order.push(i);
+    if (view !== this.lastOrderView || this.host.session() !== this.lastOrderSession) {
+      this.lastOrderView = view;
+      this.lastOrderSession = this.host.session();
+      this.host.onOrder?.(view.map((it) => it.id));
+    }
+    for (const i of order) {
       let c = this.cells.get(i);
       if (!c) {
         c = this.acquire();
@@ -253,8 +271,13 @@ export class Grid {
       retry: 0,
       watch: 0,
       timer: 0,
+      seq: 0,
+      full: false,
     };
-    c.img.addEventListener("load", () => c.img.setAttribute("data-loaded", ""));
+    c.img.addEventListener("load", () => {
+      c.img.setAttribute("data-loaded", "");
+      if (!c.img.src.includes("/q/")) c.full = true;
+    });
     this.spacer.appendChild(root);
     return c;
   }
@@ -262,9 +285,36 @@ export class Grid {
   /** 載入縮圖；後端回 410 = 排隊時被捲出畫面而取消，若現在又在畫面上就稍後重試 */
   private loadThumb(c: Cell) {
     const id = c.id;
+    const seq = ++c.seq;
+    // 第一次載入：先顯示檔案內嵌的小縮圖（幾乎立刻出現、略模糊），正式縮圖好了再換上
+    if (c.retry === 0 && !c.img.getAttribute("src") && imageMode() === "direct") {
+      const img = c.img;
+      const q = url.quick(this.host.session(), id);
+      img.dataset.want = q;
+      img.addEventListener(
+        "error",
+        () => {
+          if (img.dataset.want === q) img.removeAttribute("src");
+        },
+        { once: true },
+      );
+      img.src = q;
+      const pre = new Image();
+      const go = () => {
+        if (c.id === id && c.seq === seq) this.loadFull(c, id);
+      };
+      pre.onload = go;
+      pre.onerror = go;
+      pre.src = url.thumb(this.host.session(), id);
+      return;
+    }
+    this.loadFull(c, id);
+  }
+
+  private loadFull(c: Cell, id: number) {
     clearTimeout(c.watch);
     c.watch = window.setTimeout(() => {
-      if (c.id === id && this.cells.get(c.index) === c && !c.img.hasAttribute("data-loaded")) {
+      if (c.id === id && this.cells.get(c.index) === c && !c.full) {
         c.retry++;
         this.loadThumb(c);
       }
@@ -291,6 +341,8 @@ export class Grid {
     clearTimeout(c.timer);
     clearTimeout(c.watch);
     c.id = -1;
+    c.seq++;
+    c.full = false;
     c.root.style.display = "none";
     c.img.removeAttribute("data-loaded");
     clearImg(c.img);
@@ -306,6 +358,7 @@ export class Grid {
     c.name.textContent = item.name;
     c.root.title = item.files.join("\n");
     c.img.removeAttribute("data-loaded");
+    c.full = false;
     this.loadThumb(c);
   }
 

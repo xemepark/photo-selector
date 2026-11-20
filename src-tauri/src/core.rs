@@ -4,7 +4,9 @@
 //!
 //! 1. 記憶體 LRU 命中 → 立刻回應（不進佇列）
 //! 2. 否則放進工作佇列：預覽 / 原圖走「高優先」，縮圖走「低優先」
-//! 3. 佇列是 LIFO（後進先出）：使用者快速捲動時，最新捲到的畫面最先處理
+//! 3. 縮圖依前端要求的順序處理（先畫面上的、由左上到右下）；快速小縮圖（q）最優先
+//! 6. 佇列空閒時，在背景依目前的排序把整個資料夾的縮圖預先產生進磁碟快取（最多用一半的工作者），
+//!    捲到哪裡都已經有圖
 //! 4. 工作者取出縮圖工作時，若該項目已不在前端回報的「可視範圍」內就直接取消（410），
 //!    前端等它再次出現在畫面上時才重新要求 —— 快速捲過一萬張照片也不會塞車
 //! 5. 縮圖結果寫入 SQLite 磁碟快取，下次開同一個資料夾就不必重新解碼
@@ -14,10 +16,10 @@ use crate::render::{self, Kind};
 use crate::scan::Item;
 use lru::LruCache;
 use parking_lot::{Condvar, Mutex, RwLock};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::http::{header, Response, StatusCode};
 use tauri::UriSchemeResponder;
@@ -36,8 +38,14 @@ struct Job {
 
 #[derive(Default)]
 struct Queues {
+    quick: VecDeque<Job>,
     high: Vec<Job>,
-    low: Vec<Job>,
+    low: VecDeque<Job>,
+}
+
+enum Task {
+    Job(Job),
+    Prefetch(u64, u32),
 }
 
 pub struct Core {
@@ -50,6 +58,14 @@ pub struct Core {
     mem_medium: Mutex<LruCache<(String, i64, i64), Arc<Vec<u8>>>>,
     queue: Mutex<Queues>,
     cv: Condvar,
+    /// 前端目前的排序（背景預先產生縮圖的順序）
+    order: RwLock<(u64, Vec<u32>)>,
+    /// 已有縮圖（或已在產生）的項目
+    done: Mutex<(u64, HashSet<u32>)>,
+    prefetching: AtomicUsize,
+    max_prefetch: usize,
+    /// 正在處理的前景工作數
+    active: AtomicUsize,
 }
 
 fn respond(responder: UriSchemeResponder, status: StatusCode, mime: &str, body: Vec<u8>, cacheable: bool) {
@@ -79,6 +95,10 @@ fn disk_key(item: &Item) -> (String, i64, i64) {
     k
 }
 
+fn workers() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(1).max(2)
+}
+
 impl Core {
     pub fn new(cache_dir: PathBuf) -> anyhow::Result<Arc<Self>> {
         let core = Arc::new(Self {
@@ -91,8 +111,13 @@ impl Core {
             mem_medium: Mutex::new(LruCache::new(NonZeroUsize::new(64).unwrap())),
             queue: Mutex::new(Queues::default()),
             cv: Condvar::new(),
+            order: RwLock::new((0, Vec::new())),
+            done: Mutex::new((0, HashSet::new())),
+            prefetching: AtomicUsize::new(0),
+            max_prefetch: (workers() / 2).max(1),
+            active: AtomicUsize::new(0),
         });
-        let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(1).max(2);
+        let workers = workers();
         for i in 0..workers {
             let c = core.clone();
             std::thread::Builder::new().name(format!("thumb-{i}")).spawn(move || c.worker()).unwrap();
@@ -118,7 +143,8 @@ impl Core {
         let stale: Vec<Job> = {
             let mut q = self.queue.lock();
             let mut v = std::mem::take(&mut q.high);
-            v.append(&mut q.low);
+            v.extend(q.low.drain(..));
+            v.extend(q.quick.drain(..));
             v
         };
         for j in stale {
@@ -129,6 +155,75 @@ impl Core {
 
     pub fn set_viewport(&self, session: u64, ids: Vec<u32>) {
         *self.viewport.write() = (session, ids.into_iter().collect());
+        self.cv.notify_all();
+    }
+
+    /// 前端的排序 / 篩選結果（背景預先產生縮圖依這個順序）
+    pub fn set_order(&self, session: u64, ids: Vec<u32>) {
+        *self.order.write() = (session, ids);
+        self.cv.notify_all();
+    }
+
+    /// 前景還有工作（畫面上要的圖還沒好）：讀 EXIF 等背景工作先讓路
+    pub fn busy(&self) -> bool {
+        let q = self.queue.lock();
+        !q.quick.is_empty() || !q.high.is_empty() || !q.low.is_empty() || self.active.load(Ordering::Relaxed) > 0
+    }
+
+    fn mark_done(&self, session: u64, id: u32) {
+        let mut d = self.done.lock();
+        if d.0 != session {
+            *d = (session, HashSet::new());
+        }
+        d.1.insert(id);
+    }
+
+    /// 下一個要在背景預先產生縮圖的項目：從畫面最後一張往後，到底再從頭
+    fn next_prefetch(&self) -> Option<(u64, u32)> {
+        let sess = self.current();
+        let order = self.order.read();
+        if order.0 != sess.id || order.1.is_empty() {
+            return None;
+        }
+        let mut d = self.done.lock();
+        if d.0 != sess.id {
+            *d = (sess.id, HashSet::new());
+        }
+        let vp = self.viewport.read();
+        let anchor = if vp.0 == sess.id {
+            order.1.iter().rposition(|id| vp.1.contains(id)).map(|p| p + 1).unwrap_or(0)
+        } else {
+            0
+        };
+        let n = order.1.len();
+        let anchor = anchor.min(n);
+        let id = order.1[anchor..]
+            .iter()
+            .chain(order.1[..anchor].iter())
+            .copied()
+            .find(|id| (*id as usize) < sess.items.len() && !d.1.contains(id))?;
+        d.1.insert(id);
+        Some((sess.id, id))
+    }
+
+    fn prefetch(&self, session: u64, id: u32) {
+        let sess = self.current();
+        if sess.id != session {
+            return;
+        }
+        let Some(item) = sess.items.get(id as usize) else { return };
+        let dk = disk_key(item);
+        if self.cache.has_thumb(&dk) {
+            return;
+        }
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render::render(item, Kind::Thumb)));
+        if let Ok(Ok(bytes)) = r {
+            self.cache.put_thumb(&dk, &bytes);
+            let mut mem = self.mem_thumbs.lock();
+            if mem.len() < mem.cap().get() {
+                mem.put(item.display().cache_key(), Arc::new(bytes));
+            }
+        }
     }
 
     /// 處理 `img://` 請求。路徑格式：/<t|p|f>/<session>/<id>
@@ -138,6 +233,7 @@ impl Core {
             [k, s, i] => {
                 let kind = match *k {
                     "t" => Some(Kind::Thumb),
+                    "q" => Some(Kind::Quick),
                     "p" => Some(Kind::Preview),
                     "m" => Some(Kind::Medium),
                     "f" => Some(Kind::Full),
@@ -157,36 +253,63 @@ impl Core {
         };
         let key = item.display().cache_key();
         let hit = match kind {
-            Kind::Thumb => self.mem_thumbs.lock().get(&key).cloned(),
+            Kind::Thumb | Kind::Quick => self.mem_thumbs.lock().get(&key).cloned(),
             Kind::Preview => self.mem_previews.lock().get(&key).cloned(),
             Kind::Medium => self.mem_medium.lock().get(&key).cloned(),
             Kind::Full | Kind::Base => None,
         };
         if let Some(bytes) = hit {
+            if matches!(kind, Kind::Thumb | Kind::Quick) {
+                self.mark_done(session, id);
+            }
             return respond(responder, StatusCode::OK, "image/jpeg", bytes.as_ref().clone(), true);
         }
         let job = Job { session, id, kind, responder };
         let mut q = self.queue.lock();
-        if kind == Kind::Thumb { q.low.push(job) } else { q.high.push(job) }
+        match kind {
+            Kind::Quick => q.quick.push_back(job),
+            Kind::Thumb => q.low.push_back(job),
+            _ => q.high.push(job),
+        }
         drop(q);
         self.cv.notify_one();
     }
 
     fn worker(&self) {
         loop {
-            let job = {
+            let task = {
                 let mut q = self.queue.lock();
                 loop {
-                    if let Some(j) = q.high.pop() {
-                        break j;
+                    if let Some(j) = q.quick.pop_front() {
+                        break Task::Job(j);
                     }
-                    if let Some(j) = q.low.pop() {
-                        break j;
+                    if let Some(j) = q.high.pop() {
+                        break Task::Job(j);
+                    }
+                    if let Some(j) = q.low.pop_front() {
+                        break Task::Job(j);
+                    }
+                    if self.prefetching.load(Ordering::Relaxed) < self.max_prefetch {
+                        if let Some((s, id)) = self.next_prefetch() {
+                            self.prefetching.fetch_add(1, Ordering::Relaxed);
+                            break Task::Prefetch(s, id);
+                        }
                     }
                     self.cv.wait(&mut q);
                 }
             };
-            self.process(job);
+            match task {
+                Task::Job(job) => {
+                    self.active.fetch_add(1, Ordering::Relaxed);
+                    self.process(job);
+                    self.active.fetch_sub(1, Ordering::Relaxed);
+                }
+                Task::Prefetch(s, id) => {
+                    self.prefetch(s, id);
+                    self.prefetching.fetch_sub(1, Ordering::Relaxed);
+                    self.cv.notify_one();
+                }
+            }
         }
     }
 
@@ -195,7 +318,7 @@ impl Core {
         if sess.id != job.session {
             return respond_status(job.responder, StatusCode::NOT_FOUND);
         }
-        if job.kind == Kind::Thumb {
+        if matches!(job.kind, Kind::Thumb | Kind::Quick) {
             let vp = self.viewport.read();
             if vp.0 == job.session && !vp.1.is_empty() && !vp.1.contains(&job.id) {
                 drop(vp);
@@ -207,12 +330,21 @@ impl Core {
         };
         let key = item.display().cache_key();
 
-        if job.kind == Kind::Thumb {
+        if matches!(job.kind, Kind::Thumb | Kind::Quick) {
             if let Some(bytes) = self.cache.get_thumb(&disk_key(item)) {
+                self.mark_done(job.session, job.id);
                 let bytes = Arc::new(bytes);
                 self.mem_thumbs.lock().put(key, bytes.clone());
                 return respond(job.responder, StatusCode::OK, "image/jpeg", bytes.as_ref().clone(), true);
             }
+        }
+        // 快速小縮圖：沒有正式縮圖時取內嵌的小圖（沒有就回 404，前端直接等正式縮圖）
+        if job.kind == Kind::Quick {
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render::render_quick(item)));
+            return match r {
+                Ok(Ok(Some(bytes))) => respond(job.responder, StatusCode::OK, "image/jpeg", bytes, false),
+                _ => respond_status(job.responder, StatusCode::NOT_FOUND),
+            };
         }
 
         // 解碼 / 套用調整時萬一 panic：回傳預留圖，不要讓請求永遠沒有回應（畫面會一直「載入中」）
@@ -240,7 +372,8 @@ impl Core {
         match guard(&|| render::render(item, job.kind)) {
             Ok(bytes) => {
                 match job.kind {
-                    Kind::Thumb => {
+                    Kind::Thumb | Kind::Quick => {
+                        self.mark_done(job.session, job.id);
                         self.cache.put_thumb(&disk_key(item), &bytes);
                         self.mem_thumbs.lock().put(key, Arc::new(bytes.clone()));
                     }
@@ -286,6 +419,7 @@ impl Core {
         self.mem_previews.lock().pop(&key);
         self.mem_medium.lock().pop(&key);
         self.cache.delete_thumb(&key.0);
+        self.done.lock().1.remove(&item.id);
     }
 
     pub fn clear_memory(&self) {

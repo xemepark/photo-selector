@@ -53,6 +53,17 @@ impl Cache {
             .flatten()
     }
 
+    /// 只確認有沒有縮圖（背景預先產生時用，不讀出資料）
+    pub fn has_thumb(&self, k: &Key) -> bool {
+        self.conn
+            .lock()
+            .query_row("SELECT 1 FROM thumbs WHERE path=?1 AND mtime=?2 AND size=?3", params![k.0, k.1, k.2], |_| Ok(()))
+            .optional()
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
     pub fn put_thumb(&self, k: &Key, data: &[u8]) {
         let _ = self.conn.lock().execute(
             "INSERT OR REPLACE INTO thumbs (path, mtime, size, data) VALUES (?1, ?2, ?3, ?4)",

@@ -104,6 +104,9 @@ const grid = new Grid(gridEl, $("grid-spacer"), {
     if (editor.isOpen) return;
     api.setViewport(S.session, ids).catch(() => {});
   }, 30),
+  onOrder: debounce((ids: number[]) => {
+    api.setOrder(S.session, ids).catch(() => {});
+  }, 200),
 });
 
 // ---------------------------------------------------------------- helpers
