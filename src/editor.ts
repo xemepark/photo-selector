@@ -1378,6 +1378,7 @@ export class Editor {
     if (this.cropping) this.leaveCrop();
     this.selSpot = -1;
     this.pdrag = null;
+    this.lastPaintPt = null;
     this.spotsHidden = false;
     this.q("#ed-patch-eye").classList.remove("active");
     this.q("#ed-spot-sel").classList.add("hidden");
@@ -2180,8 +2181,10 @@ export class Editor {
   private phover: { x: number; y: number } | null = null;
   private pdrag:
     | { kind: "paint"; pts: [number, number][] }
-    | { kind: "src" | "dest" | "custom"; i: number; x: number; y: number; d0: [number, number]; p0: [number, number][] }
+    | { kind: "src" | "dest" | "custom" | "newsrc"; i: number; x: number; y: number; d0: [number, number]; p0: [number, number][] }
     | null = null;
+  /** 上一筆修補的最後一點（⇧ + 點一下時從這裡畫直線，與 Camera Raw 相同） */
+  private lastPaintPt: [number, number] | null = null;
   private lastPtool: SpotMode = 0;
   private ovTmp: HTMLCanvasElement | null = null;
   /** 修補結果快取（換照片時清掉） */
@@ -2293,7 +2296,8 @@ export class Editor {
       return distToStroke(q.pts, x, y) <= Math.max(q.r, 6 / this.view().s);
     };
     let drag: typeof this.pdrag = null;
-    if (this.selSpot >= 0 && spots[this.selSpot] && spots[this.selSpot].m !== 0 && hitSpot(this.selSpot, true)) {
+    const selS = spots[this.selSpot];
+    if (this.selSpot >= 0 && selS && (selS.m !== 0 || selS.d[0] !== 0 || selS.d[1] !== 0) && hitSpot(this.selSpot, true)) {
       const s = spots[this.selSpot];
       drag = { kind: "src", i: this.selSpot, x, y, d0: [...s.d], p0: s.p.map((q) => [...q] as [number, number]) };
     } else {
@@ -2308,10 +2312,41 @@ export class Editor {
         }
       }
     }
-    // ⌘ + 拖曳：替選取的修補指定自訂來源（移除也可以）
-    if (!drag && (e.metaKey || e.ctrlKey) && this.selSpot >= 0 && spots[this.selSpot]) {
+    const mod = e.metaKey || e.ctrlKey;
+    // ⌘ + 在選取的修補上拖曳：替它換自訂來源（移除也可以）
+    if (drag && mod && drag.kind === "dest" && drag.i === this.selSpot) {
       const s = spots[this.selSpot];
       drag = { kind: "custom", i: this.selSpot, x, y, d0: [...s.d], p0: s.p.map((q) => [...q] as [number, number]) };
+    }
+    // ⌘ + 在空白處拖曳（與 Camera Raw 相同）：按下的地方是要修的位置，拖到哪裡就從哪裡取樣
+    if (!drag && mod) {
+      const W = this.imgW;
+      const H = this.imgH;
+      const spot: Spot = {
+        m: this.ptool,
+        r: this.brush.size / 2000,
+        f: this.ptool === 0 ? 0.3 : this.brush.feather / 100,
+        o: 1,
+        d: [0, 0],
+        p: [[Math.round((x / W) * 100000) / 100000, Math.round((y / H) * 100000) / 100000]],
+      };
+      this.p.spots = [...spots, spot];
+      this.selSpot = this.p.spots.length - 1;
+      this.refreshRank = 0;
+      this.lastPaintPt = [x, y];
+      drag = { kind: "newsrc", i: this.selSpot, x, y, d0: [0, 0], p0: spot.p.map((q) => [...q] as [number, number]) };
+    }
+    // ⇧ + 點一下：從上一筆修補的終點畫一條直線（修電線、刮痕）
+    if (!drag && e.shiftKey && this.lastPaintPt) {
+      const [x0, y0] = this.lastPaintPt;
+      const len = Math.hypot(x - x0, y - y0);
+      const step = Math.max(1, this.brushR() * 0.3);
+      const n = Math.min(MAX_SPOT_POINTS - 1, Math.max(1, Math.ceil(len / step)));
+      const pts: [number, number][] = [];
+      for (let k = 0; k <= n; k++) pts.push([x0 + ((x - x0) * k) / n, y0 + ((y - y0) * k) / n]);
+      this.addPaintSpot(pts);
+      this.draw();
+      return;
     }
     if (!drag) {
       this.selSpot = -1;
@@ -2350,6 +2385,7 @@ export class Editor {
     const dx = (x - g.x) / W;
     const dy = (y - g.y) / H;
     if (g.kind === "src") s.d = [g.d0[0] + dx, g.d0[1] + dy];
+    else if (g.kind === "newsrc") s.d = [x / W - g.p0[0][0], y / H - g.p0[0][1]];
     else if (g.kind === "custom") {
       // 來源中心跟著滑鼠：offset = 滑鼠位置 − 修補範圍中心
       const xs = s.p.map((q) => q[0]);
@@ -2375,30 +2411,47 @@ export class Editor {
     } catch {
       /* ignore */
     }
-    if (g.kind === "paint" && this.ptool !== null) {
-      const W = this.imgW;
-      const H = this.imgH;
-      const spot: Spot = {
-        m: this.ptool,
-        r: this.brush.size / 2000,
-        // 移除沒有羽化設定（與 Camera Raw 相同），固定柔和邊緣
-        f: this.ptool === 0 ? 0.3 : this.brush.feather / 100,
-        o: 1,
-        d: [0, 0],
-        p: g.pts.map(([x, y]) => [Math.round((x / W) * 100000) / 100000, Math.round((y / H) * 100000) / 100000] as [number, number]),
-      };
-      this.uploadBase();
-      // 移除：自動擴大到蓋住整個物體（花瓣、灰塵常比筆刷大一點）
-      if (this.baseWork && spot.m === 0) spot.r = Math.round(autoRadius(this.baseWork, spot) * 100000) / 100000;
-      // 修復 / 仿製：自動找來源（之後可拖曳換位置）；移除：內容感知合成，不需要來源
-      if (this.baseWork && spot.m !== 0) spot.d = findSource(this.baseWork, spot);
-      this.p.spots = [...(this.p.spots ?? []), spot];
-      this.selSpot = this.p.spots.length - 1;
-      this.refreshRank = 0;
-      this.markChanged();
-      this.syncSpotSel();
+    if (g.kind === "paint" && this.ptool !== null) this.addPaintSpot(g.pts);
+    else if (g.kind === "newsrc") {
+      // ⌘ 點一下沒有拖曳：當成一般的點一下（自動找來源 / 內容感知）
+      const s = this.p.spots[g.i];
+      const [x, y] = this.screenToImg(e.clientX, e.clientY);
+      if (s && Math.hypot(x - g.x, y - g.y) < Math.max(4, 6 / this.view().s)) {
+        this.p.spots = this.p.spots.filter((_, k) => k !== g.i);
+        this.addPaintSpot([[g.x, g.y]]);
+      } else {
+        this.markChanged();
+        this.syncSpotSel();
+      }
     }
     this.draw();
+  }
+
+  /** 依筆觸（原圖像素座標）新增一筆修補：移除自動擴大範圍，修復 / 仿製自動找來源 */
+  private addPaintSpot(pts: [number, number][]) {
+    if (this.ptool === null || !pts.length) return;
+    const W = this.imgW;
+    const H = this.imgH;
+    const spot: Spot = {
+      m: this.ptool,
+      r: this.brush.size / 2000,
+      // 移除沒有羽化設定（與 Camera Raw 相同），固定柔和邊緣
+      f: this.ptool === 0 ? 0.3 : this.brush.feather / 100,
+      o: 1,
+      d: [0, 0],
+      p: pts.map(([x, y]) => [Math.round((x / W) * 100000) / 100000, Math.round((y / H) * 100000) / 100000] as [number, number]),
+    };
+    this.uploadBase();
+    // 移除：自動擴大到蓋住整個物體（花瓣、灰塵常比筆刷大一點）；直線筆觸不擴大
+    if (this.baseWork && spot.m === 0 && pts.length === 1) spot.r = Math.round(autoRadius(this.baseWork, spot) * 100000) / 100000;
+    // 修復 / 仿製：自動找來源（之後可拖曳換位置）；移除：內容感知合成，不需要來源
+    if (this.baseWork && spot.m !== 0) spot.d = findSource(this.baseWork, spot);
+    this.p.spots = [...(this.p.spots ?? []), spot];
+    this.selSpot = this.p.spots.length - 1;
+    this.refreshRank = 0;
+    this.lastPaintPt = pts[pts.length - 1];
+    this.markChanged();
+    this.syncSpotSel();
   }
 
   /** 重新替第 i 筆找來源（rank = 第幾好的；「重新整理」每按一次換下一個） */
@@ -2536,7 +2589,7 @@ export class Editor {
       const dst = this.spotPx(s, false);
       const sp = dst.pts.map(([x, y]) => toS(x, y));
       if (sel || i === hover) outline(dst.pts, dst.r, "#fff");
-      if (sel && (s.m !== 0 || this.pdrag?.kind === "custom")) {
+      if (sel && (s.m !== 0 || this.pdrag?.kind === "custom" || this.pdrag?.kind === "newsrc" || s.d[0] !== 0 || s.d[1] !== 0)) {
         // 修復 / 仿製：來源外框（黃）與連線
         const src = this.spotPx(s, true);
         const ss = outline(src.pts, src.r, "#f5b33a");
@@ -3091,6 +3144,8 @@ export class Editor {
     if (this.ptool !== null) {
       if (ev.key === "Delete" || ev.key === "Backspace") return this.deleteSpot(), true;
       if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "z") return this.undoSpot(), true;
+      // /：替選取的修補換一個來源（與 Camera Raw 相同，等於「重新整理」）
+      if (ev.key === "/" && this.selSpot >= 0) return this.q<HTMLElement>("#ed-spot-refresh").click(), true;
       if (ev.key === "[") return this.setBrush("size", this.brush.size * 0.85), true;
       if (ev.key === "]") return this.setBrush("size", Math.max(this.brush.size + 1, this.brush.size * 1.15)), true;
     }
