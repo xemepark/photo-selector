@@ -57,8 +57,9 @@ kbd {
   padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
 }
 .path {
-  flex: 1 1 260px; min-width: 220px; color: var(--muted); background: transparent; border: 1px solid transparent;
-  border-radius: 6px; padding: 4px 8px; text-overflow: ellipsis; user-select: text; outline: none;
+  /* 路徑列盡量拉寬；顯示不下時捲到最右邊（看得到目前資料夾名稱） */
+  flex: 1 1 420px; min-width: 260px; color: var(--muted); background: transparent; border: 1px solid transparent;
+  border-radius: 6px; padding: 4px 8px; user-select: text; outline: none;
 }
 .path:hover { border-color: var(--line); }
 .path:focus { color: var(--text); background: #111114; border-color: var(--focus); }

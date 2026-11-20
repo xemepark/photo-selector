@@ -25,12 +25,11 @@
         <button id="sort-dir" title="升冪 / 降冪">↓</button>
       </label>
       <label class="tool" title="縮圖大小（+ / −）"><input id="size" type="range" min="100" max="380" step="10" value="180" /></label>
-      <label class="tool check" title="評分後自動跳到下一張"><input id="auto-advance" type="checkbox" checked /> 自動下一張</label>
-      <button id="btn-crop" title="用瀏覽器開啟「照片裁切輸出」 https://xemepark.github.io/crop/">✂ 照片裁切輸出</button>
+      <button id="btn-crop" title="用瀏覽器開啟「照片裁切輸出」 https://xemepark.github.io/crop/">裁切輸出</button>
       <button id="btn-edit" title="調整選取的照片：白平衡、曝光、對比、亮部、陰影等（E）">◐ 調整</button>
       <button id="btn-export" title="把選取的照片縮到指定尺寸，另存為 JPEG / TIFF / PNG（仿 Photoshop 影像處理器，⇧⌘E）">影像轉存</button>
       <button id="btn-zip" title="把選取的照片壓縮打包成一個 ZIP 檔（⇧⌘K）">壓縮打包</button>
-      <button id="btn-batch-rename" title="批次重新命名（⇧⌘R）">批次重新命名</button>
+      <button id="btn-batch-rename" title="批次重新命名（⇧⌘R）">批次命名</button>
       <button id="btn-slideshow" title="播放幻燈片（P）">▶ 幻燈片</button>
     </header>
 
@@ -170,6 +169,7 @@
         <h2>系統設定</h2>
         <div class="form settings-form">
           <label class="check" title="按 delete 鍵刪除照片前先跳出確認"><input id="confirm-delete" type="checkbox" checked /> 刪除照片前先確認</label>
+          <label class="check" title="評分（0–5、X）後自動跳到下一張"><input id="auto-advance" type="checkbox" checked /> 評分後自動跳到下一張</label>
           <div class="settings-sub">調整過的照片：輸出時套用調整<span class="muted small">（JPEG 仍是 JPEG，保留 EXIF、星等、標籤；移動時未調整的原檔移到垃圾桶；只有 RAW 的照片無法寫入調整，照原樣處理）</span></div>
           <label class="check indent"><input id="transfer-bake" type="checkbox" checked /> 複製 / 移動到其他資料夾</label>
           <label class="check indent"><input id="rename-bake" type="checkbox" checked /> 批次重新命名（改名後移到 / 拷貝到其他資料夾）</label>
