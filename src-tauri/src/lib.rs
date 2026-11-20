@@ -223,6 +223,31 @@ async fn write_text(core: CoreState<'_>, session: u64, id: u32, text: String) ->
     .map_err(|e| e.to_string())?
 }
 
+/// 在資料夾裡新增子資料夾，回傳完整路徑
+#[tauri::command]
+async fn create_folder(dir: String, name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("請輸入資料夾名稱".to_string());
+        }
+        if name.contains(['/', '\\', ':']) || name.starts_with('.') {
+            return Err("資料夾名稱不能包含 / \\ : ，也不能以 . 開頭".to_string());
+        }
+        let path = PathBuf::from(&dir).join(&name);
+        std::fs::create_dir(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("已經有「{name}」了，請換一個名稱")
+            } else {
+                format!("無法建立資料夾「{name}」：{e}")
+            }
+        })?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 在資料夾裡新增文字檔，回傳實際的檔名（沒有副檔名時加上 .txt）
 #[tauri::command]
 async fn create_text(dir: String, name: String, text: String) -> Result<String, String> {
@@ -1075,6 +1100,7 @@ pub fn run() {
             read_text,
             write_text,
             create_text,
+            create_folder,
             set_rating,
             set_label,
             transfer,

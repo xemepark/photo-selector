@@ -122,6 +122,7 @@ export const api = {
   readText: (session: number, id: number) => invoke<{ text: string; rtf: boolean; name: string }>("read_text", { session, id }),
   writeText: (session: number, id: number, text: string) => invoke<void>("write_text", { session, id, text }),
   createText: (dir: string, name: string, text: string) => invoke<string>("create_text", { dir, name, text }),
+  createFolder: (dir: string, name: string) => invoke<string>("create_folder", { dir, name }),
   /** 旋轉 90°，存回原檔；回傳 [id, 新方向] */
   rotate: (session: number, ids: number[], clockwise: boolean) =>
     invoke<{ done: [number, number][]; failed: string[] }>("rotate", { session, ids, clockwise }),

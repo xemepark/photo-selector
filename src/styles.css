@@ -567,3 +567,24 @@ body.resizing { cursor: col-resize; user-select: none; }
 .te-confirm span { flex: 1; }
 .te-confirm.hidden { display: none; }
 .te-count { color: var(--muted); }
+
+/* ---------- 縮圖區的資料夾、拖曳資料夾到分頁列 ---------- */
+.folder-cell .frame { background: none; }
+.folder-cell .folder-ico { width: 62%; max-height: 80%; filter: drop-shadow(0 2px 4px #0006); }
+.folder-cell .cap { justify-content: center; }
+.folder-cell .name { font-weight: 600; }
+.folder-cell:hover .folder-ico { filter: drop-shadow(0 2px 6px #0009) brightness(1.08); }
+.folder-ghost {
+  position: fixed; left: 0; top: 0; z-index: 60; pointer-events: none; display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--accent); box-shadow: 0 8px 24px #000a;
+  font-size: 13px; white-space: nowrap;
+}
+.folder-ghost small { color: var(--muted); margin-left: 6px; }
+body.folder-dragging, body.folder-dragging * { cursor: grabbing !important; }
+.tab-new.drop-target { background: var(--accent); color: #111; transform: scale(1.25); box-shadow: 0 0 0 3px #f5b32b55; }
+.name-box { width: min(420px, calc(100% - 32px)); }
+.name-box input {
+  width: 100%; box-sizing: border-box; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 7px 10px; color: var(--text); user-select: text; font-size: 14px;
+}
+.name-err { color: #ff8a80; font-size: 12px; min-height: 16px; margin-top: 6px; }

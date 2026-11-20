@@ -8,6 +8,7 @@ import {
   Item,
   Meta,
   OpenResult,
+  DirInfo,
   LABELS,
   LABEL_PRESETS,
   LabelKey,
@@ -53,6 +54,8 @@ const S = {
   dir: "",
   parent: null as string | null,
   items: [] as Item[],
+  /** 目前資料夾裡的子資料夾（顯示在縮圖區最前面） */
+  subdirs: [] as DirInfo[],
   meta: new Map<number, Meta>(),
   overrides: new Map<number, Partial<Meta>>(), // 中繼資料還沒讀到前，使用者就先評分的值
   view: [] as Item[],
@@ -107,6 +110,9 @@ const grid = new Grid(gridEl, $("grid-spacer"), {
     if (editor.isOpen) return;
     api.setViewport(S.session, ids).catch(() => {});
   }, 30),
+  onFolderOpen: (path) => void openFolder(path),
+  onFolderMenu: (path, ev) => showFolderMenu(path, ev),
+  onFolderDrag: (path, name, ev) => startFolderDrag(path, name, ev),
   onOrder: debounce((ids: number[]) => {
     api.setOrder(S.session, ids).catch(() => {});
   }, 200),
@@ -446,6 +452,8 @@ let pendingUpdate = 0;
 /** 重新計算檢視並重畫。resetGrid = 排序或篩選改變，需要重新配置格子 */
 function update(opts: { resetGrid?: boolean } = {}) {
   recomputeView();
+  // 子資料夾排在照片前面；有篩選條件時不顯示（只看符合條件的照片）
+  grid.setFolders(FILTER_KEYS.some((k) => S.filters[k].size) ? [] : S.subdirs);
   renderFilters();
   updateAspect();
   if (opts.resetGrid) grid.reset();
@@ -585,6 +593,7 @@ async function openFolder(path: string) {
     dir: res.dir,
     parent: res.parent,
     items: res.items,
+    subdirs: res.subdirs,
     focus: res.items.length ? 0 : null,
     anchor: res.items.length ? 0 : null,
     metaLoaded: 0,
@@ -609,7 +618,7 @@ async function openFolder(path: string) {
   gridEl.scrollTop = 0;
   update({ resetGrid: true });
   gridEl.focus();
-  if (!res.items.length) toast("這個資料夾沒有支援的照片");
+  if (!res.items.length && !res.subdirs.length) toast("這個資料夾沒有支援的照片");
 }
 
 /** 重新整理（⌘R）：重新讀取資料夾（新增 / 變更的檔案），保留選取、篩選與捲動位置，並重新載入縮圖 */
@@ -916,6 +925,12 @@ const folderTree = new FolderTree($("folder-tree"), (path, ev) => {
   if (path !== S.dir) void openFolder(path);
 });
 $("tree-refresh").addEventListener("click", () => void folderTree.refresh());
+// 左側資料夾也可以拖到分頁列的「＋」開新分頁
+$("folder-tree").addEventListener("mousedown", (ev) => {
+  const row = (ev.target as HTMLElement).closest<HTMLElement>(".tree-row");
+  if (!row || ev.button !== 0 || !row.dataset.path) return;
+  startFolderDrag(row.dataset.path, row.querySelector(".nm")?.textContent ?? row.dataset.path, ev);
+});
 $("btn-open").addEventListener("click", pickFolder);
 $("btn-open-2").addEventListener("click", pickFolder);
 // 資料夾區塊收合
@@ -2242,6 +2257,14 @@ function showCellMenu(index: number, ev: MouseEvent) {
 ctxMenu.addEventListener("click", (ev) => {
   const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
   hideMenu();
+  if (a?.startsWith("f-")) {
+    const p = ctxFolder;
+    if (a === "f-open") void openFolder(p);
+    else if (a === "f-tab") void newTab(p);
+    else if (a === "f-reveal") api.openDir(p).catch((e) => toast(`無法開啟：${e}`));
+    else if (a === "f-new") void newFolder();
+    return;
+  }
   if (!a || S.focus === null) return;
   if (a === "textedit") void textEditor.openEdit(S.session, S.focus);
   else if (a === "reveal") api.revealItem(S.session, S.focus).catch((e) => toast(`無法開啟：${e}`));
@@ -2262,6 +2285,121 @@ document.addEventListener("mousedown", (ev) => {
 });
 gridEl.addEventListener("scroll", hideMenu, { passive: true });
 window.addEventListener("blur", hideMenu);
+
+// ---------------------------------------------------------------- 資料夾：新增、右鍵選單、拖到分頁列開新分頁
+
+let ctxFolder = "";
+
+function showFolderMenu(path: string, ev: MouseEvent) {
+  ctxFolder = path;
+  const isMac = /Mac/.test(navigator.platform) || navigator.userAgent.includes("Mac OS X");
+  const items: [string, string][] = [
+    ["f-open", "開啟"],
+    ["f-tab", "在新分頁開啟"],
+    ["f-reveal", isMac ? "在 Finder 中開啟" : "在檔案總管中開啟"],
+    ["-", ""],
+    ["f-new", "新增資料夾…"],
+  ];
+  ctxMenu.innerHTML = items
+    .map(([a, label]) => (a === "-" ? `<div class="sep"></div>` : `<div class="item" data-a="${a}"><span>${label}</span><kbd></kbd></div>`))
+    .join("");
+  ctxMenu.classList.remove("hidden");
+  ctxMenu.style.left = `${Math.min(ev.clientX, innerWidth - ctxMenu.offsetWidth - 6)}px`;
+  ctxMenu.style.top = `${Math.min(ev.clientY, innerHeight - ctxMenu.offsetHeight - 6)}px`;
+}
+
+/** 輸入名稱的小對話框；submit 回傳錯誤訊息時保持開啟並顯示錯誤 */
+function askName(title: string, value: string, submit: (name: string) => Promise<string | null>) {
+  const box = document.createElement("div");
+  box.className = "modal";
+  box.innerHTML = `<div class="modal-box name-box"><h2>${escapeHtml(title)}</h2>
+    <input type="text" spellcheck="false" autocomplete="off" />
+    <div class="name-err"></div>
+    <div class="modal-actions"><span></span><button data-a="cancel">取消</button><button data-a="ok" class="primary">建立</button></div></div>`;
+  document.body.appendChild(box);
+  const input = box.querySelector("input")!;
+  const err = box.querySelector<HTMLElement>(".name-err")!;
+  input.value = value;
+  const close = () => {
+    box.remove();
+    gridEl.focus();
+  };
+  let busy = false;
+  const ok = async () => {
+    if (busy) return;
+    busy = true;
+    const e = await submit(input.value.trim());
+    busy = false;
+    if (e) {
+      err.textContent = e;
+      input.focus();
+    } else close();
+  };
+  box.querySelector('[data-a="cancel"]')!.addEventListener("click", close);
+  box.querySelector('[data-a="ok"]')!.addEventListener("click", () => void ok());
+  input.addEventListener("keydown", (ev) => {
+    ev.stopPropagation();
+    if (ev.key === "Enter") ev.preventDefault(), void ok();
+    else if (ev.key === "Escape") ev.preventDefault(), close();
+  });
+  input.focus();
+  input.select();
+}
+
+function newFolder() {
+  if (!S.dir) return toast("請先開啟一個資料夾");
+  askName("在目前的資料夾新增資料夾", "未命名資料夾", async (name) => {
+    try {
+      const path = await api.createFolder(S.dir, name);
+      await doRefreshFolder(true);
+      void folderTree.refresh();
+      grid.highlightFolder(path);
+      toast(`已新增資料夾「${name}」`);
+      return null;
+    } catch (e) {
+      return String(e);
+    }
+  });
+}
+$("btn-new-folder").addEventListener("click", () => newFolder());
+
+/** 按住資料夾拖曳：放到分頁列（「＋」）上就用新分頁開啟 */
+function startFolderDrag(path: string, name: string, down: MouseEvent) {
+  let ghost: HTMLDivElement | null = null;
+  let overTabs = false;
+  const plus = () => document.getElementById("tab-new");
+  const move = (ev: MouseEvent) => {
+    if (!ghost) {
+      if ((ev.buttons & 1) === 0) return up(ev);
+      if (Math.hypot(ev.clientX - down.clientX, ev.clientY - down.clientY) < 6) return;
+      ghost = document.createElement("div");
+      ghost.className = "folder-ghost";
+      ghost.innerHTML = `<span>📁</span> ${escapeHtml(name)}<small>拖到上方「＋」開新分頁</small>`;
+      document.body.appendChild(ghost);
+      document.body.classList.add("folder-dragging");
+    }
+    ghost.style.transform = `translate(${ev.clientX + 14}px, ${ev.clientY + 10}px)`;
+    const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+    overTabs = !!el?.closest("#tabbar");
+    plus()?.classList.toggle("drop-target", overTabs);
+  };
+  const up = (ev: MouseEvent) => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up, true);
+    if (!ghost) return;
+    ghost.remove();
+    document.body.classList.remove("folder-dragging");
+    plus()?.classList.remove("drop-target");
+    // 拖曳結束後的 click 不要當成「點資料夾」
+    const swallow = (e: MouseEvent) => (e.stopPropagation(), e.preventDefault());
+    window.addEventListener("click", swallow, { capture: true, once: true });
+    setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+    const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+    if (overTabs || el?.closest("#tabbar")) void newTab(path);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up, true);
+}
 
 // ---------------------------------------------------------------- 重新命名（單張）
 

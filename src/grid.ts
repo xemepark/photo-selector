@@ -2,7 +2,7 @@
 // 捲動時重複利用這些格子（object pool），並把目前可見的項目回報給後端，
 // 讓後端取消已經捲出畫面的縮圖工作。
 
-import { Item, Meta, url, stars, labelColor } from "./api";
+import { Item, Meta, DirInfo, url, stars, labelColor } from "./api";
 import { setImg, clearImg, imageMode } from "./imgload";
 
 export interface GridHost {
@@ -23,7 +23,13 @@ export interface GridHost {
   onViewport(ids: number[]): void;
   /** 排序 / 篩選後的完整順序（後端依此在背景預先產生縮圖） */
   onOrder?(ids: number[]): void;
+  /** 資料夾格子：按兩下開啟、右鍵、按住拖曳 */
+  onFolderOpen?(path: string): void;
+  onFolderMenu?(path: string, ev: MouseEvent): void;
+  onFolderDrag?(path: string, name: string, down: MouseEvent): void;
 }
+
+const FOLDER_SVG = `<svg viewBox="0 0 64 52" class="folder-ico" aria-hidden="true"><path d="M4 8a4 4 0 0 1 4-4h15l6 6h27a4 4 0 0 1 4 4v30a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z" fill="#5b8fd6"/><path d="M4 17a4 4 0 0 1 4-4h48a4 4 0 0 1 4 4v27a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z" fill="#79a9ea"/></svg>`;
 
 interface Cell {
   root: HTMLDivElement;
@@ -69,6 +75,10 @@ export class Grid {
   private lastViewportKey = "";
   private lastOrderView: Item[] | null = null;
   private lastOrderSession = -1;
+  /** 目前資料夾裡的子資料夾：排在所有照片前面（格子位置 0…nf-1） */
+  private folders: DirInfo[] = [];
+  private fcells = new Map<number, HTMLDivElement>();
+  private selFolder = "";
 
   constructor(
     private el: HTMLElement,
@@ -81,6 +91,13 @@ export class Grid {
       this.render();
     }).observe(el);
     el.addEventListener("mousedown", (ev) => {
+      const f = this.folderFromEvent(ev);
+      if (f) {
+        this.selectFolder(f.path);
+        if (ev.button === 0) this.host.onFolderDrag?.(f.path, f.name, ev);
+        return;
+      }
+      if (this.selFolder) this.selectFolder("");
       const idx = this.indexFromEvent(ev);
       if (idx === null) return;
       this.host.onCellClick(idx, ev);
@@ -88,10 +105,14 @@ export class Grid {
     });
     el.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
+      const f = this.folderFromEvent(ev);
+      if (f) return void this.host.onFolderMenu?.(f.path, ev);
       const idx = this.indexFromEvent(ev);
       if (idx !== null) this.host.onCellMenu(idx, ev);
     });
     el.addEventListener("dblclick", (ev) => {
+      const f = this.folderFromEvent(ev);
+      if (f) return void this.host.onFolderOpen?.(f.path);
       const idx = this.indexFromEvent(ev);
       if (idx !== null) this.host.onCellOpen(idx);
     });
@@ -124,16 +145,49 @@ export class Grid {
   }
 
   private indexFromEvent(ev: MouseEvent): number | null {
-    const c = (ev.target as HTMLElement).closest(".cell") as HTMLElement | null;
+    const c = (ev.target as HTMLElement).closest(".cell:not(.folder-cell)") as HTMLElement | null;
     return c ? Number(c.dataset.index) : null;
+  }
+
+  private folderFromEvent(ev: MouseEvent): DirInfo | null {
+    const c = (ev.target as HTMLElement).closest(".folder-cell") as HTMLElement | null;
+    return c ? (this.folders[Number(c.dataset.folder)] ?? null) : null;
+  }
+
+  private get nf() {
+    return this.folders.length;
+  }
+
+  /** 設定要顯示的子資料夾（有變才重排） */
+  setFolders(list: DirInfo[]) {
+    const same = list.length === this.folders.length && list.every((d, i) => d.path === this.folders[i].path);
+    if (same) return;
+    this.folders = list;
+    if (!list.some((d) => d.path === this.selFolder)) this.selFolder = "";
+    for (const [, el] of this.fcells) el.remove();
+    this.fcells.clear();
+    this.reset();
+  }
+
+  /** 反白某個資料夾格子並捲到它（新增資料夾後） */
+  highlightFolder(path: string) {
+    this.selectFolder(path);
+    const i = this.folders.findIndex((d) => d.path === path);
+    if (i >= 0) this.scrollToPos(i, "nearest");
+    this.render();
+  }
+
+  private selectFolder(path: string) {
+    this.selFolder = path;
+    for (const [i, el] of this.fcells) el.classList.toggle("selected", this.folders[i]?.path === path);
   }
 
   setSize(px: number) {
     // 保持目前看的位置大致不變
-    const firstIdx = Math.floor(Math.max(0, this.el.scrollTop - PAD) / this.rowH) * this.cols;
+    const firstPos = Math.floor(Math.max(0, this.el.scrollTop - PAD) / this.rowH) * this.cols;
     this.size = px;
     this.layout();
-    this.scrollToIndex(firstIdx, "top");
+    this.scrollToPos(firstPos, "top");
     this.render();
   }
 
@@ -159,7 +213,7 @@ export class Grid {
     this.frameH = Math.round((this.cellW - CELL_CHROME) * this.aspect);
     this.rowH = this.frameH + CELL_CHROME + CAPTION + GAP;
     this.geo++;
-    const rows = Math.ceil(this.host.view().length / this.cols);
+    const rows = Math.ceil((this.nf + this.host.view().length) / this.cols);
     this.spacer.style.height = `${PAD * 2 + rows * this.rowH}px`;
   }
 
@@ -168,7 +222,11 @@ export class Grid {
   }
 
   scrollToIndex(index: number, mode: "nearest" | "top" = "nearest") {
-    const row = Math.floor(index / this.cols);
+    this.scrollToPos(index + this.nf, mode);
+  }
+
+  private scrollToPos(pos: number, mode: "nearest" | "top") {
+    const row = Math.floor(pos / this.cols);
     const top = PAD + row * this.rowH;
     const bottom = top + this.rowH;
     if (mode === "top") this.el.scrollTop = top - PAD;
@@ -182,8 +240,13 @@ export class Grid {
     const h = this.el.clientHeight;
     const firstVisRow = Math.max(0, Math.floor((top - PAD) / this.rowH));
     const lastVisRow = Math.floor((top + h - PAD) / this.rowH);
-    const first = Math.max(0, (firstVisRow - 2) * this.cols);
-    const last = Math.min(view.length - 1, (lastVisRow + 3) * this.cols - 1);
+    // 格子位置 = 資料夾（0…nf-1）+ 照片（nf…）；cells 的鍵是照片在 view 裡的索引
+    const nf = this.nf;
+    const firstPos = Math.max(0, (firstVisRow - 2) * this.cols);
+    const lastPos = (lastVisRow + 3) * this.cols - 1;
+    const first = Math.max(0, firstPos - nf);
+    const last = Math.min(view.length - 1, lastPos - nf);
+    this.renderFolders(firstPos, Math.min(lastPos, nf - 1));
 
     for (const [idx, c] of this.cells) {
       if (idx < first || idx > last || view[idx]?.id !== c.id) {
@@ -192,7 +255,7 @@ export class Grid {
       }
     }
     // 先處理畫面上看得到的格子（由左上到右下），再處理上下的緩衝列：縮圖會依這個順序產生
-    const visStart = Math.min(Math.max(first, firstVisRow * this.cols), last + 1);
+    const visStart = Math.min(Math.max(first, firstVisRow * this.cols - nf), last + 1);
     const order: number[] = [];
     for (let i = visStart; i <= last; i++) order.push(i);
     for (let i = first; i < visStart; i++) order.push(i);
@@ -214,8 +277,8 @@ export class Grid {
     }
 
     // 回報可見範圍（多抓一列當緩衝），後端據此取消捲出畫面的工作
-    const vFirst = Math.max(0, (firstVisRow - 1) * this.cols);
-    const vLast = Math.min(view.length - 1, (lastVisRow + 2) * this.cols - 1);
+    const vFirst = Math.max(0, (firstVisRow - 1) * this.cols - nf);
+    const vLast = Math.min(view.length - 1, (lastVisRow + 2) * this.cols - 1 - nf);
     // key 要包含實際的 id：改變排序 / 篩選後，同一段範圍內的照片不同，必須重新回報，
     // 否則後端會以為新出現的照片不在畫面上而一直取消（縮圖留白）
     const ids: number[] = [];
@@ -224,6 +287,41 @@ export class Grid {
     if (key !== this.lastViewportKey) {
       this.lastViewportKey = key;
       this.host.onViewport(ids);
+    }
+  }
+
+  /** 資料夾格子（數量通常不多，直接建立 / 移除） */
+  private renderFolders(from: number, to: number) {
+    for (const [i, el] of this.fcells) {
+      if (i < from || i > to) {
+        el.remove();
+        this.fcells.delete(i);
+      }
+    }
+    for (let i = from; i <= to; i++) {
+      const d = this.folders[i];
+      if (!d) continue;
+      let el = this.fcells.get(i);
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "cell folder-cell";
+        el.dataset.folder = String(i);
+        el.title = `${d.path}\n按兩下開啟；拖到分頁列的「＋」用新分頁開啟`;
+        el.innerHTML = `<div class="frame">${FOLDER_SVG}</div><div class="cap"><span class="name"></span></div>`;
+        el.querySelector(".name")!.textContent = d.name;
+        this.spacer.appendChild(el);
+        this.fcells.set(i, el);
+        el.dataset.geo = "";
+      }
+      el.classList.toggle("selected", d.path === this.selFolder);
+      if (el.dataset.geo !== String(this.geo)) {
+        const col = i % this.cols;
+        const row = Math.floor(i / this.cols);
+        el.style.transform = `translate(${PAD + col * (this.cellW + GAP)}px, ${PAD + row * this.rowH}px)`;
+        el.style.width = `${this.cellW}px`;
+        (el.firstElementChild as HTMLElement).style.height = `${this.frameH}px`;
+        el.dataset.geo = String(this.geo);
+      }
     }
   }
 
@@ -370,8 +468,9 @@ export class Grid {
 
   /** 依目前版面設定格子的位置與大小（不重新載入圖片） */
   private place(c: Cell) {
-    const col = c.index % this.cols;
-    const row = Math.floor(c.index / this.cols);
+    const pos = c.index + this.nf;
+    const col = pos % this.cols;
+    const row = Math.floor(pos / this.cols);
     c.root.style.transform = `translate(${PAD + col * (this.cellW + GAP)}px, ${PAD + row * this.rowH}px)`;
     c.root.style.width = `${this.cellW}px`;
     c.frame.style.height = `${this.frameH}px`;
