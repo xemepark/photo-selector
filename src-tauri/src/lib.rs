@@ -223,6 +223,23 @@ async fn write_text(core: CoreState<'_>, session: u64, id: u32, text: String) ->
     .map_err(|e| e.to_string())?
 }
 
+/// 資料夾不存在時（被刪除、改名、外接硬碟沒接上）找最近一層還存在的上層資料夾
+#[tauri::command]
+fn existing_ancestor(path: String) -> Option<String> {
+    let mut p = PathBuf::from(path);
+    while let Some(parent) = p.parent().map(|x| x.to_path_buf()) {
+        // 根目錄、macOS 的 /Volumes（外接硬碟沒接上時）不算：改成顯示「找不到資料夾」
+        if parent.as_os_str().is_empty() || parent.parent().is_none() || parent == std::path::Path::new("/Volumes") {
+            break;
+        }
+        if parent.is_dir() {
+            return Some(parent.to_string_lossy().into_owned());
+        }
+        p = parent;
+    }
+    None
+}
+
 /// 把資料夾移到垃圾桶
 #[tauri::command]
 async fn trash_folder(path: String) -> Result<(), String> {
@@ -1132,6 +1149,7 @@ pub fn run() {
             create_folder,
             set_folder_rating,
             trash_folder,
+            existing_ancestor,
             set_folder_label,
             set_rating,
             set_label,

@@ -612,14 +612,16 @@ function renderFileInfo() {
 
 // ---------------------------------------------------------------- folder
 
-async function openFolder(path: string) {
+/** 開啟資料夾；成功回傳 true（quiet：失敗時不顯示錯誤，由呼叫端處理） */
+async function openFolder(path: string, quiet = false): Promise<boolean> {
   let res: OpenResult;
   try {
     res = await api.openFolder(path);
   } catch (e) {
-    toast(String(e));
-    return;
+    if (!quiet) toast(String(e));
+    return false;
   }
+  setEmptyMessage(null);
   Object.assign(S, {
     session: res.session,
     dir: res.dir,
@@ -652,6 +654,44 @@ async function openFolder(path: string) {
   update({ resetGrid: true });
   gridEl.focus();
   if (!res.items.length && !res.subdirs.length) toast("這個資料夾沒有支援的照片");
+  return true;
+}
+
+function folderLabel(p: string) {
+  return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+}
+
+/** 空白畫面的說明文字（null = 預設） */
+function setEmptyMessage(msg: string | null) {
+  $("empty").querySelector("p")!.textContent = msg ?? "開啟一個照片資料夾開始選片";
+}
+
+/**
+ * 開啟資料夾；資料夾已不存在（被刪除、改名、外接硬碟沒接上）時改開最近一層還存在的上層資料夾。
+ * 回傳實際開啟的資料夾；連上層都找不到時清空畫面並回傳 null（不會繼續顯示別的資料夾的照片）
+ */
+async function openFolderOrParent(dir: string): Promise<string | null> {
+  if (await openFolder(dir, true)) return S.dir;
+  const parent = await api.existingAncestor(dir).catch(() => null);
+  if (parent && (await openFolder(parent, true))) {
+    toast(`「${folderLabel(dir)}」已不存在，改為顯示上一層「${folderLabel(parent)}」`, 5000);
+    return S.dir;
+  }
+  showMissingFolder(dir);
+  return null;
+}
+
+/** 找不到資料夾：清空畫面並說明（分頁記錄的路徑保留，外接硬碟接回來後切回分頁就能開） */
+function showMissingFolder(dir: string) {
+  Object.assign(S, { dir: "", parent: null, items: [], subdirs: [], focus: null, anchor: null, folderSel: "" });
+  S.selected = new Set();
+  S.meta.clear();
+  for (const k of FILTER_KEYS) S.filters[k].clear();
+  pathInput.value = dir;
+  setEmptyMessage(`找不到資料夾「${folderLabel(dir)}」，可能已被刪除、改名，或外接硬碟沒有接上。`);
+  $("empty").classList.remove("hidden");
+  update({ resetGrid: true });
+  toast(`找不到資料夾「${folderLabel(dir)}」`, 5000);
 }
 
 /** 重新整理（⌘R）：重新讀取資料夾（新增 / 變更的檔案），保留選取、篩選與捲動位置，並重新載入縮圖 */
@@ -671,7 +711,9 @@ async function doRefreshFolder(quiet = false) {
   const focusName = S.focus !== null ? S.items[S.focus]?.name : undefined;
   const filters = FILTER_KEYS.map((k) => [k, new Set(S.filters[k])] as const);
   const top = gridEl.scrollTop;
-  await openFolder(S.dir);
+  const before = S.dir;
+  const opened = await openFolderOrParent(before);
+  if (opened !== before) return; // 資料夾已不存在：已改開上一層（或清空畫面）
   for (const [k, v] of filters) S.filters[k] = v;
   const sel = S.items.filter((it) => selNames.has(it.name)).map((it) => it.id);
   if (sel.length) {
@@ -782,8 +824,13 @@ async function openTab(t: TabState) {
   switchingTab = true;
   try {
     renderTabs();
-    await openFolder(t.dir);
-    if (S.dir) restoreTab(t);
+    const opened = await openFolderOrParent(t.dir);
+    if (opened === t.dir) restoreTab(t);
+    else if (opened) {
+      // 改開了上層資料夾：分頁跟著換成這個資料夾（原本的選取、捲動位置不適用）
+      Object.assign(t, { dir: opened, sel: [], focus: null, anchor: null, scroll: 0 });
+      tabs[activeTab] = t;
+    }
   } finally {
     switchingTab = false;
   }
@@ -2414,6 +2461,19 @@ async function deleteFolder(path: string) {
   try {
     await api.trashFolder(path);
     S.subdirs = S.subdirs.filter((x) => x.path !== path);
+    // 其他分頁開著這個資料夾（或它裡面的資料夾）：改成顯示目前這個資料夾（被刪資料夾的上一層）
+    const inside = (p: string) => p === path || p.startsWith(path.endsWith("/") || path.endsWith("\\") ? path : path + (path.includes("\\") && !path.includes("/") ? "\\" : "/"));
+    let moved = 0;
+    tabs.forEach((t, i) => {
+      if (i !== activeTab && inside(t.dir)) {
+        tabs[i] = { dir: S.dir, sort: t.sort, sortDesc: t.sortDesc };
+        moved++;
+      }
+    });
+    if (moved) {
+      saveTabs();
+      renderTabs();
+    }
     update();
     void folderTree.refresh();
     toast(`已將資料夾「${d.name}」移到垃圾桶`, 2000);
@@ -2880,6 +2940,6 @@ setSideWidth(storage("sideWidth", SIDE_DEFAULT));
     await openTab(tabs[activeTab]);
   } else {
     const start = initial ?? storage<string | null>("last", null);
-    if (start) await openFolder(start);
+    if (start) await openFolderOrParent(start);
   }
 })();
