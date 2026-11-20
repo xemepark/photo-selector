@@ -34,7 +34,7 @@ export const DEFAULT_SETTINGS: SlideSettings = {
   skipRejected: true,
   order: "sorted",
   start: "first",
-  interval: 4,
+  interval: 2,
   transition: "fade",
   loop: true,
   fullscreen: true,
@@ -158,7 +158,7 @@ export class Slideshow {
   private slides: number[] = [];
   private index = 0;
   private settings: SlideSettings = DEFAULT_SETTINGS;
-  private intervalMs = 4000;
+  private intervalMs = 2000;
   private paused = false;
   private timer = 0;
   private token = 0;

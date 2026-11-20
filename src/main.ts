@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { downloadDir, homeDir, join } from "@tauri-apps/api/path";
 import { open as openDialog, ask, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
@@ -706,6 +707,14 @@ async function refreshFolder() {
   }
 }
 
+/** 第一次啟動的預設資料夾：下載項目（系統回報不出來時用 家目錄/Downloads） */
+async function defaultStartFolder(): Promise<string | null> {
+  const d = await downloadDir().catch(() => null);
+  if (d) return d;
+  const h = await homeDir().catch(() => null);
+  return h ? join(h, "Downloads").catch(() => null) : null;
+}
+
 async function doRefreshFolder(quiet = false) {
   const selNames = new Set([...S.selected].map((id) => S.items[id]?.name));
   const focusName = S.focus !== null ? S.items[S.focus]?.name : undefined;
@@ -1272,7 +1281,8 @@ const zipBake = settingBox("zip-bake", "zipBake", true);
 const zipRaw = settingBox("zip-raw", "zipRaw", false);
 
 // 系統設定：左側要顯示哪些篩選組（調整 / 相機 / 鏡頭）
-const hiddenGroups = new Set<string>(storage<string[]>("hiddenFilterGroups", []));
+// 預設不顯示「相機」「鏡頭」篩選（可在系統設定打開）
+const hiddenGroups = new Set<string>(storage<string[]>("hiddenFilterGroups", ["camera", "lens"]));
 document.querySelectorAll<HTMLInputElement>("[data-show-group]").forEach((cb) => {
   const k = cb.dataset.showGroup!;
   cb.checked = !hiddenGroups.has(k);
@@ -3012,7 +3022,8 @@ setSideWidth(storage("sideWidth", SIDE_DEFAULT));
     }
     await openTab(tabs[activeTab]);
   } else {
-    const start = initial ?? storage<string | null>("last", null);
+    // 第一次安裝啟動（沒有分頁、也沒開過資料夾）：預設開啟「下載項目」
+    const start = initial ?? storage<string | null>("last", null) ?? (await defaultStartFolder());
     if (start) await openFolderOrParent(start);
   }
 })();
