@@ -529,3 +529,5 @@ body.resizing { cursor: col-resize; user-select: none; }
 .fg-on { margin-left: 4px; background: var(--accent); color: #1a1a1a; border-radius: 8px; font-size: 10px; padding: 0 6px; line-height: 16px; font-weight: 600; }
 .ed-resizer { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; }
 .ed-resizer:hover, .ed-resizer:active { background: var(--accent); opacity: .5; }
+.filter-sep { height: 1px; background: var(--line); margin: 6px 0 6px 18px; }
+.filter-group.folded > .filter-sep { display: none; }

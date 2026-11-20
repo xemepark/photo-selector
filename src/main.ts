@@ -367,28 +367,40 @@ function renderFilters() {
   groups.push(["lens", "鏡頭", dyn("lens")]);
 
   let html = "";
+  const CHEV = `<svg class="fg-chev" viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  /** 一組篩選的勾選列（沒有照片、也沒勾選的值不顯示） */
+  const rowsHtml = (key: FilterKey, rows: [string, string][]) => {
+    const c = counts(key);
+    let out = "";
+    for (const [v, label] of rows) {
+      const on = S.filters[key].has(v);
+      if (!((c.get(v) ?? 0) > 0 || on)) continue;
+      const lc = key === "label" && v !== "none" && v !== "other" ? LABELS.find((l) => l.key === v)?.color : null;
+      const dot = lc ? `<span class="dot" style="background:${lc}"></span>` : "";
+      out += `<div class="filter-row${on ? " on" : ""}" data-k="${key}" data-v="${escapeHtml(v)}">
+        <input type="checkbox" ${on ? "checked" : ""}>${dot}<span class="label">${escapeHtml(label)}</span>
+        <span class="n">${c.get(v) ?? 0}</span></div>`;
+    }
+    return out;
+  };
+  const labelRows = groups.find((g) => g[0] === "label")?.[2] ?? [];
   for (const [key, title, rows] of groups) {
-    // 系統設定裡關掉的篩選組不顯示
-    if (hiddenGroups.has(key)) continue;
+    // 系統設定裡關掉的篩選組不顯示；標籤併在「評等」裡一起顯示
+    if (hiddenGroups.has(key) || key === "label") continue;
     const c = counts(key);
     const visible = rows.filter(([v]) => (c.get(v) ?? 0) > 0 || S.filters[key].has(v));
     // 「調整」：只要有調整過的照片就顯示（即使全部都調整過）
     const always = key === "rating" || key === "suggest" || key === "eyes" || key === "sharp" || (key === "edited" && (c.get("yes") ?? 0) > 0);
     if (!visible.length || (!always && visible.length < 2 && !S.filters[key].size)) continue;
-    // 評等以外的篩選組可以收合（狀態記住）；收合時若有勾選，標題旁顯示數量
-    const foldable = key !== "rating";
-    const folded = foldable && collapsedGroups.has(key);
-    const nOn = S.filters[key].size;
-    html += foldable
-      ? `<div class="filter-group foldable${folded ? " folded" : ""}" data-group="${key}"><h4 class="fg-head" title="點一下收合 / 展開"><svg class="fg-chev" viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${title}</span>${folded && nOn ? `<span class="fg-on">${nOn}</span>` : ""}</h4>`
-      : `<div class="filter-group"><h4>${title}</h4>`;
-    for (const [v, label] of visible) {
-      const on = S.filters[key].has(v);
-      const lc = key === "label" && v !== "none" && v !== "other" ? LABELS.find((l) => l.key === v)?.color : null;
-      const dot = lc ? `<span class="dot" style="background:${lc}"></span>` : "";
-      html += `<div class="filter-row${on ? " on" : ""}" data-k="${key}" data-v="${escapeHtml(v)}">
-        <input type="checkbox" ${on ? "checked" : ""}>${dot}<span class="label">${escapeHtml(label)}</span>
-        <span class="n">${c.get(v) ?? 0}</span></div>`;
+    // 每組都可以收合（狀態記住）；收合時若有勾選，標題旁顯示數量
+    const folded = collapsedGroups.has(key);
+    const nOn = S.filters[key].size + (key === "rating" ? S.filters.label.size : 0);
+    html += `<div class="filter-group foldable${folded ? " folded" : ""}" data-group="${key}"><h4 class="fg-head" title="點一下收合 / 展開">${CHEV}<span>${key === "rating" ? "評等與標籤" : title}</span>${folded && nOn ? `<span class="fg-on">${nOn}</span>` : ""}</h4>`;
+    html += rowsHtml(key, rows);
+    if (key === "rating") {
+      // 色彩標籤接在星等下面
+      const lr = rowsHtml("label", labelRows);
+      if (lr) html += `<div class="filter-sep"></div>${lr}`;
     }
     html += `</div>`;
   }
