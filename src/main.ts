@@ -613,6 +613,24 @@ function renderFileInfo() {
 
 // ---------------------------------------------------------------- folder
 
+function trimSep(p: string) {
+  return p.length > 1 ? p.replace(/[\\/]+$/, "") : p;
+}
+function samePath(a: string, b: string) {
+  return trimSep(a) === trimSep(b);
+}
+/** 複製的目的地在目前資料夾底下、但它所在的第一層子資料夾還沒顯示（剛在選擇視窗裡新建的） */
+function newSubdirFor(dest: string) {
+  if (!S.dir) return false;
+  const base = trimSep(S.dir);
+  const d = trimSep(dest);
+  const sep = base.includes("\\") && !base.includes("/") ? "\\" : "/";
+  const prefix = base.endsWith(sep) ? base : base + sep;
+  if (!d.startsWith(prefix)) return false;
+  const first = d.slice(prefix.length).split(/[\\/]/)[0];
+  return !!first && !S.subdirs.some((x) => samePath(x.path, prefix + first));
+}
+
 /** 開啟資料夾；成功回傳 true（quiet：失敗時不顯示錯誤，由呼叫端處理） */
 async function openFolder(path: string, quiet = false): Promise<boolean> {
   let res: OpenResult;
@@ -1713,6 +1731,10 @@ async function transferIds(ids: number[], dest: string, mode: "copy" | "move", c
       const top = gridEl.scrollTop;
       await openFolder(S.dir);
       gridEl.scrollTop = top;
+    } else if (newSubdirFor(dest)) {
+      // 複製到目前資料夾底下的新資料夾（例如在選擇視窗裡新建的）：重新讀取，讓新資料夾出現在縮圖區
+      await doRefreshFolder(true);
+      void folderTree.refresh();
     }
   } catch (e) {
     toast(String(e));
