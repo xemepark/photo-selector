@@ -27,6 +27,8 @@ export interface GridHost {
   onFolderOpen?(path: string): void;
   onFolderMenu?(path: string, ev: MouseEvent): void;
   onFolderDrag?(path: string, name: string, down: MouseEvent): void;
+  /** 選取的資料夾改變（"" = 沒有選資料夾） */
+  onFolderSelect?(path: string): void;
 }
 
 const FOLDER_SVG = `<svg viewBox="0 0 64 52" class="folder-ico" aria-hidden="true"><path d="M4 8a4 4 0 0 1 4-4h15l6 6h27a4 4 0 0 1 4 4v30a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z" fill="#5b8fd6"/><path d="M4 17a4 4 0 0 1 4-4h48a4 4 0 0 1 4 4v27a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z" fill="#79a9ea"/></svg>`;
@@ -161,9 +163,14 @@ export class Grid {
   /** 設定要顯示的子資料夾（有變才重排） */
   setFolders(list: DirInfo[]) {
     const same = list.length === this.folders.length && list.every((d, i) => d.path === this.folders[i].path);
-    if (same) return;
+    if (same) {
+      // 同一組資料夾：只更新評等 / 標籤
+      this.folders = list;
+      for (const [i, el] of this.fcells) this.decorateFolder(el, this.folders[i]);
+      return;
+    }
+    if (this.selFolder && !list.some((d) => d.path === this.selFolder)) this.selectFolder("");
     this.folders = list;
-    if (!list.some((d) => d.path === this.selFolder)) this.selFolder = "";
     for (const [, el] of this.fcells) el.remove();
     this.fcells.clear();
     this.reset();
@@ -177,8 +184,14 @@ export class Grid {
     this.render();
   }
 
-  private selectFolder(path: string) {
+  get selectedFolder() {
+    return this.selFolder;
+  }
+
+  selectFolder(path: string) {
+    const changed = path !== this.selFolder;
     this.selFolder = path;
+    if (changed) this.host.onFolderSelect?.(path);
     for (const [i, el] of this.fcells) el.classList.toggle("selected", this.folders[i]?.path === path);
   }
 
@@ -307,13 +320,14 @@ export class Grid {
         el.className = "cell folder-cell";
         el.dataset.folder = String(i);
         el.title = `${d.path}\n按兩下開啟；拖到分頁列的「＋」用新分頁開啟`;
-        el.innerHTML = `<div class="frame">${FOLDER_SVG}</div><div class="cap"><span class="name"></span></div>`;
+        el.innerHTML = `<div class="frame">${FOLDER_SVG}</div><div class="cap"><span class="stars"></span><span class="dot"></span><span class="name"></span></div>`;
         el.querySelector(".name")!.textContent = d.name;
         this.spacer.appendChild(el);
         this.fcells.set(i, el);
         el.dataset.geo = "";
       }
       el.classList.toggle("selected", d.path === this.selFolder);
+      this.decorateFolder(el, d);
       if (el.dataset.geo !== String(this.geo)) {
         const col = i % this.cols;
         const row = Math.floor(i / this.cols);
@@ -323,6 +337,20 @@ export class Grid {
         el.dataset.geo = String(this.geo);
       }
     }
+  }
+
+  private decorateFolder(el: HTMLElement, d: DirInfo | undefined) {
+    if (!d) return;
+    const r = d.rating ?? 0;
+    const st = el.querySelector<HTMLElement>(".stars")!;
+    const s = stars(r);
+    if (st.textContent !== s) st.textContent = s;
+    st.classList.toggle("rej", r < 0);
+    el.classList.toggle("rejected", r < 0);
+    const dot = el.querySelector<HTMLElement>(".dot")!;
+    const col = labelColor(d.label);
+    dot.style.display = col ? "" : "none";
+    if (col) dot.style.background = col;
   }
 
   /** 強制重新回報可見範圍（例如調整視窗關閉後，後端的可見清單被縮圖列換掉了） */

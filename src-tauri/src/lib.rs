@@ -223,6 +223,29 @@ async fn write_text(core: CoreState<'_>, session: u64, id: u32, text: String) ->
     .map_err(|e| e.to_string())?
 }
 
+/// 資料夾評等（寫在資料夾裡的隱藏檔）
+#[tauri::command]
+async fn set_folder_rating(path: String, rating: i32) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        xmp::update(&PathBuf::from(&path).join(scan::FOLDER_XMP), Some(rating), None).map_err(|e| format!("無法寫入資料夾評等：{e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 資料夾標籤（None = 移除）
+#[tauri::command]
+async fn set_folder_label(path: String, label: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        xmp::update(&PathBuf::from(&path).join(scan::FOLDER_XMP), None, Some(label.as_deref()))
+            .map_err(|e| format!("無法寫入資料夾標籤：{e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 在資料夾裡新增子資料夾，回傳完整路徑
 #[tauri::command]
 async fn create_folder(dir: String, name: String) -> Result<String, String> {
@@ -1101,6 +1124,8 @@ pub fn run() {
             write_text,
             create_text,
             create_folder,
+            set_folder_rating,
+            set_folder_label,
             set_rating,
             set_label,
             transfer,

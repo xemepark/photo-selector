@@ -114,7 +114,13 @@ impl Item {
 pub struct DirInfo {
     pub name: String,
     pub path: String,
+    /// 資料夾的評等 / 標籤（存在資料夾裡的隱藏檔 FOLDER_XMP）
+    pub rating: i32,
+    pub label: Option<String>,
 }
+
+/// 資料夾評等 / 標籤存放的隱藏檔（跟著資料夾移動）
+pub const FOLDER_XMP: &str = ".photoselector-folder.xmp";
 
 pub fn natural_key(s: &str) -> Vec<(u8, u64, String)> {
     // 讓 IMG_2.jpg 排在 IMG_10.jpg 前面
@@ -220,7 +226,8 @@ pub fn scan_dir(dir: &Path) -> io::Result<(Vec<Item>, Vec<DirInfo>)> {
         let Ok(ft) = entry.file_type() else { continue };
         let path = entry.path();
         if ft.is_dir() {
-            subdirs.push(DirInfo { name, path: path.to_string_lossy().into_owned() });
+            let rl = crate::xmp::read_sidecar(&path.join(FOLDER_XMP)).unwrap_or_default();
+            subdirs.push(DirInfo { name, path: path.to_string_lossy().into_owned(), rating: rl.rating.unwrap_or(0), label: rl.label });
             continue;
         }
         let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();

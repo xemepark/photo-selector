@@ -56,6 +56,8 @@ const S = {
   items: [] as Item[],
   /** 目前資料夾裡的子資料夾（顯示在縮圖區最前面） */
   subdirs: [] as DirInfo[],
+  /** 縮圖區選取的資料夾（"" = 沒有）；選了資料夾時評等 / 標籤鍵作用在資料夾上 */
+  folderSel: "",
   meta: new Map<number, Meta>(),
   overrides: new Map<number, Partial<Meta>>(), // 中繼資料還沒讀到前，使用者就先評分的值
   view: [] as Item[],
@@ -93,7 +95,7 @@ const grid = new Grid(gridEl, $("grid-spacer"), {
   view: () => S.view,
   meta: (id) => S.meta.get(id),
   isSelected: (id) => S.selected.has(id),
-  focusId: () => S.focus,
+  focusId: () => (S.folderSel ? null : S.focus),
   badges: (id) => cull.badges(id),
   onCellClick,
   onCellMenu: (i, ev) => showCellMenu(i, ev),
@@ -113,6 +115,12 @@ const grid = new Grid(gridEl, $("grid-spacer"), {
   onFolderOpen: (path) => void openFolder(path),
   onFolderMenu: (path, ev) => showFolderMenu(path, ev),
   onFolderDrag: (path, name, ev) => startFolderDrag(path, name, ev),
+  onFolderSelect: (path) => {
+    S.folderSel = path;
+    if (path) S.selected = new Set();
+    grid.refresh();
+    renderStatus();
+  },
   onOrder: debounce((ids: number[]) => {
     api.setOrder(S.session, ids).catch(() => {});
   }, 200),
@@ -245,6 +253,7 @@ const RATING_ROWS: [string, string][] = [
   ["5", "★★★★★"],
 ];
 const KIND_NAMES: Record<string, string> = {
+  folder: "資料夾",
   "raw+jpeg": "RAW + JPEG",
   raw: "RAW",
   jpeg: "JPEG",
@@ -254,6 +263,24 @@ const KIND_NAMES: Record<string, string> = {
 };
 
 const LOADING = "\u0000loading";
+
+/** 資料夾也能用「評等」「標籤」「檔案類型」篩選（仿 Bridge） */
+const FOLDER_KEYS = new Set<FilterKey>(["rating", "label", "kind"]);
+function folderFacet(key: FilterKey, d: DirInfo): string {
+  if (key === "rating") {
+    const r = d.rating ?? 0;
+    return r < 0 ? "rej" : String(r);
+  }
+  if (key === "label") return d.label ? (labelKey(d.label) ?? "other") : "none";
+  return "folder";
+}
+
+/** 依篩選條件要顯示的資料夾：有照片專屬的篩選（相機、調整…）時不顯示資料夾 */
+function visibleFolders(): DirInfo[] {
+  const active = FILTER_KEYS.filter((k) => S.filters[k].size);
+  if (active.some((k) => !FOLDER_KEYS.has(k))) return [];
+  return S.subdirs.filter((d) => active.every((k) => S.filters[k].has(folderFacet(k, d))));
+}
 
 function facet(key: FilterKey, it: Item): string {
   const m = S.meta.get(it.id);
@@ -352,6 +379,11 @@ function renderFilters() {
       const v = facet(k, it);
       c.set(v, (c.get(v) ?? 0) + 1);
     }
+    if (FOLDER_KEYS.has(k))
+      for (const d of S.subdirs) {
+        const v = folderFacet(k, d);
+        c.set(v, (c.get(v) ?? 0) + 1);
+      }
     return c;
   };
   // 動態選項（相機、鏡頭）：有照片的值 + 已勾選的值（勾了就不會因為數量變 0 而消失、無法取消）
@@ -452,8 +484,8 @@ let pendingUpdate = 0;
 /** 重新計算檢視並重畫。resetGrid = 排序或篩選改變，需要重新配置格子 */
 function update(opts: { resetGrid?: boolean } = {}) {
   recomputeView();
-  // 子資料夾排在照片前面；有篩選條件時不顯示（只看符合條件的照片）
-  grid.setFolders(FILTER_KEYS.some((k) => S.filters[k].size) ? [] : S.subdirs);
+  // 子資料夾排在照片前面（也依評等 / 標籤 / 檔案類型篩選）
+  grid.setFolders(visibleFolders());
   renderFilters();
   updateAspect();
   if (opts.resetGrid) grid.reset();
@@ -594,6 +626,7 @@ async function openFolder(path: string) {
     parent: res.parent,
     items: res.items,
     subdirs: res.subdirs,
+    folderSel: "",
     focus: res.items.length ? 0 : null,
     anchor: res.items.length ? 0 : null,
     metaLoaded: 0,
@@ -1028,6 +1061,8 @@ const prefetchFocus = debounce((id: number) => {
 }, 350);
 
 function setFocus(id: number, extend: boolean) {
+  // 回到照片：取消資料夾的選取
+  if (S.folderSel) grid.selectFolder("");
   S.focus = id;
   if (!S.loupe) prefetchFocus(id);
   if (extend && S.anchor !== null && S.viewIndex.has(S.anchor)) {
@@ -1204,6 +1239,8 @@ async function deleteTargets() {
 }
 
 function targets(): number[] {
+  // 選了資料夾：照片相關的動作（評等、刪除、旋轉…）都不作用在照片上
+  if (S.folderSel && !S.loupe && !S.compare.length && !slideshow.active) return [];
   if (slideshow.active) {
     const id = slideshow.currentId();
     return id === null ? [] : [id];
@@ -1253,6 +1290,40 @@ async function applyLabel(key: LabelKey) {
     prev.forEach(([id, l]) => setLocal(id, { label: l }));
     update();
     toast(`寫入標籤失敗：${e}`);
+  }
+}
+
+/** 資料夾評等（寫在資料夾裡的隱藏檔） */
+async function rateFolder(rating: number | "toggle-reject") {
+  const d = S.subdirs.find((x) => x.path === S.folderSel);
+  if (!d) return;
+  const prev = d.rating ?? 0;
+  const value = rating === "toggle-reject" ? (prev < 0 ? 0 : -1) : rating;
+  d.rating = value;
+  update();
+  try {
+    await api.setFolderRating(d.path, value);
+  } catch (e) {
+    d.rating = prev;
+    update();
+    toast(String(e));
+  }
+}
+
+/** 資料夾標籤：再按一次同色就移除（與照片相同） */
+async function labelFolder(key: LabelKey) {
+  const d = S.subdirs.find((x) => x.path === S.folderSel);
+  if (!d) return;
+  const prev = d.label ?? null;
+  const value = labelKey(prev) === key ? null : labelName(key);
+  d.label = value;
+  update();
+  try {
+    await api.setFolderLabel(d.path, value);
+  } catch (e) {
+    d.label = prev;
+    update();
+    toast(String(e));
   }
 }
 
@@ -1673,6 +1744,14 @@ document.addEventListener("keydown", (ev) => {
     return;
   }
 
+  // 選了資料夾：評等 / 拒絕 / 標籤作用在資料夾上，Enter 開啟
+  if (S.folderSel && !S.loupe && !S.compare.length && !slideshow.active) {
+    if (!ev.altKey && /^[0-5]$/.test(k) && !mod) return ev.preventDefault(), void rateFolder(Number(k));
+    if (k.toLowerCase() === "x" && !mod) return ev.preventDefault(), void rateFolder("toggle-reject");
+    const fl = LABELS.find((l) => l.hotkey && l.hotkey === k);
+    if (fl) return ev.preventDefault(), void labelFolder(fl.key);
+    if (k === "Enter") return ev.preventDefault(), void openFolder(S.folderSel);
+  }
   // 評等 / 拒絕 / 標籤（格狀、全螢幕、比較模式通用）
   if (!ev.altKey && /^[0-5]$/.test(k) && !mod) return ev.preventDefault(), void applyRating(Number(k));
   if (k.toLowerCase() === "x" && !mod) return ev.preventDefault(), void applyRating("toggle-reject");

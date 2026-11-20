@@ -53,6 +53,9 @@ export interface EditParams {
 export interface DirInfo {
   name: string;
   path: string;
+  /** 資料夾評等 / 標籤（縮圖區的子資料夾才有） */
+  rating?: number;
+  label?: string | null;
 }
 
 export interface OpenResult {
@@ -123,6 +126,8 @@ export const api = {
   writeText: (session: number, id: number, text: string) => invoke<void>("write_text", { session, id, text }),
   createText: (dir: string, name: string, text: string) => invoke<string>("create_text", { dir, name, text }),
   createFolder: (dir: string, name: string) => invoke<string>("create_folder", { dir, name }),
+  setFolderRating: (path: string, rating: number) => invoke<void>("set_folder_rating", { path, rating }),
+  setFolderLabel: (path: string, label: string | null) => invoke<void>("set_folder_label", { path, label }),
   /** 旋轉 90°，存回原檔；回傳 [id, 新方向] */
   rotate: (session: number, ids: number[], clockwise: boolean) =>
     invoke<{ done: [number, number][]; failed: string[] }>("rotate", { session, ids, clockwise }),
