@@ -240,6 +240,8 @@ const KIND_NAMES: Record<string, string> = {
   other: "其他格式",
 };
 
+const LOADING = "\u0000loading";
+
 function facet(key: FilterKey, it: Item): string {
   const m = S.meta.get(it.id);
   switch (key) {
@@ -253,10 +255,11 @@ function facet(key: FilterKey, it: Item): string {
       return m?.edited ? "yes" : "no";
     case "kind":
       return it.kind;
+    // 還沒讀完 EXIF 的照片不算「未知」（讀完才知道有沒有），用 LOADING 表示，不出現在篩選選項裡
     case "camera":
-      return m?.camera ?? "未知";
+      return m ? (m.camera ?? "未知") : LOADING;
     case "lens":
-      return m?.lens ?? "未知";
+      return m ? (m.lens ?? "未知") : LOADING;
     case "suggest":
     case "eyes":
     case "sharp":
@@ -338,8 +341,9 @@ function renderFilters() {
     }
     return c;
   };
+  // 動態選項（相機、鏡頭）：有照片的值 + 已勾選的值（勾了就不會因為數量變 0 而消失、無法取消）
   const dyn = (k: FilterKey) =>
-    [...counts(k).keys()].sort((a, b) => (a === "未知" ? 1 : b === "未知" ? -1 : collator.compare(a, b))).map((v) => [v, v] as [string, string]);
+    [...new Set([...counts(k).keys(), ...S.filters[k]])].filter((v) => v !== LOADING).sort((a, b) => (a === "未知" ? 1 : b === "未知" ? -1 : collator.compare(a, b))).map((v) => [v, v] as [string, string]);
 
   if (cull.analysis.size) {
     groups.push(["suggest", "選片建議", [["cull", "建議淘汰"], ["keep", "沒有問題"], ["na", "尚未分析"]]]);
