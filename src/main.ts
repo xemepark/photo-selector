@@ -2529,6 +2529,8 @@ setSideWidth(storage("sideWidth", SIDE_DEFAULT));
   await Promise.all(listeners);
   await folderTree.init();
   await restoreMusic();
+  // 每次啟動都用預設瀏覽器開啟官網
+  api.openWebsite().catch(() => {});
   const initial = await api.initialFolder().catch(() => null);
   renderTabs();
   if (tabs.length) {
