@@ -593,3 +593,5 @@ body.folder-dragging, body.folder-dragging * { cursor: grabbing !important; }
 .folder-cell.drop-target { outline: 3px solid var(--accent); outline-offset: -3px; background: #f5b32b22; }
 .folder-cell.drop-target .folder-ico { transform: scale(1.08); filter: drop-shadow(0 0 10px #f5b32b88); }
 #ctx-menu .item.disabled { opacity: .45; }
+.tab-close-others { border: none; background: transparent; color: var(--muted); padding: 0 7px; border-radius: 6px; display: flex; align-items: center; }
+.tab-close-others:hover { background: #ffffff14; color: var(--text); }

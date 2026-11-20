@@ -894,7 +894,12 @@ function renderTabs() {
         (t, i) =>
           `<div class="tab${i === activeTab ? " active" : ""}" data-tab="${i}" title="${escapeHtml(t.dir)}${i < 9 ? `（⌘${i + 1}）` : ""}"><span class="tab-name">${escapeHtml(tabName(t.dir))}</span>${tabs.length > 1 ? `<button class="tab-x" data-close="${i}" title="關閉分頁（⌘W）">✕</button>` : ""}</div>`,
       )
-      .join("") + `<button id="tab-new" class="tab-new" title="新增分頁（⌘T）">＋</button>`;
+      .join("") +
+    `<button id="tab-new" class="tab-new" title="新增分頁（⌘T）">＋</button>` +
+    // 關閉其他分頁（只有一個分頁時不顯示）
+    (tabs.length > 1
+      ? `<button id="tab-close-others" class="tab-close-others" title="關閉其他分頁，只留下目前這個（⌥⌘W）"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4.5" y="1.5" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2 5v7.5A1.5 1.5 0 0 0 3.5 14H11" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M7.5 4.5l4 4M11.5 4.5l-4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>`
+      : "");
 }
 
 // ---- 把照片拖到其他分頁 = 複製 / 移動到那個分頁的資料夾
@@ -1001,6 +1006,7 @@ $("tabbar").addEventListener("click", (e) => {
   const x = t.closest<HTMLElement>("[data-close]");
   if (x) return void closeTab(Number(x.dataset.close));
   if (t.closest("#tab-new")) return void newTab();
+  if (t.closest("#tab-close-others")) return void closeOtherTabs();
   const tab = t.closest<HTMLElement>("[data-tab]");
   if (tab) void switchTab(Number(tab.dataset.tab));
 });
