@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <!-- 介面是繁體中文：系統內建的選單文字（例如文字框右鍵的拷貝 / 貼上）也顯示中文 -->
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh_TW</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>zh_TW</string>
+    <string>zh-Hant</string>
+  </array>
   <key>NSAppleEventsUsageDescription</key>
   <string>刪除桌面、文件等受保護資料夾裡的照片時，需要請 Finder 代為移到垃圾桶。</string>
   <key>NSDesktopFolderUsageDescription</key>

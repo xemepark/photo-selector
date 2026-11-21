@@ -1794,6 +1794,14 @@ $("sort-dir").addEventListener("click", () => {
 });
 
 
+// 沒有自己選單的地方，不要跳出瀏覽器內建的英文右鍵選單（Reload / Inspect Element）；
+// 文字框與可選取的文字保留系統的拷貝 / 貼上選單
+document.addEventListener("contextmenu", (e) => {
+  const t = e.target as HTMLElement;
+  if (t.closest?.('input, textarea, [contenteditable="true"], .lt-page')) return;
+  e.preventDefault();
+});
+
 // ---------------------------------------------------------------- 文字檔（內建簡易編輯器）
 
 const textEditor = new TextEditor({
