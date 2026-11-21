@@ -141,6 +141,7 @@ export const api = {
   videoSrc: (session: number, id: number) => invoke<string>("video_src", { session, id }).then((p) => convertFileSrc(p)),
   captureScreen: () => invoke<string | null>("capture_screen"),
   screenPermission: () => invoke<boolean>("screen_permission"),
+  requestScreenPermission: () => invoke<boolean>("request_screen_permission"),
   waitClipboardImage: (timeoutSecs?: number) => invoke<string | null>("wait_clipboard_image", { timeoutSecs }),
   cancelClipboardWait: () => invoke<void>("cancel_clipboard_wait"),
   openScreenSettings: () => invoke<void>("open_screen_settings"),

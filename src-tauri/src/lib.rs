@@ -310,6 +310,19 @@ fn screen_permission() -> bool {
     screen::has_permission()
 }
 
+/// 要求螢幕錄影權限（加進系統設定的清單），並打開「螢幕與系統錄音」設定
+#[tauri::command]
+fn request_screen_permission() -> bool {
+    if screen::has_permission() {
+        return true;
+    }
+    let ok = screen::request_permission();
+    if !ok {
+        let _ = open_screen_settings();
+    }
+    ok
+}
+
 static CLIP_WAIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 等使用者用系統截圖（⌃⇧⌘4）截到剪貼簿，存成暫存 PNG 後回傳路徑；逾時或取消回傳 None
@@ -1386,6 +1399,7 @@ pub fn run() {
             video_src,
             capture_screen,
             screen_permission,
+            request_screen_permission,
             wait_clipboard_image,
             cancel_clipboard_wait,
             open_screen_settings,
