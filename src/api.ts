@@ -126,6 +126,7 @@ export const api = {
   writeText: (session: number, id: number, text: string) => invoke<void>("write_text", { session, id, text }),
   createText: (dir: string, name: string, text: string) => invoke<string>("create_text", { dir, name, text }),
   createFolder: (dir: string, name: string) => invoke<string>("create_folder", { dir, name }),
+  renameFolder: (path: string, name: string) => invoke<string>("rename_folder", { path, name }),
   setFolderRating: (path: string, rating: number) => invoke<void>("set_folder_rating", { path, rating }),
   trashFolder: (path: string) => invoke<void>("trash_folder", { path }),
   existingAncestor: (path: string) => invoke<string | null>("existing_ancestor", { path }),

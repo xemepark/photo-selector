@@ -1046,12 +1046,14 @@ $("tabbar").addEventListener("contextmenu", (e) => {
   ctxTab = Number(tab.dataset.tab);
   const mod = IS_MAC_UI ? "⌘" : "Ctrl+";
   const alt = IS_MAC_UI ? "⌥" : "Alt+";
-  ctxMenu.innerHTML = [
-    ["t-close", "關閉分頁", ctxTab === activeTab ? `${mod}W` : ""],
-    ["t-others", "關閉其他分頁", ctxTab === activeTab ? `${alt}${mod}W` : ""],
-  ]
-    .map(([a, label, key]) => `<div class="item${tabs.length <= 1 ? " disabled" : ""}" data-a="${a}"><span>${label}</span><kbd>${key}</kbd></div>`)
-    .join("");
+  ctxMenu.innerHTML =
+    `<div class="item" data-a="t-rename"><span>重新命名資料夾…</span><kbd></kbd></div><div class="sep"></div>` +
+    [
+      ["t-close", "關閉分頁", ctxTab === activeTab ? `${mod}W` : ""],
+      ["t-others", "關閉其他分頁", ctxTab === activeTab ? `${alt}${mod}W` : ""],
+    ]
+      .map(([a, label, key]) => `<div class="item${tabs.length <= 1 ? " disabled" : ""}" data-a="${a}"><span>${label}</span><kbd>${key}</kbd></div>`)
+      .join("");
   ctxMenu.classList.remove("hidden");
   ctxMenu.style.left = `${Math.min(e.clientX, innerWidth - ctxMenu.offsetWidth - 6)}px`;
   ctxMenu.style.top = `${Math.min(e.clientY, innerHeight - ctxMenu.offsetHeight - 6)}px`;
@@ -1091,6 +1093,26 @@ const folderTree = new FolderTree($("folder-tree"), (path, ev) => {
   if (path !== S.dir) void openFolder(path);
 });
 $("tree-refresh").addEventListener("click", () => void folderTree.refresh());
+// 左側資料夾按右鍵：開啟、在新分頁開啟、在 Finder 中開啟、重新命名
+$("folder-tree").addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const row = (e.target as HTMLElement).closest<HTMLElement>(".tree-row");
+  if (!row?.dataset.path) return;
+  ctxFolder = row.dataset.path;
+  const items: [string, string][] = [
+    ["f-open", "開啟"],
+    ["f-tab", "在新分頁開啟"],
+    ["f-reveal", IS_MAC_UI ? "在 Finder 中開啟" : "在檔案總管中開啟"],
+    ["-", ""],
+    ["f-rename", "重新命名…"],
+  ];
+  ctxMenu.innerHTML = items
+    .map(([a, label]) => (a === "-" ? `<div class="sep"></div>` : `<div class="item" data-a="${a}"><span>${label}</span><kbd></kbd></div>`))
+    .join("");
+  ctxMenu.classList.remove("hidden");
+  ctxMenu.style.left = `${Math.min(e.clientX, innerWidth - ctxMenu.offsetWidth - 6)}px`;
+  ctxMenu.style.top = `${Math.min(e.clientY, innerHeight - ctxMenu.offsetHeight - 6)}px`;
+});
 // 左側資料夾也可以拖到分頁列的「＋」開新分頁
 $("folder-tree").addEventListener("mousedown", (ev) => {
   const row = (ev.target as HTMLElement).closest<HTMLElement>(".tree-row");
@@ -1839,7 +1861,7 @@ document.addEventListener("keydown", (ev) => {
     }
     return;
   }
-  if (k === "F2" && !S.loupe && !S.compare.length && !slideshow.active) return ev.preventDefault(), openRename();
+  if (k === "F2" && !S.loupe && !S.compare.length && !slideshow.active) return ev.preventDefault(), S.folderSel ? renameFolder(S.folderSel) : openRename();
   if (mod && ev.shiftKey && k.toLowerCase() === "r") return ev.preventDefault(), openBatchRename();
   if (mod && ev.shiftKey && k.toLowerCase() === "e") return ev.preventDefault(), openExport();
   if (mod && ev.shiftKey && k.toLowerCase() === "k") return ev.preventDefault(), void makeZip();
@@ -2471,6 +2493,7 @@ function showCellMenu(index: number, ev: MouseEvent) {
 ctxMenu.addEventListener("click", (ev) => {
   const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
   hideMenu();
+  if (a === "t-rename") return void (tabs[ctxTab] && renameFolder(tabs[ctxTab].dir));
   if (a === "t-close") return void closeTab(ctxTab);
   if (a === "t-others") return void closeOtherTabs(ctxTab);
   if (a?.startsWith("f-")) {
@@ -2479,6 +2502,7 @@ ctxMenu.addEventListener("click", (ev) => {
     else if (a === "f-tab") void newTab(p);
     else if (a === "f-reveal") api.openDir(p).catch((e) => toast(`無法開啟：${e}`));
     else if (a === "f-new") void newFolder();
+    else if (a === "f-rename") renameFolder(p);
     else if (a === "f-trash") void deleteFolder(p);
     return;
   }
@@ -2515,6 +2539,7 @@ function showFolderMenu(path: string, ev: MouseEvent) {
     ["f-tab", "在新分頁開啟"],
     ["f-reveal", isMac ? "在 Finder 中開啟" : "在檔案總管中開啟"],
     ["-", ""],
+    ["f-rename", "重新命名…"],
     ["f-new", "新增資料夾…"],
     ["-", ""],
     ["f-trash", "移到垃圾桶"],
@@ -2574,13 +2599,13 @@ async function deleteFolder(path: string) {
 }
 
 /** 輸入名稱的小對話框；submit 回傳錯誤訊息時保持開啟並顯示錯誤 */
-function askName(title: string, value: string, submit: (name: string) => Promise<string | null>) {
+function askName(title: string, value: string, submit: (name: string) => Promise<string | null>, okLabel = "建立") {
   const box = document.createElement("div");
   box.className = "modal";
   box.innerHTML = `<div class="modal-box name-box"><h2>${escapeHtml(title)}</h2>
     <input type="text" spellcheck="false" autocomplete="off" />
     <div class="name-err"></div>
-    <div class="modal-actions"><span></span><button data-a="cancel">取消</button><button data-a="ok" class="primary">建立</button></div></div>`;
+    <div class="modal-actions"><span></span><button data-a="cancel">取消</button><button data-a="ok" class="primary">${escapeHtml(okLabel)}</button></div></div>`;
   document.body.appendChild(box);
   const input = box.querySelector("input")!;
   const err = box.querySelector<HTMLElement>(".name-err")!;
@@ -2609,6 +2634,45 @@ function askName(title: string, value: string, submit: (name: string) => Promise
   });
   input.focus();
   input.select();
+}
+
+/** 資料夾重新命名（縮圖區、分頁、左側資料夾樹共用）：開著它（或它裡面）的分頁跟著換成新路徑 */
+function renameFolder(path: string) {
+  const old = folderLabel(path);
+  askName(
+    "重新命名資料夾",
+    old,
+    async (name) => {
+      if (name === old) return null;
+      try {
+        const np = await api.renameFolder(path, name);
+        const sep = path.includes("\\") && !path.includes("/") ? "\\" : "/";
+        const moved = (p: string) => (p === path ? np : p.startsWith(path + sep) ? np + p.slice(path.length) : null);
+        tabs.forEach((t, i) => {
+          const m = moved(t.dir);
+          if (m) tabs[i] = { ...t, dir: m };
+        });
+        saveTabs();
+        renderTabs();
+        const cur = S.dir ? moved(S.dir) : null;
+        if (cur) {
+          // 改的是目前這個資料夾（或它的上層）：換成新路徑重新讀取，保留選取與捲動
+          S.dir = cur;
+          pathInput.value = cur;
+          await doRefreshFolder(true);
+        } else if (S.subdirs.some((d) => d.path === path)) {
+          await doRefreshFolder(true);
+          grid.highlightFolder(np);
+        }
+        void folderTree.refresh();
+        toast(`已重新命名為「${name}」`);
+        return null;
+      } catch (e) {
+        return String(e);
+      }
+    },
+    "重新命名",
+  );
 }
 
 function newFolder() {

@@ -269,6 +269,37 @@ async fn set_folder_label(path: String, label: Option<String>) -> Result<(), Str
     .map_err(|e| e.to_string())?
 }
 
+/// 資料夾改名，回傳新的完整路徑（同一層已有同名項目時拒絕）
+#[tauri::command]
+async fn rename_folder(path: String, name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("請輸入資料夾名稱".to_string());
+        }
+        if name.contains(['/', '\\', ':']) || name.starts_with('.') {
+            return Err("資料夾名稱不能包含 / \\ : ，也不能以 . 開頭".to_string());
+        }
+        let src = PathBuf::from(&path);
+        if !src.is_dir() {
+            return Err("找不到這個資料夾".to_string());
+        }
+        let dst = src.with_file_name(&name);
+        if dst == src {
+            return Ok(path);
+        }
+        // 只改大小寫（macOS 不分大小寫）時 exists() 會是 true，允許
+        let case_only = dst.to_string_lossy().to_lowercase() == src.to_string_lossy().to_lowercase();
+        if dst.exists() && !case_only {
+            return Err(format!("已經有「{name}」了，請換一個名稱"));
+        }
+        std::fs::rename(&src, &dst).map_err(|e| format!("無法重新命名：{e}"))?;
+        Ok(dst.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 在資料夾裡新增子資料夾，回傳完整路徑
 #[tauri::command]
 async fn create_folder(dir: String, name: String) -> Result<String, String> {
@@ -1148,6 +1179,7 @@ pub fn run() {
             write_text,
             create_text,
             create_folder,
+            rename_folder,
             set_folder_rating,
             trash_folder,
             existing_ancestor,
