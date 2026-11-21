@@ -105,8 +105,8 @@ jobs:
           rm -f "$RUNNER_TEMP/sign.p12"
           security find-identity -p codesigning "$KC"
           # 先試簽一個檔案，確定憑證可用；不能用就退回 ad-hoc，不讓整個編譯失敗
-          cp /bin/echo "$RUNNER_TEMP/signtest"
-          if codesign -s "$NAME" --keychain "$KC" "$RUNNER_TEMP/signtest"; then
+          printf "test" > "$RUNNER_TEMP/signtest"
+          if codesign -f -s "$NAME" --keychain "$KC" "$RUNNER_TEMP/signtest"; then
             echo "使用自製憑證「$NAME」簽署"
             echo "APPLE_SIGNING_IDENTITY=$NAME" >> "$GITHUB_ENV"
           else
@@ -198,8 +198,8 @@ jobs:
           rm -f "$RUNNER_TEMP/sign.p12"
           security find-identity -p codesigning "$KC"
           # 先試簽一個檔案，確定憑證可用；不能用就退回 ad-hoc，不讓整個編譯失敗
-          cp /bin/echo "$RUNNER_TEMP/signtest"
-          if codesign -s "$NAME" --keychain "$KC" "$RUNNER_TEMP/signtest"; then
+          printf "test" > "$RUNNER_TEMP/signtest"
+          if codesign -f -s "$NAME" --keychain "$KC" "$RUNNER_TEMP/signtest"; then
             echo "使用自製憑證「$NAME」簽署"
             echo "APPLE_SIGNING_IDENTITY=$NAME" >> "$GITHUB_ENV"
           else
