@@ -1823,7 +1823,7 @@ document.addEventListener("keydown", (ev) => {
   // 對話框開著時，鍵盤只用來關閉它（不要誤評分背景的照片）
   if (!ctxMenu.classList.contains("hidden") && k === "Escape") return ev.preventDefault(), hideMenu();
   if (!settingsDialog.classList.contains("hidden")) {
-    if (k === "Escape") settingsDialog.classList.add("hidden"), gridEl.focus();
+    if (k === "Escape") closeSettings();
     return;
   }
   if (exporter.isOpen) {
@@ -1846,13 +1846,6 @@ document.addEventListener("keydown", (ev) => {
   if ((mod && !ev.shiftKey && k.toLowerCase() === "r") || k === "F5") return ev.preventDefault(), void refreshFolder();
   if (mod && ev.shiftKey && k.toLowerCase() === "g") return ev.preventDefault(), focusPath();
 
-  if (!slideDialog.classList.contains("hidden")) {
-    if (k === "Escape") closeSlideDialog();
-    else if (k === "Enter") startSlideshow();
-    else return;
-    ev.preventDefault();
-    return;
-  }
   if (slideshow.active) {
     const lk = k.toLowerCase();
     const isRateKey = !mod && (/^[0-9]$/.test(k) || lk === "x");
@@ -1978,7 +1971,9 @@ const slideshow = new Slideshow($("slideshow"), {
   },
 });
 
-const slideDialog = $("slide-dialog");
+/** 幻燈片選項（在「系統設定」的右欄） */
+const slideDialog = $("slide-options");
+const slideFormShown = () => !$("settings-dialog").classList.contains("hidden");
 const slideSettings: SlideSettings = { ...DEFAULT_SETTINGS, ...storage<Partial<SlideSettings>>("slideshow", {}) };
 const durations = new Map<string, number>();
 
@@ -2022,7 +2017,6 @@ const ss = {
   volume: $<HTMLInputElement>("ss-volume"),
   fit: $<HTMLInputElement>("ss-fit"),
   summary: $("ss-summary"),
-  go: $<HTMLButtonElement>("ss-go"),
 };
 
 function readSlideForm() {
@@ -2090,7 +2084,6 @@ function updateSlideSummary() {
   ss.summary.textContent = n
     ? `共 ${n} 張，約 ${fmtTime(n * per)}${total ? `；音樂 ${fmtTime(total)}` : ""}${note}`
     : "沒有可播放的照片";
-  ss.go.disabled = !n;
 }
 
 async function loadDurations() {
@@ -2100,17 +2093,17 @@ async function loadDurations() {
       if (isFinite(d)) durations.set(p, d);
     }
   }
-  if (!slideDialog.classList.contains("hidden")) renderSlideForm();
+  if (slideFormShown()) renderSlideForm();
 }
 
+/** 幻燈片按鈕 / P：依「系統設定 › 幻燈片選項」直接開始播放 */
 function openSlideDialog() {
   if (!S.items.length) return toast("請先開啟照片資料夾");
   if (S.loupe) closeLoupe();
   if (S.compare.length) closeCompare();
   renderSlideForm();
-  slideDialog.classList.remove("hidden");
-  ss.go.focus();
-  loadDurations();
+  if (!slideCandidates(slideSettings.scope, slideSettings.skipRejected).length) return toast("沒有可播放的照片");
+  void startSlideshow();
 }
 
 // 試聽：用和幻燈片相同的方式讀取與播放，確認音樂可以正常出聲
@@ -2124,7 +2117,7 @@ function stopPreview() {
   previewAudio.removeAttribute("src");
   if (previewing !== null) {
     previewing = null;
-    if (!slideDialog.classList.contains("hidden")) renderSlideForm();
+    if (slideFormShown()) renderSlideForm();
   }
 }
 
@@ -2160,12 +2153,6 @@ previewAudio.addEventListener("error", () => {
 });
 previewAudio.addEventListener("ended", stopPreview);
 
-function closeSlideDialog() {
-  stopPreview();
-  slideDialog.classList.add("hidden");
-  gridEl.focus();
-}
-
 async function startSlideshow() {
   readSlideForm();
   const ids = slideCandidates(slideSettings.scope, slideSettings.skipRejected);
@@ -2174,7 +2161,6 @@ async function startSlideshow() {
   // 在使用者按下「開始播放」的當下就讓音樂開始（避免被系統的自動播放限制擋下）
   slideshow.primeAudio(slideSettings.music);
   const startIdx = slideSettings.start === "focus" && S.focus !== null ? Math.max(0, ids.indexOf(S.focus)) : 0;
-  slideDialog.classList.add("hidden");
   await slideshow.start(ids, slideSettings, startIdx);
 }
 
@@ -2185,7 +2171,6 @@ slideDialog.addEventListener("input", () => {
 });
 slideDialog.addEventListener("click", (ev) => {
   const t = ev.target as HTMLElement;
-  if (t === slideDialog) return closeSlideDialog(); // 點背景關閉
   const play = t.getAttribute("data-play");
   if (play !== null) return void togglePreview(slideSettings.music[Number(play)]);
   const del = t.getAttribute("data-del");
@@ -2217,8 +2202,6 @@ $("ss-add-music").addEventListener("click", async () => {
   renderSlideForm();
   loadDurations();
 });
-$("ss-cancel").addEventListener("click", closeSlideDialog);
-$("ss-go").addEventListener("click", startSlideshow);
 $("btn-slideshow").addEventListener("click", openSlideDialog);
 
 // ---------------------------------------------------------------- macOS
@@ -2915,13 +2898,19 @@ $("btn-export").addEventListener("click", openExport);
 // ---------------------------------------------------------------- 系統設定
 
 const settingsDialog = $("settings-dialog");
-$("btn-settings").addEventListener("click", () => settingsDialog.classList.remove("hidden"));
-$("settings-close").addEventListener("click", () => {
+$("btn-settings").addEventListener("click", () => {
+  renderSlideForm();
+  settingsDialog.classList.remove("hidden");
+  void loadDurations();
+});
+function closeSettings() {
+  stopPreview();
   settingsDialog.classList.add("hidden");
   gridEl.focus();
-});
+}
+$("settings-close").addEventListener("click", closeSettings);
 settingsDialog.addEventListener("mousedown", (e) => {
-  if (e.target === settingsDialog) settingsDialog.classList.add("hidden");
+  if (e.target === settingsDialog) closeSettings();
 });
 
 // ---------------------------------------------------------------- 標籤名稱設定（與 Bridge 一致）

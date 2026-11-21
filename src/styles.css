@@ -595,3 +595,20 @@ body.folder-dragging, body.folder-dragging * { cursor: grabbing !important; }
 #ctx-menu .item.disabled { opacity: .45; }
 .tab-close-others { border: none; background: transparent; color: var(--muted); padding: 0 7px; border-radius: 6px; display: flex; align-items: center; }
 .tab-close-others:hover { background: #ffffff14; color: var(--text); }
+
+/* ---------- 品牌列（右側是幻燈片按鈕）、系統設定兩欄 ---------- */
+.brand-row { display: flex; align-items: center; gap: 6px; margin: 10px 0 2px; }
+.brand-row .brand { flex: 1; min-width: 0; width: auto; margin: 0; }
+.slide-btn { flex: none; white-space: nowrap; padding: 6px 10px; }
+.settings-box { width: min(980px, calc(100% - 32px)); }
+.settings-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
+.settings-slide { border-left: 1px solid var(--line); padding-left: 24px; }
+.settings-group { margin: 0 0 4px; font-size: 14px; }
+.settings-slide .form > label select { min-width: 0; max-width: 60%; }
+@media (max-width: 860px) {
+  .settings-cols { grid-template-columns: 1fr; }
+  .settings-slide { border-left: none; padding-left: 0; border-top: 1px solid var(--line); padding-top: 14px; }
+}
+.brand-row .brand-name { white-space: nowrap; }
+.brand-row .brand { padding-right: 4px; }
+.slide-btn { padding: 5px 8px; font-size: 12px; }

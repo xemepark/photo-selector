@@ -25,20 +25,22 @@
         <button id="sort-dir" title="升冪 / 降冪">↓</button>
       </label>
       <label class="tool" title="縮圖大小（+ / −）"><input id="size" type="range" min="100" max="380" step="10" value="180" /></label>
-      <button id="btn-crop" title="用瀏覽器開啟「照片裁切輸出」 https://xemepark.github.io/crop/">裁切輸出</button>
       <button id="btn-edit" title="調整選取的照片：白平衡、曝光、對比、亮部、陰影等（E）">◐ 調整</button>
-      <button id="btn-export" title="把選取的照片縮到指定尺寸，另存為 JPEG / TIFF / PNG（仿 Photoshop 影像處理器，⇧⌘E）">影像轉存</button>
-      <button id="btn-zip" title="把選取的照片壓縮打包成一個 ZIP 檔（⇧⌘K）">壓縮打包</button>
       <button id="btn-batch-rename" title="批次重新命名（⇧⌘R）">批次命名</button>
-      <button id="btn-slideshow" title="播放幻燈片（P）">▶ 幻燈片</button>
+      <button id="btn-export" title="把選取的照片縮到指定尺寸，另存為 JPEG / TIFF / PNG（仿 Photoshop 影像處理器，⇧⌘E）">影像轉存</button>
+      <button id="btn-crop" title="用瀏覽器開啟「照片裁切輸出」 https://xemepark.github.io/crop/">裁切輸出</button>
+      <button id="btn-zip" title="把選取的照片壓縮打包成一個 ZIP 檔（⇧⌘K）">壓縮打包</button>
     </header>
 
     <main id="layout">
       <aside id="sidebar">
-        <button id="brand" class="brand" title="開啟 https://smallday.tw">
-          <span class="brand-name">小日子寫真館</span>
-          <span class="brand-link">https://smallday.tw</span>
-        </button>
+        <div class="brand-row">
+          <button id="brand" class="brand" title="開啟 https://smallday.tw">
+            <span class="brand-name">小日子寫真館</span>
+            <span class="brand-link">https://smallday.tw</span>
+          </button>
+          <button id="btn-slideshow" class="slide-btn" title="播放幻燈片（P）；播放選項在「系統設定」">▶ 幻燈片</button>
+        </div>
         <section>
           <h3>動作</h3>
           <div class="actions">
@@ -122,10 +124,36 @@
       <div class="slide-paused">已暫停</div>
     </div>
 
-    <div id="slide-dialog" class="modal hidden">
-      <div class="modal-box">
-        <h2>播放幻燈片</h2>
-        <div class="form">
+    <div id="settings-dialog" class="modal hidden">
+      <div class="modal-box settings-box">
+        <h2>系統設定</h2>
+        <div class="settings-cols">
+        <div class="form settings-form">
+          <h3 class="settings-group">一般選項</h3>
+          <label class="check" title="按 delete 鍵刪除照片前先跳出確認"><input id="confirm-delete" type="checkbox" checked /> 刪除照片前先確認</label>
+          <label class="check" title="評分（0–5、X）後自動跳到下一張"><input id="auto-advance" type="checkbox" checked /> 評分後自動跳到下一張</label>
+          <div class="settings-sub">左側篩選要顯示的項目</div>
+          <label class="check indent"><input type="checkbox" data-show-group="edited" checked /> 調整</label>
+          <label class="check indent"><input type="checkbox" data-show-group="camera" checked /> 相機</label>
+          <label class="check indent"><input type="checkbox" data-show-group="lens" checked /> 鏡頭</label>
+          <div class="settings-sub">調整過的照片：輸出時套用調整<span class="muted small">（JPEG 仍是 JPEG，保留 EXIF、星等、標籤；移動時未調整的原檔移到垃圾桶；只有 RAW 的照片無法寫入調整，照原樣處理）</span></div>
+          <label class="check indent"><input id="transfer-bake" type="checkbox" checked /> 複製 / 移動到其他資料夾</label>
+          <label class="check indent"><input id="rename-bake" type="checkbox" checked /> 批次重新命名（改名後移到 / 拷貝到其他資料夾）</label>
+          <label class="check indent"><input id="drag-bake" type="checkbox" checked /> 拖曳到其他程式</label>
+          <label class="check indent"><input id="zip-bake" type="checkbox" checked /> 壓縮打包（ZIP）</label>
+          <label class="check" title="RAW+JPEG 的照片預設只打包 JPEG；只有 RAW 的照片一律打包 RAW"><input id="zip-raw" type="checkbox" /> 壓縮打包時包含 RAW</label>
+          <label class="check" title="RAW+JPEG 的照片預設只拖出 JPEG，勾選後連 RAW 一起拖出"><input id="drag-raw" type="checkbox" /> 拖曳到其他程式時包含 RAW</label>
+          <label title="複製 / 移動 / 轉存完成後，提示訊息停留在畫面上的秒數">提示訊息停留
+            <input id="toast-seconds" type="number" min="1" max="60" step="1" /> 秒</label>
+          <div class="settings-row">
+            <span>色彩標籤名稱</span>
+            <button id="btn-label-names" title="色彩標籤寫入檔案時使用的名稱，需與 Bridge 偏好設定中的標籤名稱一致">標籤名稱（與 Bridge 一致）…</button>
+          </div>
+        </div>
+        <div class="settings-slide">
+          <h3 class="settings-group">幻燈片選項</h3>
+          <p class="muted small">按左上角「▶ 幻燈片」或 P 就會依這裡的設定直接播放。</p>
+          <div class="form" id="slide-options">
           <label>播放範圍
             <select id="ss-scope">
               <option value="view">目前顯示的照片（依篩選結果）</option>
@@ -166,37 +194,8 @@
           <label class="check"><input type="checkbox" id="ss-fit" /> 依音樂長度調整每張秒數（照片與音樂一起結束）</label>
           <p class="muted small">支援 MP3、M4A / AAC、WAV、AIFF、FLAC。多首會依序播放，音樂檔只在本機讀取。</p>
         </div>
-        <div class="modal-actions">
-          <span id="ss-summary" class="muted"></span>
-          <button id="ss-cancel">取消</button>
-          <button id="ss-go" class="primary">開始播放</button>
+          <p id="ss-summary" class="muted small"></p>
         </div>
-      </div>
-    </div>
-
-    <div id="settings-dialog" class="modal hidden">
-      <div class="modal-box">
-        <h2>系統設定</h2>
-        <div class="form settings-form">
-          <label class="check" title="按 delete 鍵刪除照片前先跳出確認"><input id="confirm-delete" type="checkbox" checked /> 刪除照片前先確認</label>
-          <label class="check" title="評分（0–5、X）後自動跳到下一張"><input id="auto-advance" type="checkbox" checked /> 評分後自動跳到下一張</label>
-          <div class="settings-sub">左側篩選要顯示的項目</div>
-          <label class="check indent"><input type="checkbox" data-show-group="edited" checked /> 調整</label>
-          <label class="check indent"><input type="checkbox" data-show-group="camera" checked /> 相機</label>
-          <label class="check indent"><input type="checkbox" data-show-group="lens" checked /> 鏡頭</label>
-          <div class="settings-sub">調整過的照片：輸出時套用調整<span class="muted small">（JPEG 仍是 JPEG，保留 EXIF、星等、標籤；移動時未調整的原檔移到垃圾桶；只有 RAW 的照片無法寫入調整，照原樣處理）</span></div>
-          <label class="check indent"><input id="transfer-bake" type="checkbox" checked /> 複製 / 移動到其他資料夾</label>
-          <label class="check indent"><input id="rename-bake" type="checkbox" checked /> 批次重新命名（改名後移到 / 拷貝到其他資料夾）</label>
-          <label class="check indent"><input id="drag-bake" type="checkbox" checked /> 拖曳到其他程式</label>
-          <label class="check indent"><input id="zip-bake" type="checkbox" checked /> 壓縮打包（ZIP）</label>
-          <label class="check" title="RAW+JPEG 的照片預設只打包 JPEG；只有 RAW 的照片一律打包 RAW"><input id="zip-raw" type="checkbox" /> 壓縮打包時包含 RAW</label>
-          <label class="check" title="RAW+JPEG 的照片預設只拖出 JPEG，勾選後連 RAW 一起拖出"><input id="drag-raw" type="checkbox" /> 拖曳到其他程式時包含 RAW</label>
-          <label title="複製 / 移動 / 轉存完成後，提示訊息停留在畫面上的秒數">提示訊息停留
-            <input id="toast-seconds" type="number" min="1" max="60" step="1" /> 秒</label>
-          <div class="settings-row">
-            <span>色彩標籤名稱</span>
-            <button id="btn-label-names" title="色彩標籤寫入檔案時使用的名稱，需與 Bridge 偏好設定中的標籤名稱一致">標籤名稱（與 Bridge 一致）…</button>
-          </div>
         </div>
         <p class="muted small">設定會立即套用並自動儲存。</p>
         <div class="modal-actions">
