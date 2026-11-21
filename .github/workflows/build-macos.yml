@@ -135,22 +135,34 @@ jobs:
       - name: 安裝前端套件
         run: npm ci
 
+      # 版本號 = 0.1.<第幾次編譯>（每次推送加一），軟體左下角與安裝檔檔名使用同一個號碼
+      - name: 版本號
+        run: |
+          BASE=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          echo "APP_VERSION=$BASE.${{ github.run_number }}" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$(TZ=Asia/Taipei date +%Y%m%d)" >> "$GITHUB_ENV"
+
       - name: 編譯通用版（Apple Silicon + Intel）
         env:
           BUILD_SHA: ${{ github.sha }}
+          BUILD_VERSION: ${{ env.APP_VERSION }}
         run: npx tauri build --target universal-apple-darwin --bundles app,dmg
 
       - name: 整理安裝檔
         run: |
           DMG=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -1)
+          OUT="Photo-Selector-v${APP_VERSION}-${BUILD_DATE}.dmg"
+          cp "$DMG" "$OUT"
+          # 固定檔名的複本：舊的下載連結（使用手冊、安裝說明）一樣能下載到最新版
           cp "$DMG" Photo-Selector-mac-universal.dmg
+          echo "DMG_NAME=$OUT" >> "$GITHUB_ENV"
           lipo -info src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app/Contents/MacOS/*
-          ls -lh Photo-Selector-mac-universal.dmg
+          ls -lh "$OUT"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Photo-Selector-macOS
-          path: Photo-Selector-mac-universal.dmg
+          name: ${{ env.DMG_NAME }}
+          path: ${{ env.DMG_NAME }}
           retention-days: 30
 
       - name: 更新測試版下載連結
@@ -159,7 +171,7 @@ jobs:
         run: |
           gh release delete beta --yes --cleanup-tag -R "$GITHUB_REPOSITORY" 2>/dev/null || true
           sleep 5
-          gh release create beta Photo-Selector-mac-universal.dmg -R "$GITHUB_REPOSITORY" \
+          gh release create beta "$DMG_NAME" Photo-Selector-mac-universal.dmg -R "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" --prerelease \
-            --title "小日子寫真館 測試版（最新）" \
-            --notes "自動編譯的最新測試版（${GITHUB_SHA::7}，分支 ${GITHUB_REF_NAME}）。Apple Silicon + Intel 通用版，macOS 11 以上。尚未經 Apple 公證，第一次開啟請見 README「在 Mac 上安裝」。"
+            --title "小日子寫真館 測試版 v${APP_VERSION}" \
+            --notes "自動編譯的最新測試版 v${APP_VERSION}（${BUILD_DATE}，${GITHUB_SHA::7}，分支 ${GITHUB_REF_NAME}）。Apple Silicon + Intel 通用版，macOS 11 以上。尚未經 Apple 公證，第一次開啟請見 README「在 Mac 上安裝」。"

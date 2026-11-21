@@ -1065,10 +1065,11 @@ fn allow_audio(app: AppHandle, paths: Vec<String>) -> AllowAudioResult {
     res
 }
 
-/// 版本字串，例如「0.1.0 (b57cba3)」；CI 編譯時帶入 commit 編號，方便確認裝的是哪一版
+/// 版本字串，例如「0.1.93 (b57cba3)」；CI 編譯時帶入版本號（與安裝檔檔名相同）與 commit 編號，方便確認裝的是哪一版
 fn version_string() -> String {
     let sha = option_env!("BUILD_SHA").map(|s| &s[..s.len().min(7)]).unwrap_or("dev");
-    format!("{} ({sha})", env!("CARGO_PKG_VERSION"))
+    let ver = option_env!("BUILD_VERSION").filter(|v| !v.is_empty()).unwrap_or(env!("CARGO_PKG_VERSION"));
+    format!("{ver} ({sha})")
 }
 
 #[tauri::command]
