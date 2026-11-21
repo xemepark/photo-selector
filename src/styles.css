@@ -686,3 +686,4 @@ body.folder-dragging, body.folder-dragging * { cursor: grabbing !important; }
 #shot-wait .sw-help.hidden { display: none; }
 #shot-wait .sw-help button { margin-left: 6px; }
 #shot-wait button.primary { background: #f0b43c; color: #111; border-color: #f0b43c; }
+#btn-screenshot.waiting { border-color: #f0b43c; color: #f0b43c; }

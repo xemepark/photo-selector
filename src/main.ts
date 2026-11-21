@@ -2062,38 +2062,31 @@ function showScreenSetup() {
   });
 }
 
+/** 改用系統截圖：畫面上不放任何提示（以免被截進去），只在「截圖標註」按鈕上顯示等待中 */
 async function captureViaClipboard() {
   closeShotBox();
   shotWaiting = true;
-  const box = document.createElement("div");
-  shotBox = box;
-  box.id = "shot-wait";
-  box.innerHTML = `
-    <div class="sw-main">
-      <b>請按 <kbd>⌃ control</kbd> <kbd>⇧ shift</kbd> <kbd>⌘ command</kbd> <kbd>4</kbd> 框選截圖範圍</b>
-      <div class="sw-sub">截好後會自動打開標註（全螢幕按 ⌃⇧⌘3；空白鍵可以改截單一視窗）</div>
-    </div>
-    <div class="sw-actions">
-      <button data-a="cancel">取消</button>
-    </div>`;
-  document.body.appendChild(box);
-  box.addEventListener("click", (ev) => {
-    if ((ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a === "cancel") void api.cancelClipboardWait();
-  });
+  const btn = $("btn-screenshot") as HTMLButtonElement;
+  const label = btn.textContent;
+  btn.textContent = "等待 ⌃⇧⌘4…";
+  btn.classList.add("waiting");
+  btn.title = "請按 ⌃⇧⌘4 框選截圖範圍，截好後會自動打開標註；再按一下這個按鈕取消";
   try {
     const path = await api.waitClipboardImage(180);
-    shotWaiting = false;
-    if (shotBox === box) closeShotBox();
     if (path) await openInAnnotator(convertFileSrc(path), "截圖");
   } catch (e) {
-    shotWaiting = false;
-    if (shotBox === box) closeShotBox();
     toast(String(e), 6000);
+  } finally {
+    shotWaiting = false;
+    btn.textContent = label;
+    btn.classList.remove("waiting");
+    btn.title = "截取螢幕畫面，馬上在上面加文字、箭頭、框線、星等標註（⇧⌘S）";
   }
 }
 
 async function captureAndAnnotate() {
   if (annotator.isOpen) return;
+  if (shotWaiting) return void api.cancelClipboardWait();
   if (shotBox) return closeShotBox();
   try {
     // 沒有螢幕錄影權限時不要直接呼叫 screencapture（每次都會跳出系統提醒），先引導授權一次
