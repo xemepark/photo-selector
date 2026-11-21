@@ -11,7 +11,7 @@
     <string>zh-Hant</string>
   </array>
   <key>NSAppleEventsUsageDescription</key>
-  <string>刪除桌面、文件等受保護資料夾裡的照片時，需要請 Finder 代為移到垃圾桶。</string>
+  <string>請 Photoshop 用 Camera Raw 開啟照片，以及刪除桌面、文件等受保護資料夾裡的照片時請 Finder 代為移到垃圾桶。</string>
   <key>NSDesktopFolderUsageDescription</key>
   <string>瀏覽、整理桌面上的照片。</string>
   <key>NSDocumentsFolderUsageDescription</key>

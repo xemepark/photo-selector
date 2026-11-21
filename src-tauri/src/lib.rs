@@ -934,6 +934,78 @@ async fn open_item(core: CoreState<'_>, session: u64, id: u32) -> Result<(), Str
     ops::open_file(&it.display().path).map_err(|e| e.to_string())
 }
 
+/// 找已安裝的 Photoshop（有好幾版時用最新的）：/Applications/Adobe Photoshop 2025/Adobe Photoshop 2025.app
+fn find_photoshop() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let is_ps = |n: &str| n.starts_with("Adobe Photoshop") && n.ends_with(".app");
+    let mut found: Vec<PathBuf> = Vec::new();
+    for root in ["/Applications", "/Applications/Adobe"] {
+        let Ok(rd) = std::fs::read_dir(root) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let p = e.path();
+            if is_ps(&name) {
+                found.push(p);
+            } else if name.starts_with("Adobe Photoshop") && p.is_dir() {
+                if let Ok(sub) = std::fs::read_dir(&p) {
+                    found.extend(sub.flatten().filter(|s| is_ps(&s.file_name().to_string_lossy())).map(|s| s.path()));
+                }
+            }
+        }
+    }
+    // Photoshop (Beta) 之類的排後面；其餘依名稱（年份）取最新
+    found.sort_by_key(|p| {
+        let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        (!n.contains("Beta"), scan::natural_key(&n))
+    });
+    found.pop()
+}
+
+/// 已安裝的 Photoshop 名稱（例如「Adobe Photoshop 2025」）；沒安裝回傳 None
+#[tauri::command]
+fn photoshop_app() -> Option<String> {
+    find_photoshop().and_then(|p| p.file_stem().map(|n| n.to_string_lossy().into_owned()))
+}
+
+/// 用 Photoshop / Camera Raw 開啟照片（RAW + JPEG 的組合開 RAW 檔）
+#[tauri::command]
+fn open_in_photoshop(core: CoreState<'_>, session: u64, ids: Vec<u32>, camera_raw: bool) -> Result<(), String> {
+    let app = find_photoshop().ok_or("找不到 Photoshop")?;
+    let sess = core.session(session)?;
+    let files: Vec<PathBuf> = ids
+        .iter()
+        .filter_map(|&id| sess.items.get(id as usize))
+        .filter(|it| !it.is_standalone())
+        .map(|it| it.raw().unwrap_or_else(|| it.display()).path.clone())
+        .collect();
+    if files.is_empty() {
+        return Err("沒有可以開啟的照片".into());
+    }
+    let open_plain = || {
+        std::process::Command::new("open").arg("-a").arg(&app).args(&files).status().map_err(|e| e.to_string()).and_then(|st| {
+            if st.success() { Ok(()) } else { Err("無法開啟 Photoshop".to_string()) }
+        })
+    };
+    // 開 Photoshop，或全部都是 RAW（Photoshop 本來就會先用 Camera Raw 開）
+    if !camera_raw || files.iter().all(|f| scan::is_raw_path(f)) {
+        return open_plain();
+    }
+    // JPEG / TIFF 等：請 Photoshop 用 Camera Raw 開啟（不等 Camera Raw 視窗關閉）
+    let esc = |p: &PathBuf| p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let list = files.iter().map(|f| format!("(POSIX file \"{}\" as alias)", esc(f))).collect::<Vec<_>>().join(", ");
+    let script = format!(
+        "set fl to {{{list}}}\ntell application id \"com.adobe.Photoshop\"\nactivate\nignoring application responses\nopen fl as Camera RAW\nend ignoring\nend tell"
+    );
+    let out = std::process::Command::new("osascript").arg("-e").arg(&script).output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("無法用 Camera Raw 開啟：{}", String::from_utf8_lossy(&out.stderr).trim()))
+    }
+}
+
 #[derive(Serialize)]
 struct ResolvedPath {
     dir: String,
@@ -1335,6 +1407,8 @@ pub fn run() {
             download_cloud,
             video_src,
             capture_screen,
+            photoshop_app,
+            open_in_photoshop,
             save_image,
             copy_image,
             open_item,

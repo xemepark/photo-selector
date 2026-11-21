@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- 簽署後啟用 hardened runtime：允許請 Finder 刪除檔案、請 Photoshop 開啟照片（Apple Events） -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

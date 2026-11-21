@@ -2688,6 +2688,10 @@ function hideMenu() {
   ctxMenu.classList.add("hidden");
 }
 
+/** 已安裝的 Photoshop（沒安裝就不顯示右鍵的「用 Photoshop / Camera Raw 開啟」） */
+let photoshopName: string | null = null;
+if (IS_MAC_UI) api.photoshopApp().then((n) => (photoshopName = n)).catch(() => {});
+
 function showCellMenu(index: number, ev: MouseEvent) {
   const it = S.view[index];
   if (!it) return;
@@ -2701,6 +2705,12 @@ function showCellMenu(index: number, ev: MouseEvent) {
     ...(it.kind === "text" ? ([["textedit", "編輯文字…"], ["-", ""]] as [string, string][]) : []),
     ...(it.kind !== "text" && it.kind !== "video" ? ([["annotate", "標註…（加文字、箭頭、星等）"]] as [string, string][]) : []),
     ["reveal", isMac ? "在 Finder 中顯示" : "在檔案總管中顯示"],
+    ...(photoshopName && it.kind !== "text" && it.kind !== "video"
+      ? ([
+          ["ps", n > 1 ? `用 Photoshop 開啟 ${n} 張` : "用 Photoshop 開啟"],
+          ["acr", n > 1 ? `用 Camera Raw 開啟 ${n} 張` : "用 Camera Raw 開啟"],
+        ] as [string, string][])
+      : []),
     ["rename", "重新命名…", "F2"],
     ["batch", n > 1 ? `批次重新命名 ${n} 張…` : "批次重新命名…", "⇧⌘R"],
     ["rotl", n > 1 ? `逆時針旋轉 ${n} 張` : "逆時針旋轉 90°", "["],
@@ -2747,7 +2757,13 @@ ctxMenu.addEventListener("click", (ev) => {
   if (a === "icloud") void downloadFromCloud(targets().filter((id) => S.items[id]?.cloud));
   else if (a === "textedit") void textEditor.openEdit(S.session, S.focus);
   else if (a === "annotate") void annotatePhoto(S.focus);
-  else if (a === "reveal") api.revealItem(S.session, S.focus).catch((e) => toast(`無法開啟：${e}`));
+  else if (a === "ps" || a === "acr") {
+    const ids = targets().filter((id) => S.items[id] && S.items[id].kind !== "text" && S.items[id].kind !== "video");
+    api.openInPhotoshop(S.session, ids, a === "acr").then(
+      () => toast(a === "acr" ? "已請 Photoshop 用 Camera Raw 開啟" : `已用 ${photoshopName ?? "Photoshop"} 開啟`),
+      (e) => toast(String(e), 6000),
+    );
+  } else if (a === "reveal") api.revealItem(S.session, S.focus).catch((e) => toast(`無法開啟：${e}`));
   else if (a === "rename") openRename();
   else if (a === "batch") openBatchRename();
   else if (a === "export") openExport();

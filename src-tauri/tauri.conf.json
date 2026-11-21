@@ -58,7 +58,8 @@
     "shortDescription": "小日子寫真館 選片工具",
     "macOS": {
       "minimumSystemVersion": "11.0",
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist"
     },
     "copyright": "小日子寫真館 https://smallday.tw"
   }

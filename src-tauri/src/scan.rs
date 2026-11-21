@@ -25,6 +25,11 @@ pub const RAW_EXTS: &[&str] = &[
     "x3f", "3fr", "iiq", "erf", "mef", "mos", "kdc", "rwl",
 ];
 
+/// 副檔名是 RAW 檔
+pub fn is_raw_path(p: &Path) -> bool {
+    p.extension().is_some_and(|e| RAW_EXTS.contains(&e.to_string_lossy().to_ascii_lowercase().as_str()))
+}
+
 pub fn classify(ext: &str) -> Option<Class> {
     if RAW_EXTS.contains(&ext) {
         return Some(Class::Raw);
