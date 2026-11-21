@@ -280,6 +280,71 @@ fn video_src(app: AppHandle, core: CoreState<'_>, session: u64, id: u32) -> Resu
     Ok(p.to_string_lossy().into_owned())
 }
 
+/// 截圖（macOS 內建 screencapture，與 ⇧⌘4 相同：拖曳框選，按空白鍵可改選視窗）。
+/// 取消時回傳 None；成功回傳暫存的 PNG 路徑（已允許 asset 協定讀取）
+#[tauri::command]
+async fn capture_screen(app: AppHandle) -> Result<Option<String>, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("截圖功能只支援 macOS；可以在照片上按右鍵「標註…」標註現有的圖片".into());
+    }
+    let tmp = std::env::temp_dir().join(format!(
+        "photo-selector-shot-{}.png",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    ));
+    let t2 = tmp.clone();
+    tauri::async_runtime::spawn_blocking(move || std::process::Command::new("screencapture").args(["-i", "-x"]).arg(&t2).status())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("無法截圖：{e}"))?;
+    if !tmp.is_file() {
+        return Ok(None);
+    }
+    app.asset_protocol_scope().allow_file(&tmp).map_err(|e| e.to_string())?;
+    Ok(Some(tmp.to_string_lossy().into_owned()))
+}
+
+/// 儲存標註好的圖片（PNG，base64）到資料夾；同名時自動加 _1、_2，回傳完整路徑
+#[tauri::command]
+async fn save_image(dir: String, name: String, data: String) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = PathBuf::from(dir);
+        let p = std::path::Path::new(&name);
+        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "截圖".into());
+        let ext = p.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "png".into());
+        let mut path = dir.join(format!("{stem}.{ext}"));
+        let mut n = 1;
+        while path.exists() {
+            path = dir.join(format!("{stem}_{n}.{ext}"));
+            n += 1;
+        }
+        std::fs::write(&path, &bytes).map_err(|e| format!("無法儲存：{e}"))?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 把圖片（PNG，base64）放進剪貼簿（macOS），可以直接到 LINE / Email 貼上
+#[tauri::command]
+async fn copy_image(data: String) -> Result<(), String> {
+    use base64::Engine;
+    if !cfg!(target_os = "macos") {
+        return Err("只支援 macOS".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let tmp = std::env::temp_dir().join("photo-selector-clip.png");
+        std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+        let script = format!("set the clipboard to (read (POSIX file \"{}\") as «class PNGf»)", tmp.to_string_lossy().replace('"', "\\\""));
+        let st = std::process::Command::new("osascript").arg("-e").arg(script).status().map_err(|e| e.to_string())?;
+        if st.success() { Ok(()) } else { Err("無法放進剪貼簿".to_string()) }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 這些項目中還在 iCloud 上的（id）
 #[tauri::command]
 fn cloud_status(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<Vec<u32>, String> {
@@ -1177,6 +1242,7 @@ fn mac_menu<R: tauri::Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::menu:
             &MenuItem::with_id(app, "up", "上一層資料夾", true, Some("CmdOrCtrl+Up"))?,
             &P::separator(app)?,
             &MenuItem::with_id(app, "slideshow", "播放幻燈片…", true, Some("CmdOrCtrl+Shift+P"))?,
+            &MenuItem::with_id(app, "screenshot", "截圖並標註…", true, Some("CmdOrCtrl+Shift+S"))?,
             &MenuItem::with_id(app, "batch-rename", "批次重新命名…", true, Some("CmdOrCtrl+Shift+R"))?,
             &MenuItem::with_id(app, "edit", "調整照片…", true, None::<&str>)?,
             &MenuItem::with_id(app, "export", "影像轉存…", true, Some("CmdOrCtrl+Shift+E"))?,
@@ -1258,6 +1324,9 @@ pub fn run() {
             existing_ancestor,
             download_cloud,
             video_src,
+            capture_screen,
+            save_image,
+            copy_image,
             open_item,
             cloud_status,
             set_folder_label,

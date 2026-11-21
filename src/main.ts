@@ -29,6 +29,8 @@ import { BatchRename } from "./rename";
 import { Exporter } from "./exporter";
 import { Editor } from "./editor";
 import { TextEditor } from "./textedit";
+import { Annotator } from "./annotate";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { FolderTree } from "./foldertree";
 import { setImg, clearImg, prefetchImg, onImageDiag } from "./imgload";
 import { Cull, Analysis, drawFaces, contentRect } from "./cull";
@@ -1928,6 +1930,63 @@ document.addEventListener("contextmenu", (e) => {
   e.preventDefault();
 });
 
+// ---------------------------------------------------------------- 截圖標註
+
+const annotator = new Annotator({
+  toast: (m) => toast(m),
+  closed: () => gridEl.focus(),
+  save: (name, data) => {
+    if (!S.dir) return Promise.reject("請先開啟一個資料夾（標註圖會存在目前的資料夾）");
+    return api.saveImage(S.dir, name, data);
+  },
+  copy: async (data) => {
+    try {
+      await api.copyImage(data);
+    } catch (e) {
+      // 非 macOS：改用瀏覽器的剪貼簿
+      const bin = atob(data);
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      if (!("ClipboardItem" in window)) throw e;
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([buf], { type: "image/png" }) })]);
+    }
+  },
+  saved: (path) => {
+    notify(`已儲存「${path.split(/[\\/]/).pop()}」到目前的資料夾`, openDirAction(S.dir));
+    void doRefreshFolder(true);
+  },
+});
+
+async function openInAnnotator(fetchUrl: string, baseName: string) {
+  try {
+    const r = await fetch(fetchUrl);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    await annotator.open(URL.createObjectURL(await r.blob()), baseName);
+  } catch (e) {
+    toast(`無法開啟圖片：${e}`);
+  }
+}
+
+/** 截圖（拖曳框選，按空白鍵可改選視窗）→ 馬上打開標註編輯器 */
+async function captureAndAnnotate() {
+  if (annotator.isOpen) return;
+  try {
+    const path = await api.captureScreen();
+    if (!path) return; // 按 Esc 取消
+    await openInAnnotator(convertFileSrc(path), "截圖");
+  } catch (e) {
+    toast(String(e), 6000);
+  }
+}
+$("btn-screenshot").addEventListener("click", () => void captureAndAnnotate());
+
+/** 在現有的照片上標註（存成新的 PNG，原圖不動） */
+async function annotatePhoto(id: number) {
+  const it = S.items[id];
+  if (!it) return;
+  await openInAnnotator(url.full(S.session, id), `${it.name.replace(/\.[^.]+$/, "")}_標註`);
+}
+
 // ---------------------------------------------------------------- 文字檔（內建簡易編輯器）
 
 const textEditor = new TextEditor({
@@ -1958,7 +2017,8 @@ document.addEventListener("keydown", (ev) => {
     if (editor.key(ev)) ev.preventDefault();
     return;
   }
-  if (textEditor.isOpen) return;
+  if (textEditor.isOpen || annotator.isOpen) return;
+  if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && ev.key.toLowerCase() === "s" && !IS_MAC_UI) return ev.preventDefault(), void captureAndAnnotate();
   const t = ev.target as HTMLElement;
   if (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA") return;
   const mod = ev.ctrlKey || ev.metaKey;
@@ -2421,6 +2481,9 @@ on<string>("menu", (e) => {
     case "close-tab":
       void closeTab(activeTab);
       break;
+    case "screenshot":
+      void captureAndAnnotate();
+      break;
     case "close-other-tabs":
       void closeOtherTabs();
       break;
@@ -2600,6 +2663,7 @@ function showCellMenu(index: number, ev: MouseEvent) {
   const items: [string, string, string?][] = [
     ...(cloudSel ? ([["icloud", cloudSel > 1 ? `☁ 從 iCloud 下載 ${cloudSel} 個項目` : "☁ 從 iCloud 下載"], ["-", ""]] as [string, string][]) : []),
     ...(it.kind === "text" ? ([["textedit", "編輯文字…"], ["-", ""]] as [string, string][]) : []),
+    ...(it.kind !== "text" && it.kind !== "video" ? ([["annotate", "標註…（加文字、箭頭、星等）"]] as [string, string][]) : []),
     ["reveal", isMac ? "在 Finder 中顯示" : "在檔案總管中顯示"],
     ["rename", "重新命名…", "F2"],
     ["batch", n > 1 ? `批次重新命名 ${n} 張…` : "批次重新命名…", "⇧⌘R"],
@@ -2646,6 +2710,7 @@ ctxMenu.addEventListener("click", (ev) => {
   if (!a || S.focus === null) return;
   if (a === "icloud") void downloadFromCloud(targets().filter((id) => S.items[id]?.cloud));
   else if (a === "textedit") void textEditor.openEdit(S.session, S.focus);
+  else if (a === "annotate") void annotatePhoto(S.focus);
   else if (a === "reveal") api.revealItem(S.session, S.focus).catch((e) => toast(`無法開啟：${e}`));
   else if (a === "rename") openRename();
   else if (a === "batch") openBatchRename();
