@@ -970,9 +970,9 @@ fn photoshop_app() -> Option<String> {
     find_photoshop().and_then(|p| p.file_stem().map(|n| n.to_string_lossy().into_owned()))
 }
 
-/// 用 Photoshop / Camera Raw 開啟照片（RAW + JPEG 的組合開 RAW 檔）
+/// 用 Photoshop 開啟照片（RAW + JPEG 的組合開 RAW 檔，Photoshop 會先用 Camera Raw 開啟 RAW）
 #[tauri::command]
-async fn open_in_photoshop(core: CoreState<'_>, session: u64, ids: Vec<u32>, camera_raw: bool) -> Result<(), String> {
+async fn open_in_photoshop(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<(), String> {
     let app = find_photoshop().ok_or("找不到 Photoshop")?;
     let sess = core.session(session)?;
     let files: Vec<PathBuf> = ids
@@ -984,74 +984,12 @@ async fn open_in_photoshop(core: CoreState<'_>, session: u64, ids: Vec<u32>, cam
     if files.is_empty() {
         return Err("沒有可以開啟的照片".into());
     }
-    let open_plain = || {
-        std::process::Command::new("open").arg("-a").arg(&app).args(&files).status().map_err(|e| e.to_string()).and_then(|st| {
-            if st.success() { Ok(()) } else { Err("無法開啟 Photoshop".to_string()) }
-        })
-    };
-    // 開 Photoshop，或全部都是 RAW（Photoshop 本來就會先用 Camera Raw 開）
-    if !camera_raw || files.iter().all(|f| scan::is_raw_path(f)) {
-        return open_plain();
+    let st = std::process::Command::new("open").arg("-a").arg(&app).args(&files).status().map_err(|e| e.to_string())?;
+    if st.success() {
+        Ok(())
+    } else {
+        Err("無法開啟 Photoshop".into())
     }
-    // JPEG / TIFF 等：用 Photoshop 的 JavaScript「開啟為 Camera Raw」；不支援時改成開啟後套用 Camera Raw 濾鏡
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let files_js = serde_json::to_string(&files.iter().map(|f| f.to_string_lossy().into_owned()).collect::<Vec<_>>()).map_err(|e| e.to_string())?;
-        let js = format!(
-            r#"var fs = {files_js};
-    for (var i = 0; i < fs.length; i++) {{
-      var f = new File(fs[i]);
-      try {{
-        var d = new ActionDescriptor();
-        d.putPath(charIDToTypeID("null"), f);
-        d.putString(charIDToTypeID("As  "), "Camera Raw");
-        executeAction(charIDToTypeID("Opn "), d, DialogModes.ALL);
-      }} catch (e) {{
-        if (e.number == 8007) break;
-        app.open(f);
-        try {{ executeAction(stringIDToTypeID("Adobe Camera Raw Filter"), undefined, DialogModes.ALL); }} catch (e2) {{}}
-      }}
-    }}"#
-        );
-        let as_str = |t: &str| t.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!(
-            "tell application id \"com.adobe.Photoshop\"\nactivate\nwith timeout of 86400 seconds\ndo javascript \"{}\"\nend timeout\nend tell",
-            as_str(&js)
-        );
-        let mut child = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        // Camera Raw 視窗開著時指令不會結束：等幾秒，期間出錯就回報，否則當作已開啟（背景等它結束）
-        let start = std::time::Instant::now();
-        loop {
-            if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
-                if st.success() {
-                    return Ok(());
-                }
-                let mut err = String::new();
-                if let Some(mut e) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = e.read_to_string(&mut err);
-                }
-                if err.contains("-1743") {
-                    return Err("macOS 不允許控制 Photoshop：請到「系統設定 → 隱私權與安全性 → 自動化」，在小日子寫真館底下打開 Adobe Photoshop".into());
-                }
-                return Err(format!("無法用 Camera Raw 開啟：{}", err.trim()));
-            }
-            if start.elapsed() > std::time::Duration::from_secs(6) {
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-                return Ok(());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]

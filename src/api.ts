@@ -183,7 +183,7 @@ export const api = {
     invoke<ExportResult>("export_images", { session, ids, options }),
   exportCancel: () => invoke<void>("export_cancel"),
   photoshopApp: () => invoke<string | null>("photoshop_app"),
-  openInPhotoshop: (session: number, ids: number[], cameraRaw: boolean) => invoke<void>("open_in_photoshop", { session, ids, cameraRaw }),
+  openInPhotoshop: (session: number, ids: number[]) => invoke<void>("open_in_photoshop", { session, ids }),
   revealItem: (session: number, id: number) => invoke<void>("reveal_item", { session, id }),
   openDir: (path: string) => invoke<void>("open_dir", { path }),
   openWebsite: () => invoke<void>("open_website"),
