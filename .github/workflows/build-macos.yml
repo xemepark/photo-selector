@@ -81,6 +81,38 @@ jobs:
             echo "未設定 Apple 憑證，使用 ad-hoc 簽署"
           fi
 
+      # 沒有 Apple 開發者憑證時，用自製憑證（Secret：MAC_SIGN_P12）簽署：
+      # 每一版的簽章身分相同，macOS 的螢幕錄影等權限更新後不用重新設定（ad-hoc 簽署每版都不同）
+      - name: 設定固定簽章（自製憑證）
+        env:
+          MAC_SIGN_P12: ${{ secrets.MAC_SIGN_P12 }}
+        run: |
+          if [ -n "$APPLE_SIGNING_IDENTITY" ]; then echo "已有 Apple 憑證，略過"; exit 0; fi
+          if [ -z "$MAC_SIGN_P12" ]; then echo "未設定 MAC_SIGN_P12，使用 ad-hoc 簽署"; exit 0; fi
+          NAME="Smallday Photo Selector"
+          KC="$RUNNER_TEMP/selfsign.keychain-db"
+          PW=$(uuidgen)
+          echo "$MAC_SIGN_P12" | base64 --decode > "$RUNNER_TEMP/sign.p12"
+          security create-keychain -p "$PW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$PW" "$KC"
+          security import "$RUNNER_TEMP/sign.p12" -k "$KC" -P photoselector -T /usr/bin/codesign -A
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PW" "$KC" > /dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security find-certificate -c "$NAME" -p "$KC" > "$RUNNER_TEMP/sign.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/sign.pem" \
+            || sudo security add-trusted-cert -d -r trustAsRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/sign.pem" || true
+          rm -f "$RUNNER_TEMP/sign.p12"
+          security find-identity -p codesigning "$KC"
+          # 先試簽一個檔案，確定憑證可用；不能用就退回 ad-hoc，不讓整個編譯失敗
+          cp /bin/echo "$RUNNER_TEMP/signtest"
+          if codesign -s "$NAME" --keychain "$KC" "$RUNNER_TEMP/signtest"; then
+            echo "使用自製憑證「$NAME」簽署"
+            echo "APPLE_SIGNING_IDENTITY=$NAME" >> "$GITHUB_ENV"
+          else
+            echo "::warning::自製憑證無法簽署，改用 ad-hoc"
+          fi
+
       - name: 編譯（${{ env.TARGET_DESC }}）
         env:
           BUILD_SHA: ${{ github.sha }}
@@ -142,6 +174,38 @@ jobs:
           echo "APP_VERSION=$BASE.${{ github.run_number }}" >> "$GITHUB_ENV"
           echo "BUILD_DATE=$(TZ=Asia/Taipei date +%Y%m%d)" >> "$GITHUB_ENV"
 
+      # 沒有 Apple 開發者憑證時，用自製憑證（Secret：MAC_SIGN_P12）簽署：
+      # 每一版的簽章身分相同，macOS 的螢幕錄影等權限更新後不用重新設定（ad-hoc 簽署每版都不同）
+      - name: 設定固定簽章（自製憑證）
+        env:
+          MAC_SIGN_P12: ${{ secrets.MAC_SIGN_P12 }}
+        run: |
+          if [ -n "$APPLE_SIGNING_IDENTITY" ]; then echo "已有 Apple 憑證，略過"; exit 0; fi
+          if [ -z "$MAC_SIGN_P12" ]; then echo "未設定 MAC_SIGN_P12，使用 ad-hoc 簽署"; exit 0; fi
+          NAME="Smallday Photo Selector"
+          KC="$RUNNER_TEMP/selfsign.keychain-db"
+          PW=$(uuidgen)
+          echo "$MAC_SIGN_P12" | base64 --decode > "$RUNNER_TEMP/sign.p12"
+          security create-keychain -p "$PW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$PW" "$KC"
+          security import "$RUNNER_TEMP/sign.p12" -k "$KC" -P photoselector -T /usr/bin/codesign -A
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PW" "$KC" > /dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security find-certificate -c "$NAME" -p "$KC" > "$RUNNER_TEMP/sign.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/sign.pem" \
+            || sudo security add-trusted-cert -d -r trustAsRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/sign.pem" || true
+          rm -f "$RUNNER_TEMP/sign.p12"
+          security find-identity -p codesigning "$KC"
+          # 先試簽一個檔案，確定憑證可用；不能用就退回 ad-hoc，不讓整個編譯失敗
+          cp /bin/echo "$RUNNER_TEMP/signtest"
+          if codesign -s "$NAME" --keychain "$KC" "$RUNNER_TEMP/signtest"; then
+            echo "使用自製憑證「$NAME」簽署"
+            echo "APPLE_SIGNING_IDENTITY=$NAME" >> "$GITHUB_ENV"
+          else
+            echo "::warning::自製憑證無法簽署，改用 ad-hoc"
+          fi
+
       - name: 編譯通用版（Apple Silicon + Intel）
         env:
           BUILD_SHA: ${{ github.sha }}
@@ -157,6 +221,8 @@ jobs:
           cp "$DMG" Photo-Selector-mac-universal.dmg
           echo "DMG_NAME=$OUT" >> "$GITHUB_ENV"
           lipo -info src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app/Contents/MacOS/*
+          codesign -dv src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app 2>&1 | head -8
+          codesign -d -r- src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app 2>&1 | tail -2
           ls -lh "$OUT"
 
       - uses: actions/upload-artifact@v4
