@@ -14,7 +14,7 @@ export interface AnnotatorHost {
 type Tool = "select" | "text" | "arrow" | "rect" | "ellipse" | "num" | "stars";
 
 type Ann =
-  | { kind: "text"; x: number; y: number; text: string; color: string; size: number; bold: boolean; bg: boolean }
+  | { kind: "text"; x: number; y: number; text: string; color: string; size: number; bold: boolean; bg: boolean; bga?: number }
   | { kind: "arrow" | "rect" | "ellipse"; x1: number; y1: number; x2: number; y2: number; color: string; width: number }
   | { kind: "num"; x: number; y: number; n: number; color: string; size: number }
   | { kind: "stars"; x: number; y: number; count: number; color: string; size: number };
@@ -57,6 +57,10 @@ export class Annotator {
   private size = 30;
   private bold = true;
   private bg = true;
+  /** 文字底色的不透明度（0–100） */
+  private bgAlpha = 70;
+  /** 最後一次儲存時的標註內容（關閉時比對，有改動就提醒存檔） */
+  private savedState = "[]";
   private starCount = 5;
   private sel = -1;
   private drag: { mode: "draw" | "move"; x0: number; y0: number; orig?: Ann } | null = null;
@@ -88,12 +92,25 @@ export class Annotator {
     this.history = [];
     this.future = [];
     this.sel = -1;
+    this.savedState = "[]";
     this.baseName = baseName;
     this.build();
     this.isOpen = true;
     this.root.classList.remove("hidden");
     this.root.focus();
     requestAnimationFrame(() => this.render());
+  }
+
+  /** 關閉；有尚未儲存的標註時先詢問 */
+  requestClose() {
+    if (!this.isOpen) return;
+    this.commitText();
+    if (JSON.stringify(this.anns) !== this.savedState && this.anns.length) {
+      this.q(".an-confirm").classList.remove("hidden");
+      this.q<HTMLButtonElement>('[data-confirm="save"]').focus();
+      return;
+    }
+    this.close();
   }
 
   close() {
@@ -123,6 +140,7 @@ export class Annotator {
           <label class="an-size" title="大小 / 粗細">大小 <input type="range" data-f="size" min="8" max="120" value="${this.size}"></label>
           <button class="an-toggle${this.bold ? " on" : ""}" data-toggle="bold" title="粗體"><b>B</b></button>
           <button class="an-toggle${this.bg ? " on" : ""}" data-toggle="bg" title="文字底色（在照片上也看得清楚）">底色</button>
+          <label class="an-size" title="文字底色的不透明度（0 = 全透明）">透明度 <input type="range" data-f="bga" min="0" max="100" value="${this.bgAlpha}"><span data-f="bga-v">${this.bgAlpha}%</span></label>
           <label class="an-stars" title="星等貼紙的星星數">★ <select data-f="stars">${[1, 2, 3, 4, 5].map((n) => `<option${n === this.starCount ? " selected" : ""}>${n}</option>`).join("")}</select></label>
         </div>
         <div class="an-group">
@@ -134,10 +152,13 @@ export class Annotator {
         <div class="an-group">
           <button data-act="copy" title="拷貝到剪貼簿，可以直接貼到 LINE / Email（⌘C）">拷貝</button>
           <button data-act="save" class="primary" title="存成 PNG 到目前的資料夾（⌘S）">儲存</button>
-          <button data-act="close" title="關閉（Esc）">關閉</button>
+          <button data-act="close" title="關閉（Esc）；有未儲存的標註會先詢問">關閉</button>
         </div>
       </div>
-      <div class="an-stage"><canvas></canvas></div>
+      <div class="an-stage"><canvas></canvas>
+        <div class="an-confirm hidden"><span>標註還沒有儲存，要儲存嗎？</span>
+          <button data-confirm="save" class="primary">儲存</button><button data-confirm="discard">不儲存</button><button data-confirm="cancel">取消</button></div>
+      </div>
       <div class="an-hint">文字：點一下開始打字（Enter 換行，點旁邊結束）· 選取工具可拖曳移動、雙擊文字修改 · ⌘Z 復原</div>`;
     this.canvas = this.root.querySelector("canvas")!;
     this.root.querySelectorAll<HTMLElement>("[data-tool]").forEach((b) => b.addEventListener("click", () => this.setTool(b.dataset.tool as Tool)));
@@ -168,7 +189,24 @@ export class Annotator {
         else if (a === "delete") this.deleteSel();
         else if (a === "save") void this.save();
         else if (a === "copy") void this.copy();
-        else if (a === "close") this.close();
+        else if (a === "close") this.requestClose();
+      }),
+    );
+    this.q<HTMLInputElement>('[data-f="bga"]').addEventListener("input", (e) => {
+      this.bgAlpha = Number((e.target as HTMLInputElement).value);
+      this.q('[data-f="bga-v"]').textContent = `${this.bgAlpha}%`;
+      const a = this.anns[this.sel];
+      if (a?.kind === "text") this.change(() => (a.bga = this.bgAlpha / 100));
+      if (this.editor) this.styleEditor();
+    });
+    this.root.querySelectorAll<HTMLElement>("[data-confirm]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        const c = b.dataset.confirm;
+        this.q(".an-confirm").classList.add("hidden");
+        if (c === "save") {
+          if (await this.save()) this.close();
+        } else if (c === "discard") this.close();
+        else this.root.focus();
       }),
     );
     this.canvas.addEventListener("pointerdown", (e) => this.down(e));
@@ -347,7 +385,7 @@ export class Annotator {
     if (this.tool === "select") return this.render();
     if (this.tool === "text") {
       this.snapshot();
-      this.anns.push({ kind: "text", x, y, text: "", color: this.color, size: this.px(), bold: this.bold, bg: this.bg });
+      this.anns.push({ kind: "text", x, y, text: "", color: this.color, size: this.px(), bold: this.bold, bg: this.bg, bga: this.bgAlpha / 100 });
       return this.editText(this.anns.length - 1, true);
     }
     if (this.tool === "num") {
@@ -433,6 +471,9 @@ export class Annotator {
     if (a.kind === "text") {
       this.bold = a.bold;
       this.bg = a.bg;
+      this.bgAlpha = Math.round((a.bga ?? 0.7) * 100);
+      this.q<HTMLInputElement>('[data-f="bga"]').value = String(this.bgAlpha);
+      this.q('[data-f="bga-v"]').textContent = `${this.bgAlpha}%`;
       this.root.querySelectorAll<HTMLElement>("[data-toggle]").forEach((b) => b.classList.toggle("on", this[b.dataset.toggle as "bold" | "bg"]));
     }
     // 大小滑桿換算回目前這個標註的大小
@@ -478,6 +519,7 @@ export class Annotator {
     a.color = this.color;
     a.bold = this.bold;
     a.bg = this.bg;
+    a.bga = this.bgAlpha / 100;
     a.size = this.px();
     const v = this.view();
     const fs = a.size * v.s;
@@ -485,7 +527,7 @@ export class Annotator {
     ta.style.top = `${v.oy + a.y * v.s}px`;
     ta.style.font = `${a.bold ? 700 : 400} ${fs}px/${1.25} ${FONT}`;
     ta.style.color = a.color;
-    ta.style.background = a.bg ? (luminance(a.color) > 0.55 ? "#000a" : "#fffc") : "#0002";
+    ta.style.background = a.bg ? bgColor(a) : "#0002";
     const lines = ta.value.split("\n");
     ta.rows = Math.max(1, lines.length);
     ta.style.width = `${Math.max(fs * 4, Math.max(...lines.map((l) => [...l].length)) * fs * 1.05 + fs)}px`;
@@ -528,15 +570,19 @@ export class Annotator {
     return btoa(bin);
   }
 
-  private async save() {
+  /** 儲存成功回傳 true */
+  private async save(): Promise<boolean> {
     try {
       const d = new Date();
       const p2 = (n: number) => String(n).padStart(2, "0");
       const name = `${this.baseName}_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.png`;
       const path = await this.host.save(name, await this.exportPng());
+      this.savedState = JSON.stringify(this.anns);
       this.host.saved(path);
+      return true;
     } catch (e) {
       this.host.toast(`無法儲存：${e}`);
+      return false;
     }
   }
 
@@ -557,7 +603,11 @@ export class Annotator {
     if (mod && k === "z") return e.preventDefault(), e.shiftKey ? this.redo() : this.undo();
     if (mod && k === "s") return e.preventDefault(), void this.save();
     if (mod && k === "c") return e.preventDefault(), void this.copy();
-    if (e.key === "Escape") return e.preventDefault(), this.sel >= 0 ? ((this.sel = -1), this.render()) : this.close();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (!this.q(".an-confirm").classList.contains("hidden")) return this.q(".an-confirm").classList.add("hidden");
+      return this.sel >= 0 ? ((this.sel = -1), this.render()) : this.requestClose();
+    }
     if (e.key === "Delete" || e.key === "Backspace") return e.preventDefault(), this.deleteSel();
     if (mod || e.altKey) return;
     const map: Record<string, Tool> = { v: "select", t: "text", a: "arrow", r: "rect", o: "ellipse", n: "num", s: "stars" };
@@ -590,6 +640,12 @@ function bbox(g: CanvasRenderingContext2D, a: Ann): { x: number; y: number; w: n
   return { x: Math.min(a.x1, a.x2) - pad, y: Math.min(a.y1, a.y2) - pad, w: Math.abs(a.x2 - a.x1) + pad * 2, h: Math.abs(a.y2 - a.y1) + pad * 2 };
 }
 
+/** 文字底色：淺色字配黑底、深色字配白底，透明度依設定 */
+function bgColor(a: Extract<Ann, { kind: "text" }>) {
+  const alpha = Math.max(0, Math.min(1, a.bga ?? 0.7));
+  return luminance(a.color) > 0.55 ? `rgba(0,0,0,${alpha})` : `rgba(255,255,255,${alpha})`;
+}
+
 function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   g.beginPath();
   g.moveTo(x + r, y);
@@ -619,7 +675,7 @@ function drawAnn(g: CanvasRenderingContext2D, a: Ann) {
     const lines = textLines(a);
     if (a.bg) {
       const b = bbox(g, a);
-      g.fillStyle = luminance(a.color) > 0.55 ? "rgba(0,0,0,0.62)" : "rgba(255,255,255,0.82)";
+      g.fillStyle = bgColor(a);
       roundRect(g, b.x, b.y, b.w, b.h, a.size * 0.25);
       g.fill();
     } else {

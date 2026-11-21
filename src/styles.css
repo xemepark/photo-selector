@@ -639,3 +639,11 @@ body.folder-dragging, body.folder-dragging * { cursor: grabbing !important; }
 .an-stage canvas { position: absolute; inset: 0; }
 .an-editor { position: absolute; resize: none; border: 1px dashed #0a84ff; border-radius: 4px; padding: 0.15em 0.3em; outline: none; overflow: hidden; white-space: pre; z-index: 2; }
 .an-hint { padding: 5px 12px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); background: var(--panel); }
+.search-box { margin: 2px 0 8px; }
+.search-box input { width: 100%; box-sizing: border-box; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; color: var(--text); font-size: 13px; user-select: text; }
+.search-box input:focus { border-color: var(--accent); outline: none; }
+.search-box input.on { border-color: var(--accent); background: #f5b32b18; }
+.badge { white-space: nowrap; }
+.an-confirm { position: absolute; left: 50%; top: 18px; transform: translateX(-50%); z-index: 3; display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; box-shadow: 0 10px 30px #000a; }
+.an-confirm.hidden { display: none; }
+.an-confirm span { margin-right: 6px; }

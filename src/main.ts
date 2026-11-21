@@ -287,7 +287,7 @@ function visibleFolders(): DirInfo[] {
   if (S.recursive) return [];
   const active = FILTER_KEYS.filter((k) => S.filters[k].size);
   if (active.some((k) => !FOLDER_KEYS.has(k))) return [];
-  return S.subdirs.filter((d) => active.every((k) => S.filters[k].has(folderFacet(k, d))));
+  return S.subdirs.filter((d) => matchesSearch(d.name) && active.every((k) => S.filters[k].has(folderFacet(k, d))));
 }
 
 function facet(key: FilterKey, it: Item): string {
@@ -322,8 +322,16 @@ function live(): Item[] {
   return S.removed.size ? S.items.filter((it) => !S.removed.has(it.id)) : S.items;
 }
 
+/** 檔名搜尋（不分大小寫；比對項目名稱、所有檔名與所在子資料夾） */
+let searchText = "";
+function matchesSearch(name: string, extra: string[] = []) {
+  if (!searchText) return true;
+  return [name, ...extra].some((s) => s.toLowerCase().includes(searchText));
+}
+
 function passes(it: Item) {
   if (S.removed.has(it.id)) return false;
+  if (searchText && !matchesSearch(it.name, [...it.files, it.sub ?? ""])) return false;
   for (const k of FILTER_KEYS) {
     const f = S.filters[k];
     if (f.size && !f.has(facet(k, it))) return false;
@@ -483,7 +491,34 @@ $("filters").addEventListener("click", (ev) => {
 });
 $("btn-clear-filter").addEventListener("click", () => {
   for (const k of FILTER_KEYS) S.filters[k].clear();
+  setSearch("");
   update({ resetGrid: true });
+});
+
+const searchInput = $<HTMLInputElement>("search");
+function setSearch(v: string) {
+  searchInput.value = v;
+  searchText = v.trim().toLowerCase();
+  searchInput.classList.toggle("on", !!searchText);
+}
+searchInput.addEventListener(
+  "input",
+  debounce(() => {
+    setSearch(searchInput.value);
+    gridEl.scrollTop = 0;
+    update({ resetGrid: true });
+  }, 150),
+);
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    setSearch("");
+    update({ resetGrid: true });
+    gridEl.focus();
+  } else if (e.key === "Enter" || e.key === "ArrowDown") {
+    e.preventDefault();
+    gridEl.focus();
+  }
 });
 
 // ---------------------------------------------------------------- updates
@@ -2061,6 +2096,7 @@ document.addEventListener("keydown", (ev) => {
   if (mod && ev.shiftKey && k.toLowerCase() === "k") return ev.preventDefault(), void makeZip();
   if ((mod && !ev.shiftKey && k.toLowerCase() === "r") || k === "F5") return ev.preventDefault(), void refreshFolder();
   if (mod && ev.shiftKey && k.toLowerCase() === "g") return ev.preventDefault(), focusPath();
+  if (mod && !ev.shiftKey && k.toLowerCase() === "f" && !S.loupe && !slideshow.active) return ev.preventDefault(), searchInput.focus(), searchInput.select();
 
   if (slideshow.active) {
     const lk = k.toLowerCase();
