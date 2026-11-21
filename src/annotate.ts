@@ -11,12 +11,14 @@ export interface AnnotatorHost {
   toast(msg: string): void;
 }
 
-type Tool = "select" | "text" | "arrow" | "rect" | "ellipse" | "num" | "stars";
+type Tool = "select" | "text" | "pen" | "arrow" | "rect" | "ellipse" | "num" | "stars";
 
 type Ann =
   | { kind: "text"; x: number; y: number; text: string; color: string; size: number; bold: boolean; bg: boolean; bga?: number }
   | { kind: "arrow" | "rect" | "ellipse"; x1: number; y1: number; x2: number; y2: number; color: string; width: number }
   | { kind: "num"; x: number; y: number; n: number; color: string; size: number }
+  /** 手寫：點的座標與筆壓（滑鼠固定 0.5；觸控筆依壓力粗細變化） */
+  | { kind: "pen"; pts: [number, number, number][]; color: string; width: number }
   | { kind: "stars"; x: number; y: number; count: number; color: string; size: number };
 
 const COLORS = ["#ff3b30", "#ff9500", "#ffcc00", "#34c759", "#0a84ff", "#af52de", "#ffffff", "#000000"];
@@ -25,12 +27,18 @@ const FONT = `-apple-system, "PingFang TC", "Heiti TC", "Microsoft JhengHei", "N
 const TOOLS: [Tool, string, string][] = [
   ["select", "選取 / 移動（V）", `<path d="M5 3l14 8-6 2-2 6z" fill="currentColor"/>`],
   ["text", "文字（T）", `<path d="M5 5h14M12 5v14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>`],
+  ["pen", "手寫（P）：用滑鼠或觸控筆書寫，觸控筆會依壓力變粗細", `<path d="M4 20l1.2-4.4L16 4.8a2 2 0 0 1 2.8 0l.4.4a2 2 0 0 1 0 2.8L8.4 18.8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M14 7l3 3" stroke="currentColor" stroke-width="2"/>`],
   ["arrow", "箭頭（A）", `<path d="M5 19L18 6M10 6h8v8" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`],
   ["rect", "框線（R）", `<rect x="4" y="6" width="16" height="12" rx="1.5" stroke="currentColor" stroke-width="2.2" fill="none"/>`],
   ["ellipse", "圓圈（O）", `<ellipse cx="12" cy="12" rx="8" ry="6" stroke="currentColor" stroke-width="2.2" fill="none"/>`],
   ["num", "編號貼紙（N）：每點一次 ①②③…", `<circle cx="12" cy="12" r="8" fill="currentColor"/><text x="12" y="16" font-size="11" text-anchor="middle" fill="#222" font-weight="700">1</text>`],
   ["stars", "星等貼紙（S）", `<path d="M12 3l2.6 5.6 6 .6-4.5 4 1.3 6L12 16.2 6.6 19.2l1.3-6-4.5-4 6-.6z" fill="currentColor"/>`],
 ];
+
+/** 筆壓：觸控筆回報 0–1；滑鼠按下時固定當 0.5 */
+function pressure(e: PointerEvent) {
+  return e.pointerType === "pen" && e.pressure > 0 ? Math.round(e.pressure * 100) / 100 : 0.5;
+}
 
 function luminance(hex: string) {
   const n = parseInt(hex.slice(1), 16);
@@ -159,7 +167,7 @@ export class Annotator {
         <div class="an-confirm hidden"><span>標註還沒有儲存，要儲存嗎？</span>
           <button data-confirm="save" class="primary">儲存</button><button data-confirm="discard">不儲存</button><button data-confirm="cancel">取消</button></div>
       </div>
-      <div class="an-hint">文字：點一下開始打字（Enter 換行，點旁邊結束）· 選取工具可拖曳移動、雙擊文字修改 · ⌘Z 復原</div>`;
+      <div class="an-hint">手寫：直接用滑鼠或觸控筆畫 · 文字：點一下開始打字（Enter 換行，點旁邊結束）· 選取工具可拖曳移動、雙擊文字修改 · ⌘Z 復原</div>`;
     this.canvas = this.root.querySelector("canvas")!;
     this.root.querySelectorAll<HTMLElement>("[data-tool]").forEach((b) => b.addEventListener("click", () => this.setTool(b.dataset.tool as Tool)));
     this.root.querySelectorAll<HTMLElement>("[data-color]").forEach((b) => b.addEventListener("click", () => this.setColor(b.dataset.color!)));
@@ -400,7 +408,11 @@ export class Annotator {
       return this.render();
     }
     this.snapshot();
-    this.anns.push({ kind: this.tool, x1: x, y1: y, x2: x, y2: y, color: this.color, width: this.lineW() });
+    if (this.tool === "pen") {
+      this.anns.push({ kind: "pen", pts: [[x, y, pressure(e)]], color: this.color, width: this.lineW() });
+    } else {
+      this.anns.push({ kind: this.tool, x1: x, y1: y, x2: x, y2: y, color: this.color, width: this.lineW() });
+    }
     this.sel = this.anns.length - 1;
     this.drag = { mode: "draw", x0: x, y0: y };
     this.canvas.setPointerCapture(e.pointerId);
@@ -413,7 +425,16 @@ export class Annotator {
     const [x, y] = this.toImg(e);
     const a = this.anns[this.sel];
     if (!a) return;
-    if (d.mode === "draw" && "x2" in a) {
+    if (d.mode === "draw" && a.kind === "pen") {
+      // 觸控筆 / 觸控板的中間點也收進來，筆跡比較順
+      const evs = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
+      const minD = 0.6 / this.view().s;
+      for (const ev of evs.length ? evs : [e]) {
+        const [px, py] = this.toImg(ev);
+        const last = a.pts[a.pts.length - 1];
+        if (Math.hypot(px - last[0], py - last[1]) >= minD) a.pts.push([px, py, pressure(ev)]);
+      }
+    } else if (d.mode === "draw" && "x2" in a) {
       a.x2 = x;
       a.y2 = y;
       if (e.shiftKey && a.kind !== "arrow") {
@@ -426,7 +447,9 @@ export class Annotator {
       const dx = x - d.x0;
       const dy = y - d.y0;
       const o = d.orig;
-      if ("x1" in o && "x1" in a) {
+      if (o.kind === "pen" && a.kind === "pen") {
+        a.pts = o.pts.map(([px, py, pr]) => [px + dx, py + dy, pr]);
+      } else if ("x1" in o && "x1" in a) {
         a.x1 = o.x1 + dx;
         a.y1 = o.y1 + dy;
         a.x2 = o.x2 + dx;
@@ -610,7 +633,7 @@ export class Annotator {
     }
     if (e.key === "Delete" || e.key === "Backspace") return e.preventDefault(), this.deleteSel();
     if (mod || e.altKey) return;
-    const map: Record<string, Tool> = { v: "select", t: "text", a: "arrow", r: "rect", o: "ellipse", n: "num", s: "stars" };
+    const map: Record<string, Tool> = { v: "select", t: "text", p: "pen", a: "arrow", r: "rect", o: "ellipse", n: "num", s: "stars" };
     if (map[k]) return e.preventDefault(), this.setTool(map[k]);
   }
 }
@@ -632,6 +655,13 @@ function bbox(g: CanvasRenderingContext2D, a: Ann): { x: number; y: number; w: n
     return { x: a.x - pad, y: a.y - pad * 0.6, w: w + pad * 2, h: lines.length * a.size * 1.25 + pad * 1.2 };
   }
   if (a.kind === "num") return { x: a.x - a.size * 0.7, y: a.y - a.size * 0.7, w: a.size * 1.4, h: a.size * 1.4 };
+  if (a.kind === "pen") {
+    const xs = a.pts.map((q) => q[0]);
+    const ys = a.pts.map((q) => q[1]);
+    const x = Math.min(...xs) - a.width;
+    const y = Math.min(...ys) - a.width;
+    return { x, y, w: Math.max(...xs) + a.width - x, h: Math.max(...ys) + a.width - y };
+  }
   if (a.kind === "stars") {
     const w = a.size * 1.05 * a.count + a.size * 0.8;
     return { x: a.x - a.size * 0.4, y: a.y - a.size * 0.75, w, h: a.size * 1.5 };
@@ -701,6 +731,40 @@ function drawAnn(g: CanvasRenderingContext2D, a: Ann) {
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillText(circled(a.n), a.x, a.y + a.size * 0.04);
+  } else if (a.kind === "pen") {
+    g.strokeStyle = a.color;
+    g.fillStyle = a.color;
+    g.lineCap = "round";
+    g.lineJoin = "round";
+    const pts = a.pts;
+    const w = (pr: number) => a.width * (0.35 + pr * 1.3);
+    if (pts.length === 1) {
+      g.beginPath();
+      g.arc(pts[0][0], pts[0][1], w(pts[0][2]) / 2, 0, Math.PI * 2);
+      g.fill();
+    } else if (pts.every((q) => q[2] === pts[0][2])) {
+      // 固定粗細（滑鼠）：用中點做平滑曲線
+      g.lineWidth = w(pts[0][2]);
+      g.beginPath();
+      g.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length - 1; i++) {
+        const mx = (pts[i][0] + pts[i + 1][0]) / 2;
+        const my = (pts[i][1] + pts[i + 1][1]) / 2;
+        g.quadraticCurveTo(pts[i][0], pts[i][1], mx, my);
+      }
+      const l = pts[pts.length - 1];
+      g.lineTo(l[0], l[1]);
+      g.stroke();
+    } else {
+      // 觸控筆：每一段依筆壓改變粗細
+      for (let i = 1; i < pts.length; i++) {
+        g.lineWidth = w((pts[i - 1][2] + pts[i][2]) / 2);
+        g.beginPath();
+        g.moveTo(pts[i - 1][0], pts[i - 1][1]);
+        g.lineTo(pts[i][0], pts[i][1]);
+        g.stroke();
+      }
+    }
   } else if (a.kind === "stars") {
     const b = bbox(g, a);
     g.fillStyle = "rgba(0,0,0,0.6)";

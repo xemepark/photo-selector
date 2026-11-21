@@ -647,3 +647,4 @@ body.folder-dragging, body.folder-dragging * { cursor: grabbing !important; }
 .an-confirm { position: absolute; left: 50%; top: 18px; transform: translateX(-50%); z-index: 3; display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; box-shadow: 0 10px 30px #000a; }
 .an-confirm.hidden { display: none; }
 .an-confirm span { margin-right: 6px; }
+.an-stage canvas { touch-action: none; }
