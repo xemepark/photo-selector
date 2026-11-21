@@ -124,8 +124,18 @@ jobs:
           DMG=$(ls src-tauri/target/$TARGET/release/bundle/dmg/*.dmg | head -1)
           # 自製憑證簽的安裝檔，macOS 會要求到「隱私權與安全性」強制打開；只簽 App、不簽安裝檔
           if [ "$APPLE_SIGNING_IDENTITY" = "Smallday Photo Selector" ]; then
-            codesign --remove-signature "$DMG" && echo "已移除安裝檔簽章"
-            codesign -dv "$DMG" 2>&1 | head -2 || true
+            # 重新轉存一次安裝檔（不帶簽章）；還有簽章的話改用 App 重新做一個
+            hdiutil convert "$DMG" -format UDZO -o "$RUNNER_TEMP/unsigned.dmg"
+            mv -f "$RUNNER_TEMP/unsigned.dmg" "$DMG"
+            if codesign -dv "$DMG" 2>/dev/null; then
+              echo "轉存後仍有簽章，改用 App 重新製作安裝檔"
+              APPDIR=$(ls -d "$(dirname "$DMG")/../macos/"*.app | head -1)
+              STAGE="$RUNNER_TEMP/dmgstage"; rm -rf "$STAGE"; mkdir -p "$STAGE"
+              cp -R "$APPDIR" "$STAGE/"
+              ln -s /Applications "$STAGE/Applications"
+              hdiutil create -volname "小日子寫真館" -srcfolder "$STAGE" -format UDZO -ov "$DMG"
+            fi
+            codesign -dv "$DMG" 2>&1 | head -1 || true
           fi
           OUT="Photo-Selector-${GITHUB_REF_NAME//\//-}-mac.dmg"
           cp "$DMG" "$OUT"
@@ -222,8 +232,18 @@ jobs:
           DMG=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -1)
           # 自製憑證簽的安裝檔，macOS 會要求到「隱私權與安全性」強制打開；只簽 App、不簽安裝檔
           if [ "$APPLE_SIGNING_IDENTITY" = "Smallday Photo Selector" ]; then
-            codesign --remove-signature "$DMG" && echo "已移除安裝檔簽章"
-            codesign -dv "$DMG" 2>&1 | head -2 || true
+            # 重新轉存一次安裝檔（不帶簽章）；還有簽章的話改用 App 重新做一個
+            hdiutil convert "$DMG" -format UDZO -o "$RUNNER_TEMP/unsigned.dmg"
+            mv -f "$RUNNER_TEMP/unsigned.dmg" "$DMG"
+            if codesign -dv "$DMG" 2>/dev/null; then
+              echo "轉存後仍有簽章，改用 App 重新製作安裝檔"
+              APPDIR=$(ls -d "$(dirname "$DMG")/../macos/"*.app | head -1)
+              STAGE="$RUNNER_TEMP/dmgstage"; rm -rf "$STAGE"; mkdir -p "$STAGE"
+              cp -R "$APPDIR" "$STAGE/"
+              ln -s /Applications "$STAGE/Applications"
+              hdiutil create -volname "小日子寫真館" -srcfolder "$STAGE" -format UDZO -ov "$DMG"
+            fi
+            codesign -dv "$DMG" 2>&1 | head -1 || true
           fi
           OUT="Photo-Selector-v${APP_VERSION}-${BUILD_DATE}.dmg"
           cp "$DMG" "$OUT"
