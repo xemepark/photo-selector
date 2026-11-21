@@ -16,6 +16,7 @@ mod orient;
 mod ops;
 mod render;
 mod scan;
+mod screen;
 mod text;
 mod video;
 mod tiff;
@@ -301,6 +302,65 @@ async fn capture_screen(app: AppHandle) -> Result<Option<String>, String> {
     }
     app.asset_protocol_scope().allow_file(&tmp).map_err(|e| e.to_string())?;
     Ok(Some(tmp.to_string_lossy().into_owned()))
+}
+
+/// 目前這一版有沒有螢幕錄影權限（只檢查，不會跳出系統提醒）
+#[tauri::command]
+fn screen_permission() -> bool {
+    screen::has_permission()
+}
+
+static CLIP_WAIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 等使用者用系統截圖（⌃⇧⌘4）截到剪貼簿，存成暫存 PNG 後回傳路徑；逾時或取消回傳 None
+#[tauri::command]
+async fn wait_clipboard_image(app: AppHandle, timeout_secs: Option<u64>) -> Result<Option<String>, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("只支援 macOS".into());
+    }
+    use std::sync::atomic::Ordering;
+    let token = CLIP_WAIT.fetch_add(1, Ordering::SeqCst) + 1;
+    let limit = std::time::Duration::from_secs(timeout_secs.unwrap_or(120));
+    let png = tauri::async_runtime::spawn_blocking(move || {
+        let start = std::time::Instant::now();
+        let base = screen::change_count();
+        while start.elapsed() < limit && CLIP_WAIT.load(Ordering::SeqCst) == token {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if screen::change_count() != base {
+                // 剪貼簿變了：有圖片才算（複製文字就繼續等）
+                if let Some(png) = screen::image_png() {
+                    return Some(png);
+                }
+            }
+        }
+        None
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(png) = png else { return Ok(None) };
+    let tmp = std::env::temp_dir().join(format!(
+        "photo-selector-shot-{}.png",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    ));
+    std::fs::write(&tmp, png).map_err(|e| e.to_string())?;
+    app.asset_protocol_scope().allow_file(&tmp).map_err(|e| e.to_string())?;
+    Ok(Some(tmp.to_string_lossy().into_owned()))
+}
+
+/// 取消等待剪貼簿截圖
+#[tauri::command]
+fn cancel_clipboard_wait() {
+    CLIP_WAIT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 打開「系統設定 → 隱私權與安全性 → 螢幕與系統錄音」
+#[tauri::command]
+fn open_screen_settings() -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        .status()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// 儲存標註好的圖片（PNG，base64）到資料夾；同名時自動加 _1、_2，回傳完整路徑
@@ -1325,6 +1385,10 @@ pub fn run() {
             download_cloud,
             video_src,
             capture_screen,
+            screen_permission,
+            wait_clipboard_image,
+            cancel_clipboard_wait,
+            open_screen_settings,
             save_image,
             copy_image,
             open_item,

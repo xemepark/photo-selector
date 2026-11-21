@@ -38,6 +38,11 @@ tract-onnx = "0.23.10"
 trash = "5.3.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# 截圖：檢查螢幕錄影權限、讀取剪貼簿裡的截圖
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString"] }
+
 # 影像解碼在 debug build 下非常慢，讓相依套件即使在 dev 也用最佳化編譯
 [profile.dev.package."*"]
 opt-level = 3

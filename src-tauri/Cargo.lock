@@ -2954,6 +2954,8 @@ dependencies = [
  "memchr",
  "memmap2",
  "moxcms",
+ "objc2-app-kit",
+ "objc2-foundation",
  "parking_lot 0.13.0",
  "rayon",
  "rusqlite",

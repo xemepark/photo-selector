@@ -2003,9 +2003,56 @@ async function openInAnnotator(fetchUrl: string, baseName: string) {
 }
 
 /** 截圖（拖曳框選，按空白鍵可改選視窗）→ 馬上打開標註編輯器 */
+/** 沒有螢幕錄影權限時：改用系統截圖（⌃⇧⌘4 截到剪貼簿），程式等剪貼簿出現圖片 */
+let shotWaiting = false;
+async function captureViaClipboard() {
+  if (shotWaiting) return;
+  shotWaiting = true;
+  const box = document.createElement("div");
+  box.id = "shot-wait";
+  box.innerHTML = `
+    <div class="sw-main">
+      <b>請按 <kbd>⌃ control</kbd> <kbd>⇧ shift</kbd> <kbd>⌘ command</kbd> <kbd>4</kbd> 框選截圖範圍</b>
+      <div class="sw-sub">截好後會自動打開標註（全螢幕按 ⌃⇧⌘3；空白鍵可以改截單一視窗）</div>
+    </div>
+    <div class="sw-actions">
+      <button data-a="help">為什麼？</button>
+      <button data-a="cancel">取消</button>
+    </div>
+    <div class="sw-help hidden">
+      macOS 會依每一版程式的「指紋」記住螢幕錄影權限。測試版每次更新指紋都會改變，
+      所以系統設定裡的開關雖然還開著，對新版卻無效，截圖時會一直要求授權。<br>
+      改用上面的系統截圖就不需要任何權限。若想恢復一鍵截圖：到「螢幕與系統錄音」選取「小日子寫真館」按「−」刪除，
+      再按「＋」重新加入並打開，然後按 ⌘Q 結束程式重新開啟。
+      <div><button data-a="settings">打開「螢幕與系統錄音」設定</button></div>
+    </div>`;
+  document.body.appendChild(box);
+  const done = () => {
+    shotWaiting = false;
+    box.remove();
+  };
+  box.addEventListener("click", (ev) => {
+    const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
+    if (a === "cancel") void api.cancelClipboardWait();
+    else if (a === "help") box.querySelector(".sw-help")!.classList.toggle("hidden");
+    else if (a === "settings") void api.openScreenSettings();
+  });
+  try {
+    const path = await api.waitClipboardImage(180);
+    done();
+    if (path) await openInAnnotator(convertFileSrc(path), "截圖");
+  } catch (e) {
+    done();
+    toast(String(e), 6000);
+  }
+}
+
 async function captureAndAnnotate() {
   if (annotator.isOpen) return;
+  if (shotWaiting) return void api.cancelClipboardWait();
   try {
+    // 這一版沒有螢幕錄影權限時不要呼叫 screencapture（會跳出系統的授權提醒），改用系統截圖
+    if (IS_MAC_UI && !(await api.screenPermission())) return void captureViaClipboard();
     const path = await api.captureScreen();
     if (!path) return; // 按 Esc 取消
     await openInAnnotator(convertFileSrc(path), "截圖");
