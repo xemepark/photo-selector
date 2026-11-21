@@ -11,6 +11,8 @@ export interface Item {
   mtime: number;
   /** 加入時間（毫秒） */
   added?: number;
+  /** 「含子資料夾」時所在的子資料夾（"" = 開啟的資料夾本身） */
+  sub?: string;
 }
 
 export interface Meta {
@@ -63,6 +65,8 @@ export interface OpenResult {
   dir: string;
   parent: string | null;
   subdirs: DirInfo[];
+  /** 含子資料夾時項目太多，只列出前面一部分 */
+  truncated?: boolean;
   items: Item[];
 }
 
@@ -119,7 +123,7 @@ export const url = {
 };
 
 export const api = {
-  openFolder: (path: string) => invoke<OpenResult>("open_folder", { path }),
+  openFolder: (path: string, recursive = false) => invoke<OpenResult>("open_folder", { path, recursive }),
   setViewport: (session: number, ids: number[]) => invoke<void>("set_viewport", { session, ids }),
   setOrder: (session: number, ids: number[]) => invoke<void>("set_order", { session, ids }),
   readText: (session: number, id: number) => invoke<{ text: string; rtf: boolean; name: string }>("read_text", { session, id }),

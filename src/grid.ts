@@ -488,7 +488,7 @@ export class Grid {
     c.root.dataset.index = String(index);
     this.place(c);
     c.name.textContent = item.name;
-    c.root.title = item.files.join("\n");
+    c.root.title = (item.sub ? `📁 ${item.sub}\n` : "") + item.files.join("\n");
     c.img.removeAttribute("data-loaded");
     c.full = false;
     c.frame.style.backgroundImage = "";

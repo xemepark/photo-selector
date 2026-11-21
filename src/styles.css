@@ -612,3 +612,5 @@ body.folder-dragging, body.folder-dragging * { cursor: grabbing !important; }
 .brand-row .brand-name { white-space: nowrap; }
 .brand-row .brand { padding-right: 4px; }
 .slide-btn { padding: 5px 8px; font-size: 12px; }
+.sub-tool { gap: 5px; white-space: nowrap; cursor: pointer; }
+.sub-tool input { accent-color: var(--accent); }

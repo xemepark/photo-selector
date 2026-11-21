@@ -40,6 +40,8 @@ struct ItemDto {
     mtime: i64,
     /// 加入時間（macOS 加入日期；其他系統為建立時間）
     added: i64,
+    /// 「含子資料夾」時所在的子資料夾（"" = 開啟的資料夾本身）
+    sub: String,
 }
 
 #[derive(Serialize)]
@@ -49,6 +51,8 @@ struct OpenResult {
     parent: Option<String>,
     subdirs: Vec<scan::DirInfo>,
     items: Vec<ItemDto>,
+    /// 含子資料夾時項目太多，只列出前面一部分
+    truncated: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -88,9 +92,18 @@ fn analyze_item(it: &scan::Item) -> Option<Analysis> {
 }
 
 #[tauri::command]
-async fn open_folder(app: AppHandle, core: CoreState<'_>, path: String) -> Result<OpenResult, String> {
+async fn open_folder(app: AppHandle, core: CoreState<'_>, path: String, recursive: Option<bool>) -> Result<OpenResult, String> {
     let dir = PathBuf::from(&path);
-    let (items, subdirs) = scan::scan_dir(&dir).map_err(|e| format!("無法讀取資料夾：{e}"))?;
+    let (items, subdirs, truncated) = if recursive.unwrap_or(false) {
+        let d = dir.clone();
+        tauri::async_runtime::spawn_blocking(move || scan::scan_tree(&d, 20000))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("無法讀取資料夾：{e}"))?
+    } else {
+        let (i, s) = scan::scan_dir(&dir).map_err(|e| format!("無法讀取資料夾：{e}"))?;
+        (i, s, false)
+    };
     let dtos = items
         .iter()
         .map(|it| ItemDto {
@@ -101,6 +114,7 @@ async fn open_folder(app: AppHandle, core: CoreState<'_>, path: String) -> Resul
             size: it.files.iter().map(|f| f.size).sum(),
             mtime: it.files.iter().map(|f| f.mtime).max().unwrap_or(0),
             added: it.files.iter().map(|f| scan::added_ms(&f.path)).max().unwrap_or(0),
+            sub: it.sub.clone(),
         })
         .collect();
     let sess = core.new_session(items);
@@ -134,6 +148,7 @@ async fn open_folder(app: AppHandle, core: CoreState<'_>, path: String) -> Resul
         parent: dir.parent().map(|p| p.to_string_lossy().into_owned()),
         subdirs,
         items: dtos,
+        truncated,
     })
 }
 

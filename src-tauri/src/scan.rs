@@ -63,6 +63,8 @@ impl FileEntry {
 #[derive(Clone, Debug)]
 pub struct Item {
     pub id: u32,
+    /// 「含子資料夾」時，所在的子資料夾（相對於開啟的資料夾，"" = 就在開啟的資料夾）
+    pub sub: String,
     pub name: String,
     pub kind: &'static str,
     pub files: Vec<FileEntry>,
@@ -272,7 +274,7 @@ pub fn scan_dir(dir: &Path) -> io::Result<(Vec<Item>, Vec<DirInfo>)> {
             };
             // 文字檔顯示完整檔名（notes.txt），一眼就知道是文字檔
             let name = if files[0].class == Class::Text { files[0].name.clone() } else { files[0].stem.clone() };
-            items.push(Item { id: 0, name, kind, files, sidecar });
+            items.push(Item { id: 0, sub: String::new(), name, kind, files, sidecar });
         };
         if raws == 1 && jpgs == 1 {
             let (pair, rest): (Vec<_>, Vec<_>) =
@@ -298,6 +300,43 @@ pub fn scan_dir(dir: &Path) -> io::Result<(Vec<Item>, Vec<DirInfo>)> {
     Ok((items, subdirs))
 }
 
+/// 「含子資料夾」：掃描 dir 與所有子資料夾（略過隱藏資料夾與 .app / 照片圖庫等套件），
+/// 最多 `limit` 個項目。回傳 (項目, dir 本身的子資料夾, 是否因超過上限而截斷)
+pub fn scan_tree(dir: &Path, limit: usize) -> io::Result<(Vec<Item>, Vec<DirInfo>, bool)> {
+    const PACKAGES: &[&str] = &["app", "photoslibrary", "fcpbundle", "lrdata", "bundle", "framework", "aplibrary", "migratedphotolibrary"];
+    let (mut items, top) = scan_dir(dir)?;
+    let mut queue: std::collections::VecDeque<PathBuf> = top.iter().map(|d| PathBuf::from(&d.path)).collect();
+    let mut truncated = false;
+    let mut visited = 0usize;
+    while let Some(d) = queue.pop_front() {
+        if items.len() >= limit || visited >= 5000 {
+            truncated = true;
+            break;
+        }
+        visited += 1;
+        let ext = d.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if PACKAGES.contains(&ext.as_str()) {
+            continue;
+        }
+        let Ok((mut sub_items, subs)) = scan_dir(&d) else { continue };
+        let rel = d.strip_prefix(dir).map(|r| r.to_string_lossy().into_owned()).unwrap_or_default();
+        for it in &mut sub_items {
+            it.sub = rel.clone();
+        }
+        items.extend(sub_items);
+        queue.extend(subs.iter().map(|x| PathBuf::from(&x.path)));
+    }
+    if items.len() > limit {
+        items.truncate(limit);
+        truncated = true;
+    }
+    items.sort_by_cached_key(|it| (natural_key(&it.name), natural_key(&it.sub)));
+    for (i, it) in items.iter_mut().enumerate() {
+        it.id = i as u32;
+    }
+    Ok((items, top, truncated))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +360,26 @@ mod tests {
         assert_eq!(items[3].display().ext, "jpg");
         assert!(items[3].sidecar.is_some());
         assert_eq!(subdirs.len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scans_subfolders() {
+        let dir = std::env::temp_dir().join(format!("ps-tree-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("A/B")).unwrap();
+        fs::create_dir_all(dir.join(".hidden")).unwrap();
+        fs::create_dir_all(dir.join("x.app")).unwrap();
+        for n in ["IMG_1.jpg", "A/IMG_1.jpg", "A/IMG_1.CR2", "A/B/IMG_2.jpg", ".hidden/h.jpg", "x.app/p.png"] {
+            fs::write(dir.join(n), b"x").unwrap();
+        }
+        let (items, top, cut) = scan_tree(&dir, 100).unwrap();
+        let v: Vec<_> = items.iter().map(|i| (i.name.as_str(), i.sub.as_str(), i.kind)).collect();
+        assert_eq!(v, vec![("IMG_1", "", "jpeg"), ("IMG_1", "A", "raw+jpeg"), ("IMG_2", "A/B", "jpeg")]);
+        assert_eq!(top.len(), 2); // A 與 x.app（隱藏資料夾不列出）
+        assert!(!cut);
+        let (items, _, cut) = scan_tree(&dir, 2).unwrap();
+        assert!(cut && items.len() == 2);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

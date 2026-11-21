@@ -57,6 +57,8 @@ const S = {
   items: [] as Item[],
   /** 目前資料夾裡的子資料夾（顯示在縮圖區最前面） */
   subdirs: [] as DirInfo[],
+  /** 「含子資料夾」：一併顯示所有子資料夾裡的照片（每個分頁各自記住） */
+  recursive: false,
   /** 縮圖區選取的資料夾（"" = 沒有）；選了資料夾時評等 / 標籤鍵作用在資料夾上 */
   folderSel: "",
   meta: new Map<number, Meta>(),
@@ -278,6 +280,8 @@ function folderFacet(key: FilterKey, d: DirInfo): string {
 
 /** 依篩選條件要顯示的資料夾：有照片專屬的篩選（相機、調整…）時不顯示資料夾 */
 function visibleFolders(): DirInfo[] {
+  // 含子資料夾：照片已經全部攤開，不顯示資料夾格子
+  if (S.recursive) return [];
   const active = FILTER_KEYS.filter((k) => S.filters[k].size);
   if (active.some((k) => !FOLDER_KEYS.has(k))) return [];
   return S.subdirs.filter((d) => active.every((k) => S.filters[k].has(folderFacet(k, d))));
@@ -563,6 +567,8 @@ function fileInfoHtml(id: number, info: FileInfo | undefined) {
     const fmt = info.parts.map((p) => p.ext).join(" + ");
     const size = info.parts.map((p) => fmtBytes(p.size)).join(" + ");
     seg.push(`<b>${escapeHtml(fmt)}</b>`);
+    const sub = S.items[id]?.sub;
+    if (sub) seg.push(`📁 ${escapeHtml(sub)}`);
     // 相機品牌與型號（讀得到 EXIF 才顯示）
     if (m?.camera) seg.push(escapeHtml(m.camera));
     const w = m?.width || info.width;
@@ -635,7 +641,7 @@ function newSubdirFor(dest: string) {
 async function openFolder(path: string, quiet = false): Promise<boolean> {
   let res: OpenResult;
   try {
-    res = await api.openFolder(path);
+    res = await api.openFolder(path, S.recursive);
   } catch (e) {
     if (!quiet) toast(String(e));
     return false;
@@ -672,7 +678,8 @@ async function openFolder(path: string, quiet = false): Promise<boolean> {
   gridEl.scrollTop = 0;
   update({ resetGrid: true });
   gridEl.focus();
-  if (!res.items.length && !res.subdirs.length) toast("這個資料夾沒有支援的照片");
+  if (res.truncated) toast(`項目太多，只顯示前 ${res.items.length} 個（可以改開比較下層的資料夾）`, 6000);
+  else if (!res.items.length && !res.subdirs.length) toast("這個資料夾沒有支援的照片");
   return true;
 }
 
@@ -725,6 +732,19 @@ async function refreshFolder() {
   }
 }
 
+const recursiveBox = $<HTMLInputElement>("recursive");
+function setRecursive(on: boolean) {
+  S.recursive = on;
+  recursiveBox.checked = on;
+}
+recursiveBox.addEventListener("change", () => {
+  setRecursive(recursiveBox.checked);
+  if (tabs[activeTab]) tabs[activeTab] = { ...tabs[activeTab], recursive: S.recursive };
+  saveTabs();
+  if (S.dir) void doRefreshFolder(true).then(() => toast(S.recursive ? "已顯示所有子資料夾裡的照片" : "只顯示這個資料夾的照片"));
+  gridEl.focus();
+});
+
 /** 第一次啟動的預設資料夾：下載項目（系統回報不出來時用 家目錄/Downloads） */
 async function defaultStartFolder(): Promise<string | null> {
   const d = await downloadDir().catch(() => null);
@@ -768,6 +788,8 @@ interface TabState {
   sort?: string;
   sortDesc?: boolean;
   scroll?: number;
+  /** 含子資料夾 */
+  recursive?: boolean;
 }
 
 const IS_MAC_UI = /Mac/.test(navigator.platform) || navigator.userAgent.includes("Mac OS X");
@@ -792,6 +814,7 @@ function captureTab(): TabState {
     sort: S.sort,
     sortDesc: S.sortDesc,
     scroll: gridEl.scrollTop,
+    recursive: S.recursive,
   };
 }
 
@@ -851,6 +874,7 @@ async function openTab(t: TabState) {
   switchingTab = true;
   try {
     renderTabs();
+    setRecursive(!!t.recursive);
     const opened = await openFolderOrParent(t.dir);
     if (opened === t.dir) restoreTab(t);
     else if (opened) {
