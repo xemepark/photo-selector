@@ -241,7 +241,7 @@ fn new_path(dir: &Path, src: &Path, stem: &str) -> PathBuf {
     if src.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmp")) {
         if let Some(inner) = src.file_stem().map(Path::new).and_then(|s| s.extension()) {
             let ie = inner.to_string_lossy().to_lowercase();
-            if crate::text::TEXT_EXTS.contains(&ie.as_str()) {
+            if crate::text::TEXT_EXTS.contains(&ie.as_str()) || crate::video::VIDEO_EXTS.contains(&ie.as_str()) {
                 return dir.join(format!("{stem}.{}.xmp", inner.to_string_lossy()));
             }
         }
@@ -463,6 +463,11 @@ pub fn open_website() -> io::Result<()> {
 /// 用預設瀏覽器開啟網址（呼叫端只會傳入程式內建、固定的網址）
 pub fn open_url(url: &str) -> io::Result<()> {
     open_with_system(std::ffi::OsStr::new(url))
+}
+
+/// 用系統預設的程式開啟檔案（影片 → QuickTime Player 等）
+pub fn open_file(path: &Path) -> io::Result<()> {
+    open_with_system(path.as_os_str())
 }
 
 fn open_with_system(target: &std::ffi::OsStr) -> io::Result<()> {

@@ -17,6 +17,7 @@ mod ops;
 mod render;
 mod scan;
 mod text;
+mod video;
 mod tiff;
 mod xmp;
 mod zipout;
@@ -264,6 +265,19 @@ fn download_cloud(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<us
         }
     });
     Ok(n)
+}
+
+/// 影片播放：把影片加入 asset 協定的允許清單，回傳完整路徑（前端轉成網址給 <video>）
+#[tauri::command]
+fn video_src(app: AppHandle, core: CoreState<'_>, session: u64, id: u32) -> Result<String, String> {
+    let sess = core.session(session)?;
+    let it = sess.items.get(id as usize).ok_or("找不到項目")?;
+    if !it.is_video() {
+        return Err("不是影片".into());
+    }
+    let p = &it.display().path;
+    app.asset_protocol_scope().allow_file(p).map_err(|e| format!("無法播放：{e}"))?;
+    Ok(p.to_string_lossy().into_owned())
 }
 
 /// 這些項目中還在 iCloud 上的（id）
@@ -837,6 +851,14 @@ async fn reveal_item(core: CoreState<'_>, session: u64, id: u32) -> Result<(), S
     ops::reveal(&it.display().path).map_err(|e| e.to_string())
 }
 
+/// 用系統預設的程式開啟（影片在這裡無法播放時，改用 QuickTime Player 等）
+#[tauri::command]
+async fn open_item(core: CoreState<'_>, session: u64, id: u32) -> Result<(), String> {
+    let sess = core.session(session)?;
+    let it = sess.items.get(id as usize).ok_or("找不到項目")?;
+    ops::open_file(&it.display().path).map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 struct ResolvedPath {
     dir: String,
@@ -1235,6 +1257,8 @@ pub fn run() {
             trash_folder,
             existing_ancestor,
             download_cloud,
+            video_src,
+            open_item,
             cloud_status,
             set_folder_label,
             set_rating,

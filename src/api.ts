@@ -1,6 +1,6 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 
-export type Kind = "raw+jpeg" | "raw" | "jpeg" | "image" | "other" | "text";
+export type Kind = "raw+jpeg" | "raw" | "jpeg" | "image" | "other" | "text" | "video";
 
 export interface Item {
   id: number;
@@ -31,6 +31,8 @@ export interface Meta {
   label?: string | null;
   /** 有用「調整」改過 */
   edited?: boolean;
+  /** 影片長度（秒） */
+  duration?: number;
 }
 
 export interface EditParams {
@@ -136,7 +138,9 @@ export const api = {
   setFolderRating: (path: string, rating: number) => invoke<void>("set_folder_rating", { path, rating }),
   trashFolder: (path: string) => invoke<void>("trash_folder", { path }),
   existingAncestor: (path: string) => invoke<string | null>("existing_ancestor", { path }),
-  downloadCloud: (session: number, ids: number[]) => invoke<number>("download_cloud", { session, ids }),
+  videoSrc: (session: number, id: number) => invoke<string>("video_src", { session, id }).then((p) => convertFileSrc(p)),
+  openItem: (session: number, id: number) => invoke<void>("open_item", { session, id }),
+    downloadCloud: (session: number, ids: number[]) => invoke<number>("download_cloud", { session, ids }),
   cloudStatus: (session: number, ids: number[]) => invoke<number[]>("cloud_status", { session, ids }),
   setFolderLabel: (path: string, label: string | null) => invoke<void>("set_folder_label", { path, label }),
   /** 旋轉 90°，存回原檔；回傳 [id, 新方向] */

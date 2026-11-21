@@ -99,6 +99,11 @@ pub fn decode_jpeg_with_meta(bytes: &[u8], min_edge: u32) -> Result<(DynamicImag
 /// 解碼一個項目的顯示影像（已套用方向），長邊至少 min_edge（0 = 全尺寸）。
 pub fn decode_source(item: &Item, min_edge: u32) -> Result<DynamicImage> {
     let f = item.display();
+    // 影片：用 macOS 快速查看產生的畫面（已轉正）
+    if f.class == Class::Video {
+        let size = if min_edge == 0 { 1920 } else { min_edge.clamp(400, 1920) };
+        return Ok(flatten_alpha(image::load_from_memory(&crate::video::thumbnail_png(&f.path, size)?)?));
+    }
     let file = File::open(&f.path)?;
     let data = unsafe { memmap2::Mmap::map(&file)? };
     let orient = meta::item_orientation(item, &data);
@@ -119,6 +124,7 @@ pub fn decode_source(item: &Item, min_edge: u32) -> Result<DynamicImage> {
             decode_jpeg_scaled(j.bytes(&data), min_edge)?
         }
         Class::Text => return Err(anyhow!("文字檔沒有影像")),
+        Class::Video => return Err(anyhow!("影片")),
     };
     Ok(apply_orientation(img, orient))
 }

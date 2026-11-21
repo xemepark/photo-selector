@@ -16,6 +16,8 @@ pub enum Class {
     Other,
     /// 文字檔（.txt / .md / .rtf）
     Text,
+    /// 影片（.mp4 / .mov / .m4v）
+    Video,
 }
 
 pub const RAW_EXTS: &[&str] = &[
@@ -32,6 +34,7 @@ pub fn classify(ext: &str) -> Option<Class> {
         "png" | "tif" | "tiff" | "webp" | "gif" | "bmp" => Some(Class::Image),
         "heic" | "heif" | "avif" | "psd" | "psb" => Some(Class::Other),
         e if crate::text::TEXT_EXTS.contains(&e) => Some(Class::Text),
+        e if crate::video::VIDEO_EXTS.contains(&e) => Some(Class::Video),
         _ => None,
     }
 }
@@ -111,6 +114,13 @@ impl Item {
     pub fn is_text(&self) -> bool {
         self.files[0].class == Class::Text
     }
+    pub fn is_video(&self) -> bool {
+        self.files[0].class == Class::Video
+    }
+    /// 文字檔與影片：不和同名照片配對，附屬檔以完整檔名命名
+    pub fn is_standalone(&self) -> bool {
+        matches!(self.files[0].class, Class::Text | Class::Video)
+    }
     pub fn raw(&self) -> Option<&FileEntry> {
         self.by_class(Class::Raw)
     }
@@ -119,8 +129,8 @@ impl Item {
         if let Some(s) = &self.sidecar {
             return s.clone();
         }
-        // 文字檔：附屬檔名稱包含副檔名（notes.txt → notes.txt.xmp），不會和同名照片的附屬檔混在一起
-        if self.is_text() {
+        // 文字檔 / 影片：附屬檔名稱包含副檔名（notes.txt → notes.txt.xmp），不會和同名照片的附屬檔混在一起
+        if self.is_standalone() {
             let f = &self.files[0];
             return f.path.with_file_name(format!("{}.xmp", f.name));
         }
@@ -268,7 +278,7 @@ pub fn scan_dir(dir: &Path) -> io::Result<(Vec<Item>, Vec<DirInfo>)> {
         let Ok(md) = entry.metadata() else { continue };
         let mtime = mtime_ms(&md);
         // 文字檔不和同名照片配對：每個文字檔自成一個項目
-        let key = if class == Class::Text { format!("\u{1}{}", name.to_lowercase()) } else { stem.to_lowercase() };
+        let key = if matches!(class, Class::Text | Class::Video) { format!("\u{1}{}", name.to_lowercase()) } else { stem.to_lowercase() };
         groups.entry(key).or_default().push(FileEntry {
             path,
             name,
@@ -297,10 +307,11 @@ pub fn scan_dir(dir: &Path) -> io::Result<(Vec<Item>, Vec<DirInfo>)> {
                 (_, Class::Jpeg) => "jpeg",
                 (_, Class::Image) => "image",
                 (_, Class::Text) => "text",
+                (_, Class::Video) => "video",
                 _ => "other",
             };
             // 文字檔顯示完整檔名（notes.txt），一眼就知道是文字檔
-            let name = if files[0].class == Class::Text { files[0].name.clone() } else { files[0].stem.clone() };
+            let name = if matches!(files[0].class, Class::Text | Class::Video) { files[0].name.clone() } else { files[0].stem.clone() };
             items.push(Item { id: 0, sub: String::new(), name, kind, files, sidecar });
         };
         if raws == 1 && jpgs == 1 {

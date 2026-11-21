@@ -328,7 +328,7 @@ export class BatchRename {
     return this.items().map((it, index) => ({
       it,
       // 文字檔的名稱含副檔名（notes.txt），改名規則只作用在主檔名
-      stem: buildName(this.s.rules, { name: it.kind === "text" ? it.name.replace(/\.[^.]+$/, "") : it.name, index, meta: this.host.meta(it.id), mtime: it.mtime }, this.s),
+      stem: buildName(this.s.rules, { name: it.kind === "text" || it.kind === "video" ? it.name.replace(/\.[^.]+$/, "") : it.name, index, meta: this.host.meta(it.id), mtime: it.mtime }, this.s),
     }));
   }
 

@@ -119,7 +119,7 @@ pub fn file_info(item: &Item) -> FileInfo {
     let created = md.as_ref().and_then(|m| ms(m.created()));
     let modified = md.as_ref().and_then(|m| ms(m.modified()));
 
-    if item.is_text() || item.in_cloud_now() {
+    if item.is_standalone() || item.in_cloud_now() {
         let parts = vec![FilePart { ext: format_name(&disp.ext), size: md.as_ref().map(|m| m.len()).unwrap_or(disp.size) }];
         return FileInfo { parts, created, modified, color_space: None, width: None, height: None };
     }

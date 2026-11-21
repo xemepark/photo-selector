@@ -22,6 +22,9 @@ pub struct Meta {
     pub label: Option<String>,
     /// 有本程式的照片調整
     pub edited: bool,
+    /// 影片長度（秒）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
 }
 
 #[derive(Default)]
@@ -192,6 +195,11 @@ pub fn read_meta(item: &Item) -> Meta {
     if item.in_cloud_now() {
         return Meta::default();
     }
+    // 影片：附屬檔裡的評等 / 標籤，加上影片長度
+    if item.is_video() {
+        let rl = xmp::read_sidecar(&item.sidecar_path()).unwrap_or_default();
+        return Meta { rating: rl.rating.unwrap_or(0), label: rl.label, duration: crate::video::duration(&item.display().path), ..Default::default() };
+    }
     // 文字檔：只有附屬檔裡的評等 / 標籤
     if item.is_text() {
         let rl = xmp::read_sidecar(&item.sidecar_path()).unwrap_or_default();
@@ -246,6 +254,7 @@ pub fn read_meta(item: &Item) -> Meta {
         rating: rl.rating.unwrap_or(0),
         label: rl.label,
         edited: rl.edited,
+        duration: None,
     }
 }
 

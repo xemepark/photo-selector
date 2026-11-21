@@ -263,6 +263,7 @@ const KIND_NAMES: Record<string, string> = {
   image: "其他影像",
   other: "其他格式",
   text: "文字",
+  video: "影片",
 };
 
 const LOADING = "\u0000loading";
@@ -577,7 +578,7 @@ function fileInfoHtml(id: number, info: FileInfo | undefined) {
     seg.push(size);
     seg.push(`建立 ${fmtDateTime(info.created)}`);
     seg.push(`修改 ${fmtDateTime(info.modified)}`);
-    if (S.items[id]?.kind !== "text") seg.push(`色彩空間 ${escapeHtml(info.color_space ?? "未標示（視為 sRGB）")}`);
+    if (S.items[id]?.kind !== "text" && S.items[id]?.kind !== "video") seg.push(`色彩空間 ${escapeHtml(info.color_space ?? "未標示（視為 sRGB）")}`);
   } else {
     if (m?.camera) seg.push(escapeHtml(m.camera));
     if (m?.width && m?.height) seg.push(`${m.width} × ${m.height}`);
@@ -1588,6 +1589,7 @@ function closeLoupe() {
   loupe.classList.add("hidden");
   chain = null;
   hideLoupeText();
+  hideLoupeVideo();
   clearImg(loupeImg);
   faceLayer.innerHTML = "";
   gridEl.focus();
@@ -1618,6 +1620,64 @@ function showLoupeText(id: number) {
     });
 }
 
+const loupeVideo = $<HTMLVideoElement>("loupe-video");
+let loupeVideoSeq = 0;
+
+/** 影片的預覽：直接播放（macOS 內建解碼，支援 H.264 / HEVC） */
+function showLoupeVideo(id: number) {
+  const seq = ++loupeVideoSeq;
+  chain = null;
+  clearImg(loupeImg);
+  stage.classList.add("hidden");
+  loupeVideo.classList.remove("hidden");
+  if (S.items[id]?.cloud) toast("這支影片還在 iCloud 上，正在下載，可能要等一下才會開始播放", 5000);
+  api
+    .videoSrc(S.session, id)
+    .then((src) => {
+      if (seq !== loupeVideoSeq) return;
+      loupeVideo.dataset.direct = src;
+      loupeVideo.dataset.fallback = "";
+      loupeVideo.src = src;
+      void loupeVideo.play().catch(() => {});
+    })
+    .catch((e) => toast(String(e)));
+}
+
+function hideLoupeVideo() {
+  loupeVideoSeq++;
+  $("loupe-video-err").classList.add("hidden");
+  if (loupeVideo.src.startsWith("blob:")) URL.revokeObjectURL(loupeVideo.src);
+  if (loupeVideo.getAttribute("src")) {
+    loupeVideo.pause();
+    loupeVideo.removeAttribute("src");
+    loupeVideo.load();
+  }
+  loupeVideo.classList.add("hidden");
+}
+// 直接播放失敗：600MB 以下的影片改成整個讀進來再播；更大或仍失敗就提供「用 QuickTime Player 開啟」
+loupeVideo.addEventListener("error", () => {
+  if (!loupeVideo.getAttribute("src") || S.focus === null) return;
+  const seq = loupeVideoSeq;
+  const it = S.items[S.focus];
+  const direct = loupeVideo.dataset.direct;
+  if (direct && !loupeVideo.dataset.fallback && it && it.size < 600 * 1024 * 1024) {
+    loupeVideo.dataset.fallback = "1";
+    void fetch(direct)
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
+      .then((b) => {
+        if (seq !== loupeVideoSeq) return;
+        loupeVideo.src = URL.createObjectURL(b);
+        void loupeVideo.play().catch(() => {});
+      })
+      .catch(() => seq === loupeVideoSeq && $("loupe-video-err").classList.remove("hidden"));
+    return;
+  }
+  $("loupe-video-err").classList.remove("hidden");
+});
+$("loupe-video-open").addEventListener("click", () => {
+  if (S.focus !== null) api.openItem(S.session, S.focus).catch((e) => toast(String(e)));
+});
+
 function hideLoupeText() {
   loupeTextSeq++;
   loupeText.classList.add("hidden");
@@ -1636,8 +1696,13 @@ function showLoupe() {
   S.zoom = false;
   stage.classList.remove("zoom");
   faceLayer.innerHTML = "";
-  if (S.items[S.focus]?.kind === "text") showLoupeText(S.focus);
-  else {
+  const kind = S.items[S.focus]?.kind;
+  if (kind !== "video") hideLoupeVideo();
+  if (kind === "text") showLoupeText(S.focus);
+  else if (kind === "video") {
+    hideLoupeText();
+    showLoupeVideo(S.focus);
+  } else {
     hideLoupeText();
     startChain(S.focus);
   }
@@ -1704,7 +1769,7 @@ function renderLoupeInfo() {
 }
 
 function toggleZoom(ev?: MouseEvent) {
-  if (S.focus === null || S.items[S.focus]?.kind === "text") return;
+  if (S.focus === null || S.items[S.focus]?.kind === "text" || S.items[S.focus]?.kind === "video") return;
   S.zoom = !S.zoom;
   chain = null;
   faceLayer.innerHTML = "";
@@ -2090,7 +2155,8 @@ function slideCandidates(scope: "view" | "selected", skipRejected: boolean): num
   let ids = S.view.map((i) => i.id);
   if (scope === "selected") ids = ids.filter((id) => S.selected.has(id));
   if (skipRejected) ids = ids.filter((id) => (S.meta.get(id)?.rating ?? 0) >= 0);
-  return ids;
+  // 幻燈片只放照片（影片、文字檔略過）
+  return ids.filter((id) => S.items[id]?.kind !== "video");
 }
 
 const ss = {
@@ -2813,7 +2879,7 @@ function openRename() {
   const it = S.items[S.focus];
   renameId = it.id;
   // 文字檔的名稱含副檔名：只改主檔名
-  renameInput.value = it.kind === "text" ? it.name.replace(/\.[^.]+$/, "") : it.name;
+  renameInput.value = it.kind === "text" || it.kind === "video" ? it.name.replace(/\.[^.]+$/, "") : it.name;
   $("rename-files").textContent = `會一起改名：${it.files.join("、")}（以及 .xmp 附屬檔，副檔名不變）`;
   $("rename-error").textContent = "";
   renameDialog.classList.remove("hidden");
@@ -2826,7 +2892,7 @@ async function doRename() {
   const stem = renameInput.value.trim().replace(/[/:]/g, "-");
   if (!stem) return;
   const cur = S.items[renameId];
-  const ext = cur.kind === "text" ? (cur.name.match(/\.[^.]+$/)?.[0] ?? "") : "";
+  const ext = cur.kind === "text" || cur.kind === "video" ? (cur.name.match(/\.[^.]+$/)?.[0] ?? "") : "";
   if (stem + ext === cur.name) {
     renameDialog.classList.add("hidden");
     return gridEl.focus();
@@ -2925,9 +2991,10 @@ function openEditor() {
   // 只把選取的照片帶進調整視窗；只選一張（或沒選）時就只開焦點那一張
   const sel = S.view.filter((it) => S.selected.has(it.id));
   const focusItem = S.view.find((it) => it.id === S.focus);
-  const list = (sel.length > 1 ? sel : focusItem ? [focusItem] : []).filter((it) => it.kind !== "text");
+  const list = (sel.length > 1 ? sel : focusItem ? [focusItem] : []).filter((it) => it.kind !== "text" && it.kind !== "video");
   if (!list.length) {
-    if (focusItem?.kind === "text") toast("文字檔不能調整；按兩下文字檔可以編輯內容");
+    if (focusItem?.kind === "video") toast("影片不能調整；按空白鍵可以播放");
+    else if (focusItem?.kind === "text") toast("文字檔不能調整；按兩下文字檔可以編輯內容");
     return;
   }
   // 從第一張開始
@@ -2944,7 +3011,7 @@ let rotating = Promise.resolve();
 
 /** 旋轉焦點 / 選取的照片 90°，結果存回原檔，縮圖跟著更新（連按會依序處理） */
 function rotateTargets(clockwise: boolean) {
-  const ids: number[] = targets().filter((id) => S.items[id]?.kind !== "text");
+  const ids: number[] = targets().filter((id) => S.items[id]?.kind !== "text" && S.items[id]?.kind !== "video");
   if (!ids.length) return;
   rotating = rotating.then(async () => {
     try {
@@ -3007,7 +3074,7 @@ $("btn-zip").addEventListener("click", () => void makeZip());
 
 const exporter = new Exporter($("export-dialog"), {
   session: () => S.session,
-  selectedIds: () => S.view.filter((it) => S.selected.has(it.id) && it.kind !== "text").map((it) => it.id),
+  selectedIds: () => S.view.filter((it) => S.selected.has(it.id) && it.kind !== "text" && it.kind !== "video").map((it) => it.id),
   currentDir: () => S.dir,
   toast: (m) => toast(m),
   done: (r) => {

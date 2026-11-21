@@ -95,6 +95,11 @@
 
     <div id="loupe" class="overlay hidden">
       <div id="loupe-stage" class="stage"><img id="loupe-img" alt="" /></div>
+      <video id="loupe-video" class="hidden" controls playsinline preload="metadata"></video>
+      <div id="loupe-video-err" class="loupe-video-err hidden">
+        <p>這個影片無法在這裡播放</p>
+        <button id="loupe-video-open" class="primary">用 QuickTime Player 開啟</button>
+      </div>
       <div id="loupe-text" class="loupe-text hidden">
         <div class="lt-page"><pre id="loupe-text-body"></pre></div>
         <button id="loupe-text-edit" class="primary" title="用內建編輯器編輯（也可以在縮圖上按兩下）">編輯文字</button>
