@@ -2003,96 +2003,9 @@ async function openInAnnotator(fetchUrl: string, baseName: string) {
 }
 
 /** 截圖（拖曳框選，按空白鍵可改選視窗）→ 馬上打開標註編輯器 */
-/**
- * 沒有螢幕錄影權限時：引導使用者授權一次（固定簽章，之後更新不用再設定）；
- * 也可以這次先用系統截圖（⌃⇧⌘4 截到剪貼簿），程式等剪貼簿出現圖片
- */
-let shotWaiting = false;
-let shotBox: HTMLDivElement | null = null;
-function closeShotBox() {
-  if (shotWaiting) void api.cancelClipboardWait();
-  shotBox?.remove();
-  shotBox = null;
-}
-function showScreenSetup() {
-  closeShotBox();
-  const box = document.createElement("div");
-  shotBox = box;
-  box.id = "shot-wait";
-  const setup = () => {
-    box.innerHTML = `
-      <div class="sw-main">
-        <b>第一次截圖需要允許「螢幕錄影」（只要設定一次）</b>
-        <div class="sw-sub">設定好之後按一下就能截圖，以後更新版本也不用再設定。</div>
-      </div>
-      <div class="sw-actions">
-        <button data-a="allow" class="primary">允許螢幕錄影</button>
-        <button data-a="close">取消</button>
-      </div>
-      <div class="sw-help">這次先不設定？也可以按 <kbd>⌃</kbd><kbd>⇧</kbd><kbd>⌘</kbd><kbd>4</kbd> 用系統截圖：
-        <button data-a="clip">改用 ⌃⇧⌘4</button></div>`;
-  };
-  const steps = () => {
-    box.innerHTML = `
-      <div class="sw-main">
-        <b>請在「螢幕與系統錄音」打開「小日子寫真館」的開關</b>
-        <div class="sw-sub">開關打開後，請按 ⌘Q 結束「小日子寫真館」再重新開啟（macOS 要重開才認得新權限），之後按一下截圖就能直接截。</div>
-      </div>
-      <div class="sw-actions">
-        <button data-a="settings">打開設定</button>
-        <button data-a="close">關閉</button>
-      </div>`;
-  };
-  setup();
-  document.body.appendChild(box);
-  box.addEventListener("click", (ev) => {
-    const a = (ev.target as HTMLElement).closest<HTMLElement>("[data-a]")?.dataset.a;
-    if (a === "close") closeShotBox();
-    else if (a === "settings") void api.openScreenSettings();
-    else if (a === "clip") void captureViaClipboard();
-    else if (a === "allow") {
-      // 按過「允許」之後就不再顯示這個框：macOS 要等程式重開才認得新權限，
-      // 之後按截圖直接截（真的沒權限時由 macOS 自己提醒）
-      store("screenAsked", true);
-      void api.requestScreenPermission().then((ok) => {
-        if (ok) {
-          closeShotBox();
-          void captureAndAnnotate();
-        } else steps();
-      });
-    }
-  });
-}
-
-/** 改用系統截圖：畫面上不放任何提示（以免被截進去），只在「截圖標註」按鈕上顯示等待中 */
-async function captureViaClipboard() {
-  closeShotBox();
-  shotWaiting = true;
-  const btn = $("btn-screenshot") as HTMLButtonElement;
-  const label = btn.textContent;
-  btn.textContent = "等待 ⌃⇧⌘4…";
-  btn.classList.add("waiting");
-  btn.title = "請按 ⌃⇧⌘4 框選截圖範圍，截好後會自動打開標註；再按一下這個按鈕取消";
-  try {
-    const path = await api.waitClipboardImage(180);
-    if (path) await openInAnnotator(convertFileSrc(path), "截圖");
-  } catch (e) {
-    toast(String(e), 6000);
-  } finally {
-    shotWaiting = false;
-    btn.textContent = label;
-    btn.classList.remove("waiting");
-    btn.title = "截取螢幕畫面，馬上在上面加文字、箭頭、框線、星等標註（⇧⌘S）";
-  }
-}
-
 async function captureAndAnnotate() {
   if (annotator.isOpen) return;
-  if (shotWaiting) return void api.cancelClipboardWait();
-  if (shotBox) return closeShotBox();
   try {
-    // 沒有螢幕錄影權限時不要直接呼叫 screencapture（每次都會跳出系統提醒），先引導授權一次
-    if (IS_MAC_UI && !storage("screenAsked", false) && !(await api.screenPermission())) return showScreenSetup();
     const path = await api.captureScreen();
     if (!path) return; // 按 Esc 取消
     await openInAnnotator(convertFileSrc(path), "截圖");
