@@ -27,7 +27,7 @@ import { Grid } from "./grid";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { BatchRename } from "./rename";
 import { Exporter } from "./exporter";
-import { Editor } from "./editor";
+import { Editor, ZERO as EDIT_ZERO } from "./editor";
 import { TextEditor } from "./textedit";
 import { Annotator } from "./annotate";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -2716,6 +2716,10 @@ function showCellMenu(index: number, ev: MouseEvent) {
     ["rotl", n > 1 ? `逆時針旋轉 ${n} 張` : "逆時針旋轉 90°", "["],
     ["rotr", n > 1 ? `順時針旋轉 ${n} 張` : "順時針旋轉 90°", "]"],
     ["edit", n > 1 ? `調整 ${n} 張照片…` : "調整照片…", "E"],
+    ...((() => {
+      const k = targets().filter((id) => S.meta.get(id)?.edited).length;
+      return k ? ([["reset-edit", k > 1 ? `重設 ${k} 張的調整` : "重設調整"]] as [string, string][]) : [];
+    })()),
     ["zip", n > 1 ? `壓縮打包 ${n} 張…` : "壓縮打包…", "⇧⌘K"],
     ["rethumb", n > 1 ? `重新產生 ${n} 張縮圖` : "重新產生縮圖"],
     ["export", n > 1 ? `影像轉存 ${n} 張…` : "影像轉存…", "⇧⌘E"],
@@ -2769,6 +2773,7 @@ ctxMenu.addEventListener("click", (ev) => {
   else if (a === "export") openExport();
   else if (a === "rethumb") void regenerateThumbs();
   else if (a === "edit") openEditor();
+  else if (a === "reset-edit") void resetEdits();
   else if (a === "rotl") void rotateTargets(false);
   else if (a === "rotr") void rotateTargets(true);
   else if (a === "zip") void makeZip();
@@ -3101,6 +3106,33 @@ const editor = new Editor($("editor"), {
     gridEl.focus();
   },
 });
+
+/** 右鍵「重設調整」：清除選取照片的所有調整（裁切、修補、液化、調色），原檔本來就沒動 */
+async function resetEdits() {
+  const ids = targets().filter((id) => S.meta.get(id)?.edited);
+  if (!ids.length) return;
+  const ok = await ask(`把 ${ids.length > 1 ? `${ids.length} 張照片` : `「${S.items[ids[0]]?.name ?? ""}」`}的調整全部清除，恢復成原始照片？\n（包含調色、裁切、修補、液化）`, {
+    title: "重設調整",
+    okLabel: "重設",
+    cancelLabel: "取消",
+  });
+  if (!ok) return;
+  try {
+    const r = await api.saveEdit(S.session, ids, JSON.parse(JSON.stringify(EDIT_ZERO)), null);
+    for (const [id, edited] of r.edited) {
+      const m = S.meta.get(id);
+      if (m) m.edited = edited;
+    }
+    grid.reloadThumbs(new Set(r.edited.map(([id]) => id)));
+    grid.refresh();
+    renderFilters();
+    update();
+    if (S.loupe) showLoupe();
+    toast(r.failed.length ? `已重設 ${r.done} 張，${r.failed.length} 張失敗：${r.failed[0]}` : `已重設 ${r.done} 張的調整`, r.failed.length ? 6000 : 2600);
+  } catch (e) {
+    toast(`無法重設：${e}`, 6000);
+  }
+}
 
 /** 調整：選取多張時逐張調整選取的照片，否則可在目前顯示的所有照片間切換 */
 function openEditor() {
