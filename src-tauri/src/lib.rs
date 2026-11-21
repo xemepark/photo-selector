@@ -287,6 +287,16 @@ async fn capture_screen(app: AppHandle) -> Result<Option<String>, String> {
     if !cfg!(target_os = "macos") {
         return Err("截圖功能只支援 macOS；可以在照片上按右鍵「標註…」標註現有的圖片".into());
     }
+    // 舊版（ad-hoc 簽署）留下的螢幕錄影權限紀錄記著舊簽章：系統設定開關打開也對不上新版，
+    // 會一直要求授權。改用固定簽章後第一次截圖前清掉一次（只清這個程式自己的紀錄）
+    if let Ok(dir) = app.path().app_config_dir() {
+        let mark = dir.join("tcc-screen-reset-v1");
+        if !mark.exists() {
+            let _ = std::process::Command::new("tccutil").args(["reset", "ScreenCapture", "app.photoselector.desktop"]).status();
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(&mark, b"1");
+        }
+    }
     let tmp = std::env::temp_dir().join(format!(
         "photo-selector-shot-{}.png",
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
