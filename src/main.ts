@@ -2036,8 +2036,7 @@ function showScreenSetup() {
     box.innerHTML = `
       <div class="sw-main">
         <b>請在「螢幕與系統錄音」打開「小日子寫真館」的開關</b>
-        <div class="sw-sub">系統問「結束並重新打開」時按下，程式重開後再按截圖就可以了。<br>
-          清單裡如果有好幾個「小日子寫真館」，請全部按「−」刪除後，再按截圖、「允許螢幕錄影」一次。</div>
+        <div class="sw-sub">開關打開後，請按 ⌘Q 結束「小日子寫真館」再重新開啟（macOS 要重開才認得新權限），之後按一下截圖就能直接截。</div>
       </div>
       <div class="sw-actions">
         <button data-a="settings">打開設定</button>
@@ -2052,6 +2051,9 @@ function showScreenSetup() {
     else if (a === "settings") void api.openScreenSettings();
     else if (a === "clip") void captureViaClipboard();
     else if (a === "allow") {
+      // 按過「允許」之後就不再顯示這個框：macOS 要等程式重開才認得新權限，
+      // 之後按截圖直接截（真的沒權限時由 macOS 自己提醒）
+      store("screenAsked", true);
       void api.requestScreenPermission().then((ok) => {
         if (ok) {
           closeShotBox();
@@ -2090,7 +2092,7 @@ async function captureAndAnnotate() {
   if (shotBox) return closeShotBox();
   try {
     // 沒有螢幕錄影權限時不要直接呼叫 screencapture（每次都會跳出系統提醒），先引導授權一次
-    if (IS_MAC_UI && !(await api.screenPermission())) return showScreenSetup();
+    if (IS_MAC_UI && !storage("screenAsked", false) && !(await api.screenPermission())) return showScreenSetup();
     const path = await api.captureScreen();
     if (!path) return; // 按 Esc 取消
     await openInAnnotator(convertFileSrc(path), "截圖");
