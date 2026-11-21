@@ -46,6 +46,28 @@ pub struct FileEntry {
     pub size: u64,
     /// 修改時間（毫秒）
     pub mtime: i64,
+    /// 開資料夾時檔案還在 iCloud 上（只有雲端的空殼，讀取會觸發下載）
+    pub cloud: bool,
+}
+
+/// macOS：檔案是否只有 iCloud 上的空殼（st_flags 的 SF_DATALESS）。取得 metadata 不會觸發下載
+pub fn is_dataless(md: &fs::Metadata) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt;
+        const SF_DATALESS: u32 = 0x4000_0000;
+        md.st_flags() & SF_DATALESS != 0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = md;
+        false
+    }
+}
+
+/// 現在（而不是開資料夾當時）這個檔案是否還在 iCloud 上
+pub fn path_is_dataless(p: &Path) -> bool {
+    fs::symlink_metadata(p).map(|m| is_dataless(&m)).unwrap_or(false)
 }
 
 impl FileEntry {
@@ -81,6 +103,10 @@ impl Item {
             .or_else(|| self.by_class(Class::Image))
             .or_else(|| self.by_class(Class::Raw))
             .unwrap_or(&self.files[0])
+    }
+    /// 有任何一個檔案還在 iCloud 上（以現在的狀態為準）
+    pub fn in_cloud_now(&self) -> bool {
+        self.files.iter().any(|f| f.cloud && path_is_dataless(&f.path))
     }
     pub fn is_text(&self) -> bool {
         self.files[0].class == Class::Text
@@ -251,6 +277,7 @@ pub fn scan_dir(dir: &Path) -> io::Result<(Vec<Item>, Vec<DirInfo>)> {
             class,
             size: md.len(),
             mtime,
+            cloud: is_dataless(&md),
         });
     }
 

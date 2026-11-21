@@ -525,6 +525,7 @@ export class Grid {
     if (item?.kind === "raw+jpeg") badges += `<span class="badge">RAW+JPG</span>`;
     else if (item?.kind === "raw") badges += `<span class="badge">RAW</span>`;
     if (m?.edited) badges += `<span class="badge edited" title="已調整">調整</span>`;
+    if (item?.cloud) badges += `<span class="badge cloud" title="還在 iCloud 上，按右鍵「從 iCloud 下載」">☁ iCloud</span>`;
     badges += this.host.badges(c.id);
     if (c.badges.innerHTML !== badges) c.badges.innerHTML = badges;
   }

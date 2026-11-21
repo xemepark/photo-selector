@@ -332,6 +332,11 @@ pub fn render(item: &Item, kind: Kind) -> Result<Vec<u8>> {
     }
 }
 
+/// 還在 iCloud 上的照片的縮圖：雲朵圖示
+pub fn cloud_placeholder() -> Vec<u8> {
+    r##"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200"><rect width="300" height="200" rx="6" fill="#26262b"/><path d="M112 128h78a22 22 0 0 0 2-44 32 32 0 0 0-61-6 24 24 0 0 0-19 50z" fill="none" stroke="#8a8a94" stroke-width="7" stroke-linejoin="round"/><path d="M150 96v28m-11-11 11 11 11-11" fill="none" stroke="#8a8a94" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><text x="150" y="162" font-family="sans-serif" font-size="17" fill="#8a8a94" text-anchor="middle">在 iCloud 上（右鍵下載）</text></svg>"##.as_bytes().to_vec()
+}
+
 pub fn placeholder(ext: &str) -> Vec<u8> {
     format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200"><rect width="300" height="200" rx="6" fill="#26262b"/><text x="150" y="112" font-family="sans-serif" font-size="34" font-weight="600" fill="#77777f" text-anchor="middle">{}</text></svg>"##,

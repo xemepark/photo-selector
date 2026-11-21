@@ -614,3 +614,4 @@ body.folder-dragging, body.folder-dragging * { cursor: grabbing !important; }
 .slide-btn { padding: 5px 8px; font-size: 12px; }
 .sub-tool { gap: 5px; white-space: nowrap; cursor: pointer; }
 .sub-tool input { accent-color: var(--accent); }
+.badge.cloud { background: #3a6ea5; color: #fff; }

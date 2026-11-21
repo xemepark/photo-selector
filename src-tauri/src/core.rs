@@ -212,7 +212,7 @@ impl Core {
             return;
         }
         let Some(item) = sess.items.get(id as usize) else { return };
-        if item.is_text() {
+        if item.is_text() || item.in_cloud_now() {
             return;
         }
         let dk = disk_key(item);
@@ -353,6 +353,13 @@ impl Core {
                 self.mem_thumbs.lock().put(key, bytes.clone());
                 return respond(job.responder, StatusCode::OK, "image/jpeg", bytes.as_ref().clone(), true);
             }
+        }
+        // 還在 iCloud 上的照片：縮圖不去讀檔（讀取會觸發下載、卡住其他工作），先顯示雲朵
+        if matches!(job.kind, Kind::Thumb | Kind::Quick) && item.in_cloud_now() {
+            if job.kind == Kind::Quick {
+                return respond_status(job.responder, StatusCode::NOT_FOUND);
+            }
+            return respond(job.responder, StatusCode::OK, "image/svg+xml", render::cloud_placeholder(), false);
         }
         // 快速小縮圖：沒有正式縮圖時取內嵌的小圖（沒有就回 404，前端直接等正式縮圖）
         if job.kind == Kind::Quick {

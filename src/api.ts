@@ -13,6 +13,8 @@ export interface Item {
   added?: number;
   /** 「含子資料夾」時所在的子資料夾（"" = 開啟的資料夾本身） */
   sub?: string;
+  /** 開資料夾時有檔案還在 iCloud 上（尚未下載） */
+  cloud?: boolean;
 }
 
 export interface Meta {
@@ -134,6 +136,8 @@ export const api = {
   setFolderRating: (path: string, rating: number) => invoke<void>("set_folder_rating", { path, rating }),
   trashFolder: (path: string) => invoke<void>("trash_folder", { path }),
   existingAncestor: (path: string) => invoke<string | null>("existing_ancestor", { path }),
+  downloadCloud: (session: number, ids: number[]) => invoke<number>("download_cloud", { session, ids }),
+  cloudStatus: (session: number, ids: number[]) => invoke<number[]>("cloud_status", { session, ids }),
   setFolderLabel: (path: string, label: string | null) => invoke<void>("set_folder_label", { path, label }),
   /** 旋轉 90°，存回原檔；回傳 [id, 新方向] */
   rotate: (session: number, ids: number[], clockwise: boolean) =>

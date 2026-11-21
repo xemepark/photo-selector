@@ -188,6 +188,10 @@ fn shutter(t: f64) -> String {
 }
 
 pub fn read_meta(item: &Item) -> Meta {
+    // 還在 iCloud 上：不讀檔（讀取會觸發下載而卡住），下載後重新整理才讀
+    if item.in_cloud_now() {
+        return Meta::default();
+    }
     // 文字檔：只有附屬檔裡的評等 / 標籤
     if item.is_text() {
         let rl = xmp::read_sidecar(&item.sidecar_path()).unwrap_or_default();

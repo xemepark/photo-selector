@@ -678,7 +678,10 @@ async function openFolder(path: string, quiet = false): Promise<boolean> {
   gridEl.scrollTop = 0;
   update({ resetGrid: true });
   gridEl.focus();
-  if (res.truncated) toast(`項目太多，只顯示前 ${res.items.length} 個（可以改開比較下層的資料夾）`, 6000);
+  const cloudN = res.items.filter((it) => it.cloud).length;
+  if (cloudN)
+    toast(`有 ${cloudN} 個項目還在 iCloud 上（顯示雲朵）。選取後按右鍵「從 iCloud 下載」，下載好就會出現縮圖`, 8000);
+  else if (res.truncated) toast(`項目太多，只顯示前 ${res.items.length} 個（可以改開比較下層的資料夾）`, 6000);
   else if (!res.items.length && !res.subdirs.length) toast("這個資料夾沒有支援的照片");
   return true;
 }
@@ -744,6 +747,39 @@ recursiveBox.addEventListener("change", () => {
   if (S.dir) void doRefreshFolder(true).then(() => toast(S.recursive ? "已顯示所有子資料夾裡的照片" : "只顯示這個資料夾的照片"));
   gridEl.focus();
 });
+
+/** 從 iCloud 下載：背景下載，每幾秒檢查一次，下載好的照片換上縮圖；全部好了重新讀取資料夾（讀評等等資料） */
+async function downloadFromCloud(ids: number[]) {
+  if (!ids.length) return;
+  const session = S.session;
+  let n: number;
+  try {
+    n = await api.downloadCloud(session, ids);
+  } catch (e) {
+    return toast(`無法從 iCloud 下載：${e}`);
+  }
+  if (!n) return void doRefreshFolder(true);
+  toast(`正在從 iCloud 下載 ${n} 個檔案，好了會自動顯示縮圖`, 5000);
+  let left = new Set(ids);
+  const started = Date.now();
+  const tick = async () => {
+    if (S.session !== session) return;
+    const still = new Set(await api.cloudStatus(session, [...left]).catch(() => [...left]));
+    const done = [...left].filter((id) => !still.has(id));
+    if (done.length) {
+      for (const id of done) if (S.items[id]) S.items[id].cloud = false;
+      grid.reloadThumbs(new Set(done));
+      grid.refresh();
+    }
+    left = still;
+    if (!left.size) {
+      toast("iCloud 下載完成");
+      return void doRefreshFolder(true);
+    }
+    if (Date.now() - started < 60 * 60 * 1000) setTimeout(() => void tick(), 4000);
+  };
+  setTimeout(() => void tick(), 3000);
+}
 
 /** 第一次啟動的預設資料夾：下載項目（系統回報不出來時用 家目錄/Downloads） */
 async function defaultStartFolder(): Promise<string | null> {
@@ -1243,7 +1279,8 @@ function setFocus(id: number, extend: boolean) {
   // 回到照片：取消資料夾的選取
   if (S.folderSel) grid.selectFolder("");
   S.focus = id;
-  if (!S.loupe) prefetchFocus(id);
+  // 還在 iCloud 上的照片不要預先載入（會觸發下載）
+  if (!S.loupe && !S.items[id]?.cloud) prefetchFocus(id);
   if (extend && S.anchor !== null && S.viewIndex.has(S.anchor)) {
     const a = S.viewIndex.get(S.anchor)!;
     const b = S.viewIndex.get(id)!;
@@ -2493,7 +2530,9 @@ function showCellMenu(index: number, ev: MouseEvent) {
   else S.focus = it.id;
   const n = S.selected.size;
   const isMac = /Mac/.test(navigator.platform) || navigator.userAgent.includes("Mac OS X");
+  const cloudSel = targets().filter((id) => S.items[id]?.cloud).length;
   const items: [string, string, string?][] = [
+    ...(cloudSel ? ([["icloud", cloudSel > 1 ? `☁ 從 iCloud 下載 ${cloudSel} 個項目` : "☁ 從 iCloud 下載"], ["-", ""]] as [string, string][]) : []),
     ...(it.kind === "text" ? ([["textedit", "編輯文字…"], ["-", ""]] as [string, string][]) : []),
     ["reveal", isMac ? "在 Finder 中顯示" : "在檔案總管中顯示"],
     ["rename", "重新命名…", "F2"],
@@ -2539,7 +2578,8 @@ ctxMenu.addEventListener("click", (ev) => {
     return;
   }
   if (!a || S.focus === null) return;
-  if (a === "textedit") void textEditor.openEdit(S.session, S.focus);
+  if (a === "icloud") void downloadFromCloud(targets().filter((id) => S.items[id]?.cloud));
+  else if (a === "textedit") void textEditor.openEdit(S.session, S.focus);
   else if (a === "reveal") api.revealItem(S.session, S.focus).catch((e) => toast(`無法開啟：${e}`));
   else if (a === "rename") openRename();
   else if (a === "batch") openBatchRename();

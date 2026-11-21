@@ -42,6 +42,8 @@ struct ItemDto {
     added: i64,
     /// 「含子資料夾」時所在的子資料夾（"" = 開啟的資料夾本身）
     sub: String,
+    /// 有檔案還在 iCloud 上（尚未下載到這台 Mac）
+    cloud: bool,
 }
 
 #[derive(Serialize)]
@@ -115,6 +117,7 @@ async fn open_folder(app: AppHandle, core: CoreState<'_>, path: String, recursiv
             mtime: it.files.iter().map(|f| f.mtime).max().unwrap_or(0),
             added: it.files.iter().map(|f| scan::added_ms(&f.path)).max().unwrap_or(0),
             sub: it.sub.clone(),
+            cloud: it.files.iter().any(|f| f.cloud),
         })
         .collect();
     let sess = core.new_session(items);
@@ -236,6 +239,38 @@ async fn write_text(core: CoreState<'_>, session: u64, id: u32, text: String) ->
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// 從 iCloud 下載這些項目（macOS：brctl download；在背景依序進行，立即返回）
+#[tauri::command]
+fn download_cloud(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<usize, String> {
+    let sess = core.session(session)?;
+    let paths: Vec<PathBuf> = ids
+        .iter()
+        .filter_map(|&id| sess.items.get(id as usize))
+        .flat_map(|it| it.files.iter().filter(|f| f.cloud && scan::path_is_dataless(&f.path)).map(|f| f.path.clone()).collect::<Vec<_>>())
+        .collect();
+    let n = paths.len();
+    std::thread::spawn(move || {
+        for p in paths {
+            let ok = std::process::Command::new("brctl").arg("download").arg(&p).status().map(|s| s.success()).unwrap_or(false);
+            if !ok {
+                // 沒有 brctl（或失敗）：讀一個位元組也會讓系統開始下載
+                use std::io::Read;
+                if let Ok(mut f) = std::fs::File::open(&p) {
+                    let _ = f.read(&mut [0u8; 1]);
+                }
+            }
+        }
+    });
+    Ok(n)
+}
+
+/// 這些項目中還在 iCloud 上的（id）
+#[tauri::command]
+fn cloud_status(core: CoreState<'_>, session: u64, ids: Vec<u32>) -> Result<Vec<u32>, String> {
+    let sess = core.session(session)?;
+    Ok(ids.into_iter().filter(|&id| sess.items.get(id as usize).is_some_and(|it| it.in_cloud_now())).collect())
 }
 
 /// 資料夾不存在時（被刪除、改名、外接硬碟沒接上）找最近一層還存在的上層資料夾
@@ -1199,6 +1234,8 @@ pub fn run() {
             set_folder_rating,
             trash_folder,
             existing_ancestor,
+            download_cloud,
+            cloud_status,
             set_folder_label,
             set_rating,
             set_label,
