@@ -116,7 +116,8 @@ export class Annotator {
   requestClose() {
     if (!this.isOpen) return;
     this.commitText();
-    if (JSON.stringify(this.anns) !== this.savedState && this.anns.length) {
+    // 存檔後又改過（包括把標註全刪掉）也要提醒
+    if (JSON.stringify(this.anns) !== this.savedState && (this.anns.length || this.savedPath)) {
       this.q(".an-confirm").classList.remove("hidden");
       this.q<HTMLButtonElement>('[data-confirm="save"]').focus();
       return;
