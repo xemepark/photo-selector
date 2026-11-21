@@ -316,10 +316,15 @@ async fn capture_screen(app: AppHandle) -> Result<Option<String>, String> {
 
 /// 儲存標註好的圖片（PNG，base64）到資料夾；同名時自動加 _1、_2，回傳完整路徑
 #[tauri::command]
-async fn save_image(dir: String, name: String, data: String) -> Result<String, String> {
+async fn save_image(dir: String, name: String, data: String, overwrite: Option<String>) -> Result<String, String> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
+        // 同一張截圖再存一次：覆寫上次存的檔案（只接受 PNG）
+        if let Some(o) = overwrite.filter(|o| o.to_ascii_lowercase().ends_with(".png")) {
+            std::fs::write(&o, &bytes).map_err(|e| format!("無法儲存：{e}"))?;
+            return Ok(o);
+        }
         let dir = PathBuf::from(dir);
         let p = std::path::Path::new(&name);
         let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "截圖".into());

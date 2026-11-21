@@ -649,3 +649,27 @@ body.folder-dragging, body.folder-dragging * { cursor: grabbing !important; }
 .an-confirm span { margin-right: 6px; }
 .an-stage canvas { touch-action: none; }
 
+
+/* 標註視窗：存檔結果提示 */
+.an-notice {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(0.96);
+  padding: 14px 22px;
+  border-radius: 12px;
+  background: rgba(30, 32, 36, 0.94);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  border: 1px solid #4caf50;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s, transform 0.18s;
+  z-index: 50;
+  max-width: 80%;
+  text-align: center;
+}
+.an-notice.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.an-notice.error { border-color: #e5534b; }

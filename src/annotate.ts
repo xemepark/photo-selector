@@ -2,8 +2,8 @@
 // 標註以「原圖像素」記錄，畫面上縮放顯示；存檔時以原尺寸重畫，畫質不會變差。
 
 export interface AnnotatorHost {
-  /** 存成 PNG（base64）到目前的資料夾，回傳完整路徑 */
-  save(name: string, pngBase64: string): Promise<string>;
+  /** 存成 PNG（base64）到目前的資料夾，回傳完整路徑；overwrite = 覆寫這個檔案（同一張截圖再存一次） */
+  save(name: string, pngBase64: string, overwrite?: string): Promise<string>;
   /** 拷貝到剪貼簿 */
   copy(pngBase64: string): Promise<void>;
   saved(path: string): void;
@@ -75,6 +75,8 @@ export class Annotator {
   private editor: HTMLTextAreaElement | null = null;
   private editIndex = -1;
   private baseName = "截圖";
+  /** 這張圖已經存成的檔案（再按儲存就覆寫它，不會多存一份） */
+  private savedPath: string | null = null;
   isOpen = false;
 
   constructor(private host: AnnotatorHost) {
@@ -101,6 +103,7 @@ export class Annotator {
     this.future = [];
     this.sel = -1;
     this.savedState = "[]";
+    this.savedPath = null;
     this.baseName = baseName;
     this.build();
     this.isOpen = true;
@@ -594,19 +597,50 @@ export class Annotator {
   }
 
   /** 儲存成功回傳 true */
+  private saving = false;
   private async save(): Promise<boolean> {
+    const state = JSON.stringify(this.anns);
+    const fileName = (p: string) => p.split(/[\\/]/).pop() ?? p;
+    // 一張截圖只存一個檔案：存過且沒有新的修改就不再存
+    if (this.savedPath && state === this.savedState) {
+      this.notice(`已經儲存過了：${fileName(this.savedPath)}`);
+      return true;
+    }
+    if (this.saving) return false;
+    this.saving = true;
     try {
       const d = new Date();
       const p2 = (n: number) => String(n).padStart(2, "0");
       const name = `${this.baseName}_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.png`;
-      const path = await this.host.save(name, await this.exportPng());
-      this.savedState = JSON.stringify(this.anns);
+      const again = this.savedPath !== null;
+      const path = await this.host.save(name, await this.exportPng(), this.savedPath ?? undefined);
+      this.savedPath = path;
+      this.savedState = state;
+      this.notice(again ? `已更新儲存：${fileName(path)}` : `已儲存：${fileName(path)}`);
       this.host.saved(path);
       return true;
     } catch (e) {
-      this.host.toast(`無法儲存：${e}`);
+      this.notice(`無法儲存：${e}`, true);
       return false;
+    } finally {
+      this.saving = false;
     }
+  }
+
+  /** 標註視窗正中間的提示（存檔結果），2 秒後消失 */
+  private noticeTimer = 0;
+  private notice(msg: string, error = false) {
+    let el = this.root.querySelector<HTMLDivElement>(".an-notice");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "an-notice";
+      this.root.appendChild(el);
+    }
+    el.textContent = (error ? "⚠ " : "✓ ") + msg;
+    el.classList.toggle("error", error);
+    el.classList.add("show");
+    window.clearTimeout(this.noticeTimer);
+    this.noticeTimer = window.setTimeout(() => el!.classList.remove("show"), error ? 4000 : 2200);
   }
 
   private async copy() {

@@ -1970,7 +1970,8 @@ document.addEventListener("contextmenu", (e) => {
 const annotator = new Annotator({
   toast: (m) => toast(m),
   closed: () => gridEl.focus(),
-  save: (name, data) => {
+  save: (name, data, overwrite) => {
+    if (overwrite) return api.saveImage(S.dir, name, data, overwrite);
     if (!S.dir) return Promise.reject("請先開啟一個資料夾（標註圖會存在目前的資料夾）");
     return api.saveImage(S.dir, name, data);
   },
@@ -1986,8 +1987,7 @@ const annotator = new Annotator({
       await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([buf], { type: "image/png" }) })]);
     }
   },
-  saved: (path) => {
-    notify(`已儲存「${path.split(/[\\/]/).pop()}」到目前的資料夾`, openDirAction(S.dir));
+  saved: () => {
     void doRefreshFolder(true);
   },
 });

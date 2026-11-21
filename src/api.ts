@@ -142,7 +142,7 @@ export const api = {
   existingAncestor: (path: string) => invoke<string | null>("existing_ancestor", { path }),
   videoSrc: (session: number, id: number) => invoke<string>("video_src", { session, id }).then((p) => convertFileSrc(p)),
   captureScreen: () => invoke<string | null>("capture_screen"),
-  saveImage: (dir: string, name: string, data: string) => invoke<string>("save_image", { dir, name, data }),
+  saveImage: (dir: string, name: string, data: string, overwrite?: string) => invoke<string>("save_image", { dir, name, data, overwrite: overwrite ?? null }),
   copyImage: (data: string) => invoke<void>("copy_image", { data }),
     openItem: (session: number, id: number) => invoke<void>("open_item", { session, id }),
     downloadCloud: (session: number, ids: number[]) => invoke<number>("download_cloud", { session, ids }),
