@@ -8,10 +8,11 @@
 
 import { api, url, Item, EditParams } from "./api";
 import { CurveEditor, Pt, cleanCurve, curveLut, sameCurve } from "./curve";
+import { LiqField, LiqMode, LiqStroke, MAX_LIQ_POINTS, MAX_LIQ_STROKES, boxToPx, cleanLiquify, liqTextLen, warpImage } from "./liquify";
 import { MAX_SPOT_POINTS, Spot, SpotMode, applySpots, autoRadius, cleanSpots, distToStroke, findSource, outerR } from "./heal";
 import { Crop, MAX_ANGLE, RATIOS, bboxFrame, bisect, fits, fitted, fromNorm, fullCrop, largestAt, toFrame, toImg, toNorm } from "./crop";
 
-type NumKey = Exclude<keyof EditParams, "curve" | "hsl" | "crop" | "spots">;
+type NumKey = Exclude<keyof EditParams, "curve" | "hsl" | "crop" | "spots" | "liquify">;
 type SyncKey = keyof EditParams;
 
 const GROUPS: { group: string; items: { key: NumKey; label: string; min: number; max: number; step: number; cls?: string }[] }[] = [
@@ -78,6 +79,44 @@ const SPOT_TOOLS: { m: SpotMode; label: string; icon: string; tip: string }[] = 
   { m: 1, label: "修復", icon: HEAL_ICON, tip: "修復：用旁邊的紋理覆蓋，顏色與明暗自動跟周圍融合" },
   { m: 2, label: "仿製", icon: STAMP_ICON, tip: "仿製：把來源區域原樣複製過來" },
 ];
+const LIQ_TOOLS: { m: LiqMode; label: string; icon: string; tip: string }[] = [
+  {
+    m: 0,
+    label: "推移",
+    icon: `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" d="M2 10c2.5 0 3-4 6-4s3.5 2 6 2M10.5 4.5 13.5 8l-3 2.5"/></svg>`,
+    tip: "像用手指推動照片：在要調整的地方往想要的方向拖曳（例如收手臂、修輪廓）",
+  },
+  {
+    m: 1,
+    label: "膨脹",
+    icon: `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="2.2" fill="currentColor"/><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" d="M8 1.5v2.5M8 12v2.5M1.5 8H4M12 8h2.5M3.4 3.4l1.7 1.7M10.9 10.9l1.7 1.7M3.4 12.6l1.7-1.7M10.9 5.1l1.7-1.7"/></svg>`,
+    tip: "以筆刷中心往外放大（例如讓眼睛大一點），按住越久越明顯",
+  },
+  {
+    m: 2,
+    label: "縮攏",
+    icon: `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="1.4" fill="currentColor"/><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3M6.5 3l1.5 1.5L9.5 3M6.5 13l1.5-1.5L9.5 13M3 6.5 4.5 8 3 9.5M13 6.5 11.5 8 13 9.5"/></svg>`,
+    tip: "往筆刷中心收縮（例如縮小臉頰、鼻翼），按住越久越明顯",
+  },
+  {
+    m: 3,
+    label: "重建",
+    icon: `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3.2 8a4.8 4.8 0 1 0 1.5-3.5"/><path fill="currentColor" d="M2 1.8v4.4h4.4z"/></svg>`,
+    tip: "在變形過的地方塗抹，慢慢恢復成原本的樣子",
+  },
+];
+
+function loadLiqBrush(): { size: number; strength: number } {
+  const d = { size: 60, strength: 50 };
+  try {
+    const v = JSON.parse(localStorage.getItem("editLiqBrush") ?? "null");
+    if (v && typeof v === "object") for (const k of Object.keys(d) as (keyof typeof d)[]) if (Number.isFinite(v[k])) d[k] = v[k];
+  } catch {
+    /* ignore */
+  }
+  return d;
+}
+
 /** 自訂游標（SVG）：白平衡 = 滴管、曲線 = 上下箭頭、HSL = 左右箭頭 */
 const svgCursor = (svg: string, x: number, y: number, fallback: string) =>
   `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}") ${x} ${y}, ${fallback}`;
@@ -155,16 +194,18 @@ export const ZERO: EditParams = {
   hsl: zeroHsl(),
   crop: [],
   spots: [],
+  liquify: [],
 };
 
 const NUM_KEYS = GROUPS.flatMap((g) => g.items.map((s) => s.key));
-const SYNC_KEYS: SyncKey[] = [...NUM_KEYS, "hsl", "curve", "crop", "spots"];
+const SYNC_KEYS: SyncKey[] = [...NUM_KEYS, "hsl", "curve", "crop", "spots", "liquify"];
 const LABEL_OF: Record<SyncKey, string> = {
   ...(Object.fromEntries(GROUPS.flatMap((g) => g.items.map((s) => [s.key, s.label]))) as Record<NumKey, string>),
   curve: "曲線",
   hsl: "HSL",
   crop: "裁切",
   spots: "修補",
+  liquify: "液化",
 };
 const SYNC_GROUPS: { group: string; keys: SyncKey[] }[] = [
   ...GROUPS.map((g) => ({ group: g.group, keys: g.items.map((s) => s.key) as SyncKey[] })),
@@ -172,6 +213,7 @@ const SYNC_GROUPS: { group: string; keys: SyncKey[] }[] = [
   { group: "曲線", keys: ["curve"] },
   { group: "裁切", keys: ["crop"] },
   { group: "修補", keys: ["spots"] },
+  { group: "液化", keys: ["liquify"] },
 ];
 
 /** 色階分布圖上可拖曳的區域（與 Camera Raw 相同的五段） */
@@ -184,7 +226,7 @@ const ZONES: { key: NumKey; from: number; to: number }[] = [
 ];
 
 function clone(p: EditParams): EditParams {
-  return { ...p, curve: p.curve.map((q) => [q[0], q[1]] as Pt), hsl: normHsl(p.hsl), crop: normCrop(p.crop), spots: cleanSpots(JSON.parse(JSON.stringify(p.spots ?? []))) };
+  return { ...p, curve: p.curve.map((q) => [q[0], q[1]] as Pt), hsl: normHsl(p.hsl), crop: normCrop(p.crop), spots: cleanSpots(JSON.parse(JSON.stringify(p.spots ?? []))), liquify: cleanLiquify(JSON.parse(JSON.stringify(p.liquify ?? []))) };
 }
 
 /** 上次同步時勾選的項目（預設全部） */
@@ -200,13 +242,13 @@ function loadSyncFields(): string[] {
     /* ignore */
   }
   // 修補預設不勾（通常每張照片要修的地方不同；感光元件灰塵才需要同步）
-  return SYNC_KEYS.filter((k) => k !== "spots");
+  return SYNC_KEYS.filter((k) => k !== "spots" && k !== "liquify");
 }
 
 /** 調整面板各區塊的收合狀態（true = 收合），下次開啟沿用 */
-type Sec = "crop" | "patch" | "basic" | "color" | "hsl" | "curve";
+type Sec = "crop" | "patch" | "liquify" | "basic" | "color" | "hsl" | "curve";
 function loadCollapsed(): Record<Sec, boolean> {
-  const d = { crop: false, patch: false, basic: false, color: false, hsl: false, curve: false };
+  const d = { crop: false, patch: false, liquify: false, basic: false, color: false, hsl: false, curve: false };
   try {
     const v = JSON.parse(localStorage.getItem("editCollapsed") ?? "null");
     if (v && typeof v === "object") for (const k of Object.keys(d) as Sec[]) d[k] = v[k] === true;
@@ -287,7 +329,7 @@ function saveSyncFields(f: string[]) {
 }
 
 export function isIdentity(p: EditParams) {
-  return NUM_KEYS.every((k) => Math.abs(p[k]) < 1e-4) && cleanCurve(p.curve).length === 0 && !hslActive(normHsl(p.hsl)) && !normCrop(p.crop).length && !(p.spots ?? []).length;
+  return NUM_KEYS.every((k) => Math.abs(p[k]) < 1e-4) && cleanCurve(p.curve).length === 0 && !hslActive(normHsl(p.hsl)) && !normCrop(p.crop).length && !(p.spots ?? []).length && !(p.liquify ?? []).length;
 }
 
 const same = (a: EditParams, b: EditParams) =>
@@ -295,7 +337,8 @@ const same = (a: EditParams, b: EditParams) =>
   sameCurve(a.curve, b.curve) &&
   normHsl(a.hsl).every((x, i) => Math.abs(x - normHsl(b.hsl)[i]) < 1e-4) &&
   sameCrop(a.crop, b.crop) &&
-  JSON.stringify(a.spots ?? []) === JSON.stringify(b.spots ?? []);
+  JSON.stringify(a.spots ?? []) === JSON.stringify(b.spots ?? []) &&
+  JSON.stringify(a.liquify ?? []) === JSON.stringify(b.liquify ?? []);
 
 const VERT = `
 attribute vec2 a_pos;
@@ -537,6 +580,7 @@ export class Editor {
         sec.classList.toggle("collapsed", collapsed[k]);
         saveCollapsed(collapsed);
         if (collapsed[k] && k === "patch" && this.ptool !== null) this.setPatch(null);
+        if (collapsed[k] && k === "liquify" && this.ltool !== null) this.setLiq(null);
         if (collapsed[k] && this.tool && (this.tool === "wb" ? "color" : this.tool) === k) this.setTool(null);
         if (!collapsed[k] && k === "curve") this.curveEd.draw();
       };
@@ -602,12 +646,16 @@ export class Editor {
       });
     }
     this.overlay = this.q<HTMLCanvasElement>("#ed-overlay");
-    this.overlay.addEventListener("pointerdown", (e) => (this.cropping ? this.cropDown(e) : this.patchDown(e)));
-    this.overlay.addEventListener("pointermove", (e) => (this.cropping ? this.cropMove(e) : this.patchMove(e)));
-    this.overlay.addEventListener("pointerup", (e) => (this.cropping ? this.cropUp(e) : this.patchUp(e)));
-    this.overlay.addEventListener("pointercancel", (e) => (this.cropping ? this.cropUp(e) : this.patchUp(e)));
+    this.overlay.addEventListener("pointerdown", (e) => (this.cropping ? this.cropDown(e) : this.ltool !== null ? this.liqDown(e) : this.patchDown(e)));
+    this.overlay.addEventListener("pointermove", (e) => (this.cropping ? this.cropMove(e) : this.ltool !== null ? this.liqMove(e) : this.patchMove(e)));
+    this.overlay.addEventListener("pointerup", (e) => (this.cropping ? this.cropUp(e) : this.ltool !== null ? this.liqUp() : this.patchUp(e)));
+    this.overlay.addEventListener("pointercancel", (e) => (this.cropping ? this.cropUp(e) : this.ltool !== null ? this.liqUp() : this.patchUp(e)));
     this.overlay.addEventListener("pointerleave", () => {
       this.phover = null;
+      if (this.ltool !== null && !this.ldrag) {
+        this.lhover = null;
+        this.drawOverlay();
+      }
       if (this.ptool !== null) this.drawOverlay();
     });
     this.el.querySelectorAll<HTMLElement>("[data-ptool]").forEach((b) =>
@@ -616,6 +664,29 @@ export class Editor {
         this.setPatch(this.ptool === m ? null : m);
       }),
     );
+    this.el.querySelectorAll<HTMLElement>("[data-ltool]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const m = Number(b.dataset.ltool) as LiqMode;
+        this.setLiq(this.ltool === m ? null : m);
+      }),
+    );
+    this.lbrush = loadLiqBrush();
+    for (const k of ["size", "strength"] as const) {
+      for (const sel of [`[data-lbrush="${k}"]`, `[data-lbrush-num="${k}"]`]) {
+        const inp = this.q<HTMLInputElement>(sel);
+        inp.value = String(this.lbrush[k]);
+        inp.addEventListener("input", (e) => {
+          e.stopPropagation();
+          const v = Number(inp.value);
+          if (Number.isFinite(v)) this.setLiqBrush(k, v, inp);
+        });
+      }
+    }
+    this.q("#ed-liq-eye").addEventListener("click", () => {
+      this.liqHidden = !this.liqHidden;
+      this.q("#ed-liq-eye").classList.toggle("active", this.liqHidden);
+      this.draw();
+    });
     const brush = loadBrush();
     this.brush = brush;
     for (const k of ["size", "feather", "opacity"] as const) {
@@ -763,6 +834,7 @@ export class Editor {
         const k = b.dataset.secReset as Sec;
         if (k === "basic" || k === "color") for (const it of GROUPS[k === "basic" ? 0 : 1].items) this.p[it.key] = 0;
         if (k === "hsl") this.p.hsl = zeroHsl();
+        if (k === "liquify") this.p.liquify = [];
         if (k === "patch") {
           this.p.spots = [];
           this.selSpot = -1;
@@ -877,6 +949,17 @@ export class Editor {
         <label class="check small"><input type="checkbox" id="ed-ov-show" checked /> 顯示覆蓋</label>
         <div class="muted small ed-crop-tip">B 開始修補 · 點一下或塗抹要去掉的地方 · Delete 刪除選取 · ⌘Z 復原 · [ 變小 ] 變大</div>
       </div>`;
+    const lrow = (k: string, label: string, min: number, max: number) => `<div class="ed-row">
+          <label>${label}</label>
+          <input type="number" data-lbrush-num="${k}" min="${min}" max="${max}" step="1" />
+          <input type="range" data-lbrush="${k}" min="${min}" max="${max}" step="1" />
+        </div>`;
+    const liquify = `<div class="ed-patch">
+        <div class="ed-patch-tools">${LIQ_TOOLS.map((t) => `<button class="ed-ptool" data-ltool="${t.m}" title="${t.label}：${t.tip}">${t.icon}</button>`).join("")}<span id="ed-ltool-name" class="ed-ptool-name"></span></div>
+        ${lrow("size", "大小", 5, 400)}
+        ${lrow("strength", "強度", 1, 100)}
+        <div class="muted small ed-crop-tip">L 開始液化 · 推移：在照片上拖曳推動 · 膨脹 / 縮攏 / 重建：按住或塗抹，按越久越明顯 · ⌘Z 復原上一筆 · [ 變小 ] 變大 · Esc 結束</div>
+      </div>`;
     const crop = `<div class="ed-crop">
         <div class="ed-crop-row">
           <label>比例</label>
@@ -962,6 +1045,13 @@ export class Editor {
               <button id="ed-patch-eye" class="ed-ib" title="暫時隱藏修補效果（比較修補前後）">${EYE_ICON}</button><button class="ed-ib" data-sec-reset="patch" title="清除所有修補">${RESET_ICON}</button>
             </div>
             <div class="ed-sec-body">${patch}</div>
+          </section>
+          <section class="ed-sec" data-sec="liquify">
+            <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
+              <span class="ed-chev"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="ed-sec-title">液化</span><span class="ed-sec-dot" title="這個區塊有調整"></span>
+              <button id="ed-liq-eye" class="ed-ib" title="暫時隱藏液化效果（比較前後）">${EYE_ICON}</button><button class="ed-ib" data-sec-reset="liquify" title="清除所有液化">${RESET_ICON}</button>
+            </div>
+            <div class="ed-sec-body">${liquify}</div>
           </section>
           <section class="ed-sec" data-sec="crop">
             <div class="ed-sec-head" role="button" tabindex="0" title="點一下收合 / 展開">
@@ -1111,6 +1201,7 @@ export class Editor {
       else if (f === "hsl") m.hsl = normHsl(p.hsl);
       else if (f === "crop") m.crop = normCrop(p.crop);
       else if (f === "spots") m.spots = cleanSpots(JSON.parse(JSON.stringify(p.spots ?? [])));
+      else if (f === "liquify") m.liquify = cleanLiquify(JSON.parse(JSON.stringify(p.liquify ?? [])));
     }
     return m;
   }
@@ -1123,7 +1214,7 @@ export class Editor {
       const orig = this.multiOrig.get(id);
       const r = orig ? null : await api.getEdit(this.host.session(), id).catch(() => null);
       const params =
-        orig ?? clone({ ...ZERO, ...(r ?? {}), curve: (r?.curve ?? []) as Pt[], hsl: normHsl(r?.hsl), crop: normCrop(r?.crop), spots: cleanSpots(r?.spots) });
+        orig ?? clone({ ...ZERO, ...(r ?? {}), curve: (r?.curve ?? []) as Pt[], hsl: normHsl(r?.hsl), crop: normCrop(r?.crop), spots: cleanSpots(r?.spots), liquify: cleanLiquify(r?.liquify) });
       if (!this.multiOrig.has(id)) this.multiOrig.set(id, clone(params));
       const res = await fetch(url.base(this.host.session(), id));
       const bmp = await createImageBitmap(await res.blob(), { resizeWidth: 320, resizeQuality: "medium" });
@@ -1215,6 +1306,7 @@ export class Editor {
     if (ha.some((x, i) => Math.abs(x - hb[i]) > 1e-6)) out.push("hsl");
     if (!sameCrop(a.crop, b.crop)) out.push("crop");
     if (JSON.stringify(a.spots ?? []) !== JSON.stringify(b.spots ?? [])) out.push("spots");
+    if (JSON.stringify(a.liquify ?? []) !== JSON.stringify(b.liquify ?? [])) out.push("liquify");
     return out;
   }
 
@@ -1245,7 +1337,7 @@ export class Editor {
           .filter((id) => !this.multiOrig.has(id))
           .map(async (id) => {
             const r = await api.getEdit(this.host.session(), id).catch(() => null);
-            this.multiOrig.set(id, clone({ ...ZERO, ...(r ?? {}), curve: (r?.curve ?? []) as Pt[], hsl: normHsl(r?.hsl), crop: normCrop(r?.crop), spots: cleanSpots(r?.spots) }));
+            this.multiOrig.set(id, clone({ ...ZERO, ...(r ?? {}), curve: (r?.curve ?? []) as Pt[], hsl: normHsl(r?.hsl), crop: normCrop(r?.crop), spots: cleanSpots(r?.spots), liquify: cleanLiquify(r?.liquify) }));
           }),
       );
       await this.save(others, clone(this.p), fields);
@@ -1387,7 +1479,7 @@ export class Editor {
     try {
       const r = await api.getEdit(this.host.session(), it.id);
       if (seq !== this.showSeq) return;
-      this.saved = clone({ ...ZERO, ...r, curve: (r.curve ?? []) as Pt[], hsl: normHsl(r.hsl), crop: normCrop(r.crop), spots: cleanSpots(r.spots) });
+      this.saved = clone({ ...ZERO, ...r, curve: (r.curve ?? []) as Pt[], hsl: normHsl(r.hsl), crop: normCrop(r.crop), spots: cleanSpots(r.spots), liquify: cleanLiquify(r.liquify) });
     } catch {
       this.saved = clone(ZERO);
     }
@@ -1430,6 +1522,9 @@ export class Editor {
         g2.drawImage(bmp, 0, 0);
         this.baseOrig = g2.getImageData(0, 0, bmp.width, bmp.height);
         this.baseKey = "";
+        this.baseHealed = null;
+        this.healedKey = "";
+        this.liqFieldCache = null;
         this.healCache.clear();
         // 先顯示原圖，修補稍後再套（修補多時要算一下，畫面不會卡在「載入中」）
         this.healPending = (this.p.spots ?? []).length > 0;
@@ -1816,6 +1911,7 @@ export class Editor {
     if (this.cropping || !this.imgW) return;
     if (this.tool) this.setTool(null);
     if (this.ptool !== null) this.setPatch(null);
+    if (this.ltool !== null) this.setLiq(null);
     this.cropping = true;
     this.cropEntry = normCrop(this.p.crop);
     this.draft = fromNorm(this.p.crop, this.imgW, this.imgH) ?? fullCrop(this.imgW, this.imgH);
@@ -2102,6 +2198,7 @@ export class Editor {
     const g = cv.getContext("2d");
     if (!g) return;
     g.clearRect(0, 0, w, h);
+    if (!this.cropping && this.ltool !== null && this.imgW) return this.drawLiqOverlay(g, dpr);
     if (!this.cropping && this.ptool !== null && this.imgW) return this.drawPatchOverlay(g, dpr);
     if (!this.cropping || !this.draft || !this.imgW) return;
     const v = this.view();
@@ -2206,14 +2303,30 @@ export class Editor {
     const gl = this.gl;
     const base = this.baseOrig;
     if (!gl || !base) return;
+    // 液化拖曳中：畫面由 liqStep() 局部更新
+    if (this.ldrag) return;
     const spots = this.spotsHidden || this.healPending ? [] : (this.p.spots ?? []);
-    const key = JSON.stringify(spots);
+    const liq = this.liqHidden || this.healPending ? [] : (this.p.liquify ?? []);
+    const sKey = JSON.stringify(spots);
+    const key = `${sKey}#${JSON.stringify(liq)}`;
     if (key === this.baseKey) return;
     this.baseKey = key;
-    let img = base;
-    if (spots.length) {
-      img = new ImageData(new Uint8ClampedArray(base.data), base.width, base.height);
-      applySpots(img, spots, this.healCache);
+    if (sKey !== this.healedKey || !this.baseHealed) {
+      this.healedKey = sKey;
+      let h = base;
+      if (spots.length) {
+        h = new ImageData(new Uint8ClampedArray(base.data), base.width, base.height);
+        applySpots(h, spots, this.healCache);
+      }
+      this.baseHealed = h;
+    }
+    let img = this.baseHealed;
+    if (liq.length) {
+      const f = this.liqFieldCache && this.liqFieldCache.arr === liq ? this.liqFieldCache.field : LiqField.build(liq, img.width, img.height);
+      this.liqFieldCache = { arr: liq, field: f };
+      const out = new ImageData(img.width, img.height);
+      warpImage(img, out, f);
+      img = out;
     }
     this.baseWork = img;
     gl.activeTexture(gl.TEXTURE0);
@@ -2222,11 +2335,201 @@ export class Editor {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
   }
 
+  // ---------------------------------------------------------------- 液化
+
+  private ltool: LiqMode | null = null;
+  private lastLtool: LiqMode = 0;
+  private liqHidden = false;
+  private lbrush = { size: 60, strength: 50 };
+  private lhover: { x: number; y: number } | null = null;
+  private ldrag: { st: LiqStroke; field: LiqField; out: ImageData; done: number; timer: number; chars: number } | null = null;
+  /** 修補後、液化前的影像（液化從這裡取樣） */
+  private baseHealed: ImageData | null = null;
+  private healedKey = "";
+  private liqFieldCache: { arr: LiqStroke[]; field: LiqField } | null = null;
+
+  /** 開始 / 結束液化（再按一次同一個工具 = 結束） */
+  setLiq(m: LiqMode | null) {
+    if (m !== null) {
+      if (this.cropping) this.commitCrop();
+      if (this.tool) this.setTool(null);
+      if (this.ptool !== null) this.setPatch(null);
+      this.lastLtool = m;
+      if (this.liqHidden) {
+        this.liqHidden = false;
+        this.q("#ed-liq-eye").classList.remove("active");
+      }
+    }
+    this.liqUp();
+    this.ltool = m;
+    this.el.querySelectorAll<HTMLElement>("[data-ltool]").forEach((b) => b.classList.toggle("active", Number(b.dataset.ltool) === m));
+    this.q("#ed-ltool-name").textContent = LIQ_TOOLS[m ?? this.lastLtool].label;
+    this.overlay.classList.toggle("on", m !== null || this.cropping || this.ptool !== null);
+    this.overlay.style.cursor = m !== null || this.ptool !== null ? "none" : "";
+    if (m !== null) {
+      const sec = this.q('[data-sec="liquify"]');
+      if (sec.classList.contains("collapsed")) (sec.querySelector(".ed-sec-head") as HTMLElement).click();
+      if (this.bypass) this.setBefore(false);
+      this.hint(`液化・${LIQ_TOOLS[m].label}：${LIQ_TOOLS[m].tip} · Esc 結束`);
+    } else this.hint("");
+    this.draw();
+    this.drawOverlay();
+  }
+
+  private setLiqBrush(k: "size" | "strength", v: number, from?: HTMLInputElement) {
+    const lim = { size: [5, 400], strength: [1, 100] }[k];
+    v = Math.round(Math.max(lim[0], Math.min(lim[1], v)));
+    this.lbrush[k] = v;
+    try {
+      localStorage.setItem("editLiqBrush", JSON.stringify(this.lbrush));
+    } catch {
+      /* ignore */
+    }
+    for (const sel of [`[data-lbrush="${k}"]`, `[data-lbrush-num="${k}"]`]) {
+      const inp = this.q<HTMLInputElement>(sel);
+      if (inp !== from) inp.value = String(v);
+    }
+    this.drawOverlay();
+  }
+
+  private liqPoint(e: { clientX: number; clientY: number }): [number, number] {
+    const [x, y] = this.screenToImg(e.clientX, e.clientY);
+    return [x / this.imgW, y / this.imgH];
+  }
+
+  private liqDown(e: PointerEvent) {
+    if (this.ltool === null || e.button !== 0 || !this.imgW) return;
+    e.preventDefault();
+    const list = this.p.liquify ?? [];
+    if (list.length >= MAX_LIQ_STROKES) return this.hint("液化的筆畫太多了，請先按 ⌘Z 復原幾筆或清除後再調整");
+    const chars = liqTextLen(list);
+    if (chars > 44000) return this.hint("液化的筆畫太多了，請先按 ⌘Z 復原幾筆或清除後再調整");
+    if (this.liqHidden) {
+      this.liqHidden = false;
+      this.q("#ed-liq-eye").classList.remove("active");
+    }
+    this.uploadBase();
+    const healed = this.baseHealed;
+    const work = this.baseWork;
+    if (!healed || !work) return;
+    this.overlay.setPointerCapture(e.pointerId);
+    const field = this.liqFieldCache && this.liqFieldCache.arr === list ? this.liqFieldCache.field : LiqField.build(list, healed.width, healed.height);
+    this.liqFieldCache = null;
+    const out = work === healed ? new ImageData(new Uint8ClampedArray(healed.data), healed.width, healed.height) : work;
+    this.baseWork = out;
+    const st: LiqStroke = { m: this.ltool, r: this.lbrush.size / 1000, s: this.lbrush.strength / 100, p: [this.liqPoint(e)] };
+    this.p.liquify = [...list, st];
+    const timer =
+      st.m === 0
+        ? 0
+        : window.setInterval(() => {
+            const d = this.ldrag;
+            if (!d || d.st.p.length >= MAX_LIQ_POINTS || d.chars > 45000) return;
+            d.st.p.push(d.st.p[d.st.p.length - 1]);
+            d.chars += 4;
+            this.liqStep();
+          }, 70);
+    this.ldrag = { st, field, out, done: 0, timer, chars };
+    this.lhover = { x: e.clientX, y: e.clientY };
+    this.liqStep();
+  }
+
+  private liqMove(e: PointerEvent) {
+    if (this.ltool === null) return;
+    this.lhover = { x: e.clientX, y: e.clientY };
+    const d = this.ldrag;
+    if (d) {
+      const L = Math.max(this.imgW, this.imgH);
+      const aw = this.imgW / L;
+      const ah = this.imgH / L;
+      const evs = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [e];
+      for (const ev of evs.length ? evs : [e]) {
+        if (d.st.p.length >= MAX_LIQ_POINTS || d.chars > 45000) break;
+        const q = this.liqPoint(ev);
+        const last = d.st.p[d.st.p.length - 1];
+        if (Math.hypot((q[0] - last[0]) * aw, (q[1] - last[1]) * ah) < d.st.r * 0.1) continue;
+        d.st.p.push(q);
+        d.chars += `${Math.round((q[0] - last[0]) * 20000)},${Math.round((q[1] - last[1]) * 20000)};`.length;
+      }
+      this.liqStep();
+    }
+    this.drawOverlay();
+  }
+
+  /** 把新加入的點套用到位移場，只重算、上傳受影響的範圍 */
+  private liqStep() {
+    const d = this.ldrag;
+    const gl = this.gl;
+    const src = this.baseHealed;
+    if (!d || !gl || !src) return;
+    const box = d.field.applyStroke(d.st, d.done);
+    d.done = d.st.p.length;
+    if (!box) return;
+    const W = src.width;
+    const [x0, y0, x1, y1] = boxToPx(box, W, src.height);
+    if (x1 <= x0 || y1 <= y0) return;
+    warpImage(src, d.out, d.field, [x0, y0, x1, y1]);
+    const sw = x1 - x0;
+    const sub = new ImageData(sw, y1 - y0);
+    for (let y = y0; y < y1; y++) sub.data.set(d.out.data.subarray((y * W + x0) * 4, (y * W + x1) * 4), (y - y0) * sw * 4);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, gl.RGBA, gl.UNSIGNED_BYTE, sub);
+    this.draw();
+  }
+
+  private liqUp() {
+    const d = this.ldrag;
+    if (!d) return;
+    if (d.timer) window.clearInterval(d.timer);
+    this.ldrag = null;
+    const list = this.p.liquify ?? [];
+    // 推移只點一下沒有拖曳：沒有效果，不留這一筆
+    if (d.st.m === 0 && d.st.p.length < 2) this.p.liquify = list.filter((s) => s !== d.st);
+    else this.liqFieldCache = { arr: list, field: d.field };
+    const spots = this.spotsHidden || this.healPending ? [] : (this.p.spots ?? []);
+    this.baseKey = `${JSON.stringify(spots)}#${JSON.stringify(this.p.liquify ?? [])}`;
+    this.markChanged();
+    this.draw();
+  }
+
+  private undoLiq() {
+    if (this.ldrag || !this.p.liquify?.length) return;
+    this.p.liquify = this.p.liquify.slice(0, -1);
+    this.markChanged();
+    this.draw();
+  }
+
+  private drawLiqOverlay(g: CanvasRenderingContext2D, dpr: number) {
+    const h = this.lhover;
+    if (!h) return;
+    const rect = this.overlay.getBoundingClientRect();
+    const x = (h.x - rect.left) * dpr;
+    const y = (h.y - rect.top) * dpr;
+    const r = Math.max(2, (this.lbrush.size / 1000) * Math.max(this.imgW, this.imgH) * this.view().s * dpr);
+    g.lineWidth = 3 * dpr;
+    g.strokeStyle = "rgba(0,0,0,0.6)";
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+    g.stroke();
+    g.lineWidth = 1.5 * dpr;
+    g.strokeStyle = "#fff";
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+    g.moveTo(x - 4 * dpr, y);
+    g.lineTo(x + 4 * dpr, y);
+    g.moveTo(x, y - 4 * dpr);
+    g.lineTo(x, y + 4 * dpr);
+    g.stroke();
+  }
+
   /** 開始 / 結束修補（再按一次同一個工具 = 結束） */
   setPatch(m: SpotMode | null) {
     if (m !== null) {
       if (this.cropping) this.commitCrop();
       if (this.tool) this.setTool(null);
+      if (this.ltool !== null) this.setLiq(null);
       this.lastPtool = m;
     }
     this.ptool = m;
@@ -2237,8 +2540,8 @@ export class Editor {
     this.q(".ed-feather-row").classList.toggle("hidden", shown === 0);
     this.q("#ed-ptool-name").textContent = SPOT_TOOLS[shown].label;
     this.syncSpotSel();
-    this.overlay.classList.toggle("on", m !== null || this.cropping);
-    this.overlay.style.cursor = m !== null ? "none" : "";
+    this.overlay.classList.toggle("on", m !== null || this.cropping || this.ltool !== null);
+    this.overlay.style.cursor = m !== null || this.ltool !== null ? "none" : "";
     if (m !== null) {
       const sec = this.q('[data-sec="patch"]');
       if (sec.classList.contains("collapsed")) (sec.querySelector(".ed-sec-head") as HTMLElement).click();
@@ -2443,9 +2746,10 @@ export class Editor {
     };
     this.uploadBase();
     // 移除：自動擴大到蓋住整個物體（花瓣、灰塵常比筆刷大一點）；直線筆觸不擴大
-    if (this.baseWork && spot.m === 0 && pts.length === 1) spot.r = Math.round(autoRadius(this.baseWork, spot) * 100000) / 100000;
+    const heal0 = this.baseHealed ?? this.baseWork;
+    if (heal0 && spot.m === 0 && pts.length === 1) spot.r = Math.round(autoRadius(heal0, spot) * 100000) / 100000;
     // 修復 / 仿製：自動找來源（之後可拖曳換位置）；移除：內容感知合成，不需要來源
-    if (this.baseWork && spot.m !== 0) spot.d = findSource(this.baseWork, spot);
+    if (heal0 && spot.m !== 0) spot.d = findSource(heal0, spot);
     this.p.spots = [...(this.p.spots ?? []), spot];
     this.selSpot = this.p.spots.length - 1;
     this.refreshRank = 0;
@@ -2915,6 +3219,7 @@ export class Editor {
       hsl: hslActive(normHsl(this.p.hsl)),
       curve: cleanCurve(this.p.curve).length > 0,
       patch: (this.p.spots ?? []).length > 0,
+      liquify: (this.p.liquify ?? []).length > 0,
       crop: this.cropping ? toNorm(this.draft!, this.imgW, this.imgH).length > 0 : normCrop(this.p.crop).length > 0,
     };
     this.syncCropInputs();
@@ -3104,8 +3409,12 @@ export class Editor {
     if (this.tool) this.setTool(null);
     if (this.cropping) this.cancelCrop();
     if (this.ptool !== null) this.setPatch(null);
+    if (this.ltool !== null) this.setLiq(null);
     this.baseOrig = null;
     this.baseWork = null;
+    this.baseHealed = null;
+    this.healedKey = "";
+    this.liqFieldCache = null;
     this.baseKey = "";
     this.loadSeq++;
     this.el.classList.add("hidden");
@@ -3130,6 +3439,7 @@ export class Editor {
     const typing = t.tagName === "INPUT";
     if (ev.key === "Escape" && this.cropping) return this.cancelCrop(), true;
     if (ev.key === "Enter" && this.cropping && !typing) return this.commitCrop(), true;
+    if (ev.key === "Escape" && this.ltool !== null) return this.setLiq(null), true;
     if (ev.key === "Escape" && this.ptool !== null) return (this.selSpot >= 0 ? ((this.selSpot = -1), this.drawOverlay()) : this.setPatch(null)), true;
     if (ev.key === "Escape" && this.tool) return this.setTool(null), true;
     if (ev.key === "Escape") {
@@ -3140,6 +3450,12 @@ export class Editor {
     if (ev.key === "Enter" && !typing) return void this.close(true), true;
     if (typing) return false;
     if (ev.key === "\\") return this.toggleBefore(), true;
+    if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "l") return this.setLiq(this.ltool !== null ? null : this.lastLtool), true;
+    if (this.ltool !== null) {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "z") return this.undoLiq(), true;
+      if (ev.key === "[") return this.setLiqBrush("size", this.lbrush.size * 0.85), true;
+      if (ev.key === "]") return this.setLiqBrush("size", Math.max(this.lbrush.size + 1, this.lbrush.size * 1.15)), true;
+    }
     if (!ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "b") return this.setPatch(this.ptool !== null ? null : this.lastPtool), true;
     if (this.ptool !== null) {
       if (ev.key === "Delete" || ev.key === "Backspace") return this.deleteSpot(), true;

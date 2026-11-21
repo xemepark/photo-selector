@@ -11,6 +11,7 @@ mod face;
 mod fileinfo;
 mod icc;
 mod jpeg;
+mod liquify;
 mod meta;
 mod orient;
 mod ops;

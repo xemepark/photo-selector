@@ -54,6 +54,8 @@ export interface EditParams {
   crop: number[];
   /** 局部修補（移除 / 修復 / 仿製） */
   spots: import("./heal").Spot[];
+  /** 液化筆刷 */
+  liquify: import("./liquify").LiqStroke[];
 }
 
 export interface DirInfo {

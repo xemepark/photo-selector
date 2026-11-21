@@ -41,6 +41,9 @@ pub struct Params {
     /// 局部修補（移除 / 修復 / 仿製），依序套用
     #[serde(default)]
     pub spots: Vec<crate::heal::Spot>,
+    /// 液化筆刷，依序套用
+    #[serde(default)]
+    pub liquify: Vec<crate::liquify::Stroke>,
 }
 
 /// 整理裁切：5 個數字、數值合理；等於整張不裁切時回傳空的
@@ -296,6 +299,7 @@ impl Params {
     fn from_values(v: [f32; 10], curve: Vec<[f32; 2]>, hsl: Vec<f32>, crop: Vec<f32>, spots: Vec<crate::heal::Spot>) -> Self {
         Params {
             spots,
+            liquify: Vec::new(),
             curve,
             hsl,
             crop,
@@ -319,13 +323,16 @@ impl Params {
             let lim = if i == 2 { 5.0 } else { 100.0 };
             *x = if x.is_finite() { x.clamp(-lim, lim) } else { 0.0 };
         }
-        Params::from_values(v, clean_curve(&self.curve), clean_hsl(&self.hsl), clean_crop(&self.crop), crate::heal::clean_spots(&self.spots))
+        Params {
+            liquify: crate::liquify::clean(&self.liquify),
+            ..Params::from_values(v, clean_curve(&self.curve), clean_hsl(&self.hsl), clean_crop(&self.crop), crate::heal::clean_spots(&self.spots))
+        }
     }
 
     /// 欄位名稱（與前端 / serde 相同），順序與 values() 相同
-    pub const KEYS: [&'static str; 14] = [
+    pub const KEYS: [&'static str; 15] = [
         "temp", "tint", "exposure", "contrast", "highlights", "shadows", "whites", "blacks", "vibrance", "saturation", "curve", "hsl", "crop",
-        "spots",
+        "spots", "liquify",
     ];
 
     /// 只把 `fields` 列出的項目換成 `src` 的值，其餘保留自己的
@@ -342,11 +349,12 @@ impl Params {
         let hsl = if has("hsl") { src.hsl.clone() } else { self.hsl.clone() };
         let crop = if has("crop") { src.crop.clone() } else { self.crop.clone() };
         let spots = if has("spots") { src.spots.clone() } else { self.spots.clone() };
-        Params::from_values(v, curve, hsl, crop, spots).clamped()
+        let liquify = if has("liquify") { src.liquify.clone() } else { self.liquify.clone() };
+        Params { liquify, ..Params::from_values(v, curve, hsl, crop, spots) }.clamped()
     }
 
     pub fn is_identity(&self) -> bool {
-        self.is_color_identity() && clean_crop(&self.crop).is_empty() && self.spots.is_empty()
+        self.is_color_identity() && clean_crop(&self.crop).is_empty() && self.spots.is_empty() && self.liquify.is_empty()
     }
 
     /// 只看色彩相關的項目（不含裁切）
@@ -372,6 +380,7 @@ impl Params {
             .then(|| p.crop.iter().map(|v| format!("{}", (v * 100000.0).round() / 100000.0)).collect::<Vec<_>>().join(","));
         out.push(("sd:Crop", crop));
         out.push(("sd:Spots", (!p.spots.is_empty()).then(|| crate::heal::to_text(&p.spots))));
+        out.push(("sd:Liquify", (!p.liquify.is_empty()).then(|| crate::liquify::to_text(&p.liquify))));
         out.push(("sd:Version", (!p.is_identity()).then(|| "1".to_string())));
         out
     }
@@ -399,7 +408,8 @@ impl Params {
             .map(|s| s.split(',').map(|x| x.trim().parse().unwrap_or(f32::NAN)).collect())
             .unwrap_or_default();
         let spots = xmp::get_prop(xml, "sd:Spots").map(|t| crate::heal::from_text(&t)).unwrap_or_default();
-        let p = Params::from_values(v, curve, hsl, crop, spots).clamped();
+        let liquify = xmp::get_prop(xml, "sd:Liquify").map(|t| crate::liquify::from_text(&t)).unwrap_or_default();
+        let p = Params { liquify, ..Params::from_values(v, curve, hsl, crop, spots) }.clamped();
         (!p.is_identity()).then_some(p)
     }
 }
@@ -638,6 +648,10 @@ pub fn apply(img: DynamicImage, p: &Params) -> DynamicImage {
     // 修補在最前面（作用在原圖上，與 Camera Raw 相同）
     if !p.spots.is_empty() {
         apply_spots_ref(&mut rgb, &p.spots);
+    }
+    // 液化（修補之後、裁切之前，與調整視窗相同）
+    if !p.liquify.is_empty() {
+        crate::liquify::apply(&mut rgb, &p.liquify);
     }
     // 再裁切（像素少、算得快；與畫面預覽相同：先取樣再調色）
     let crop = clean_crop(&p.crop);
